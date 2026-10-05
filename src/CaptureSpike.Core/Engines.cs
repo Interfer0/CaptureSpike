@@ -24,7 +24,8 @@ public interface IPlaybackEngine : IAsyncDisposable
     TimeSpan Duration { get; }
     bool IsPlaying { get; }
 
-    Task LoadAsync(string takeDir, Take take, CancellationToken ct = default);
+    /// <summary>Load a take and start playing. Scene layout drives compositing.</summary>
+    Task LoadAsync(Project project, Scene scene, string takeDir, Take take, CancellationToken ct = default);
     Task PlayAsync(CancellationToken ct = default);
     Task PauseAsync(CancellationToken ct = default);
     Task SeekAsync(TimeSpan position, CancellationToken ct = default);
