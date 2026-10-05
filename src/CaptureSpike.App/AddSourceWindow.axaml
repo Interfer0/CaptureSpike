@@ -10,7 +10,7 @@
     <TextBox x:Name="LabelBox" />
     <TextBlock Text="Device (optional — blank means the default device)"
                FontSize="12" Opacity="0.7" />
-    <TextBox x:Name="DeviceBox" Watermark="default" />
+    <TextBox x:Name="DeviceBox" PlaceholderText="default" />
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                 Spacing="8" Margin="0,8,0,0">
       <Button Content="Cancel" Click="OnCancel" />

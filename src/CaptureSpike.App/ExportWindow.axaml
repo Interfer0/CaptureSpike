@@ -1,0 +1,18 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CaptureSpike.App.ExportWindow"
+        Title="Export Film" Width="420" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" CanResize="False">
+  <StackPanel Margin="16" Spacing="8">
+    <TextBlock Text="Scenes will be stitched in this order, using each scene's favorite take:"
+               TextWrapping="Wrap" />
+    <ListBox x:Name="SceneList" MaxHeight="220" />
+    <TextBlock Text="The export engine arrives in M4 — compositing, concatenation and chapters."
+               FontSize="11" Opacity="0.6" TextWrapping="Wrap" />
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                Spacing="8" Margin="0,8,0,0">
+      <Button Content="Close" Click="OnClose" />
+      <Button Content="Export" IsEnabled="False" ToolTip.Tip="Arrives in M4" />
+    </StackPanel>
+  </StackPanel>
+</Window>

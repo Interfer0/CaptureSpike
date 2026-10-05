@@ -8,7 +8,7 @@ namespace CaptureSpike.Core.Tests;
 
 public sealed class FilterGraphBuilderTests
 {
-    private static (Project, Scene, Take) SampleTake()
+    internal static (Project, Scene, Take) SampleTake()
     {
         var project = new Project
         {

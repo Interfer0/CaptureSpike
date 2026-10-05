@@ -211,6 +211,7 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
             throw new InvalidOperationException(
                 $"mpv exited during startup (code {process.ExitCode}).{(err.Length > 0 ? " mpv said: " + err[^Math.Min(err.Length, 500)..] : "")}");
         }
+        _loaded = true;
     }
 
     private void OnMpvEvent(System.Text.Json.JsonElement ev)

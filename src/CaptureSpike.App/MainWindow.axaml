@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:CaptureSpike.App"
         x:Class="CaptureSpike.App.MainWindow"
         Title="CaptureSpike" Width="1180" Height="720" MinWidth="960" MinHeight="600">
   <Window.Styles>
@@ -86,6 +87,38 @@
       <DockPanel Grid.Column="1" Margin="0,0,8,0">
         <TextBlock DockPanel.Dock="Top" Text="Preview" FontWeight="Bold" Margin="0,0,0,4" />
         <StackPanel DockPanel.Dock="Bottom" Spacing="6" Margin="0,8,0,0">
+          <DockPanel IsEnabled="{Binding HasPlayerTake}">
+            <Button DockPanel.Dock="Left" Content="{Binding PlayerPlayPauseText}"
+                    Command="{Binding PlayerPlayPauseCommand}" Margin="0,0,8,0" />
+            <TextBlock DockPanel.Dock="Right" Text="{Binding PlayerTimeText}"
+                       VerticalAlignment="Center" FontFamily="Monospace" Margin="8,0,0,0" />
+            <Slider Minimum="0" Maximum="{Binding PlayerDurationSeconds}"
+                    Value="{Binding PlayerPositionSeconds, Mode=OneWay}"
+                    VerticalAlignment="Center"
+                    PointerPressed="OnSeekPointerPressed"
+                    PointerReleased="OnSeekPointerReleased" />
+          </DockPanel>
+          <ItemsControl ItemsSource="{Binding PlayerTracks}"
+                        IsVisible="{Binding HasPlayerTake}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Orientation="Horizontal" Spacing="10" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <Border Classes="badge">
+                    <TextBlock Text="{Binding Badge}" />
+                  </Border>
+                  <TextBlock Text="{Binding Label}" VerticalAlignment="Center" FontSize="12" />
+                  <Button Classes="plain" Content="{Binding MuteIcon}"
+                          Command="{Binding ToggleMuteCommand}"
+                          ToolTip.Tip="{Binding MuteTip}" FontSize="14" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="12">
             <Button Content="{Binding RecordButtonText}" Command="{Binding ToggleRecordCommand}"
                     FontSize="16" />
@@ -97,9 +130,15 @@
           <TextBlock Text="{Binding SelectedScene.Notes}" TextWrapping="Wrap" Opacity="0.7"
                      FontStyle="Italic" />
         </StackPanel>
-        <Border BorderThickness="1" BorderBrush="Gray" CornerRadius="4">
-          <TextBlock Text="Player arrives in M3" HorizontalAlignment="Center"
-                     VerticalAlignment="Center" Opacity="0.5" />
+        <Border BorderThickness="1" BorderBrush="Gray" CornerRadius="4"
+                ClipToBounds="True" Background="Black">
+          <Panel>
+            <app:MpvVideoHost x:Name="VideoHost" />
+            <TextBlock Text="{Binding PlayerPlaceholderText}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Opacity="0.6" TextAlignment="Center" TextWrapping="Wrap" Margin="24"
+                       IsVisible="{Binding !HasPlayerTake}" />
+          </Panel>
         </Border>
       </DockPanel>
 
@@ -166,6 +205,9 @@
         </StackPanel>
 
         <TextBlock DockPanel.Dock="Top" Text="Takes" FontWeight="Bold" Margin="0,0,0,4" />
+        <Button DockPanel.Dock="Bottom" Content="Export film…"
+                Command="{Binding ExportCommand}" Margin="0,8,0,0"
+                HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
         <ListBox ItemsSource="{Binding Takes}" SelectedItem="{Binding SelectedTake}">
           <ListBox.ItemTemplate>
             <DataTemplate>

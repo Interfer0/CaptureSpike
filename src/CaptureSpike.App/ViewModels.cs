@@ -5,8 +5,10 @@ using System.Text.Json;
 using System.Windows.Input;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using CaptureSpike.Core;
 using CaptureSpike.Core.Capture;
+using CaptureSpike.Core.Playback;
 
 namespace CaptureSpike.App;
 
@@ -140,6 +142,37 @@ public sealed class SceneSourceViewModel(SceneSource sceneSource, ProjectSource 
     public void Refresh() { Raise(nameof(IsEnabled)); Raise(nameof(Dot)); }
 }
 
+public sealed class PlayerTrackRow(TakeSource source, string label) : ObservableObject
+{
+    public TakeSource Source { get; } = source;
+    public string SourceId => Source.Id;
+    public string Badge => Source.Kind.Badge();
+    public string Label => label;
+    public bool IsVideo => Source.Kind.IsVideo();
+
+    private bool _isMuted;
+    public bool IsMuted
+    {
+        get => _isMuted;
+        set
+        {
+            if (SetField(ref _isMuted, value))
+            {
+                Raise(nameof(MuteIcon));
+                Raise(nameof(MuteTip));
+            }
+        }
+    }
+
+    public string MuteIcon => IsVideo
+        ? (IsMuted ? "🚫" : "👁")
+        : (IsMuted ? "🔇" : "🔊");
+    public string MuteTip => (IsMuted ? "Show " : "Hide ") + label;
+
+    /// <summary>Assigned by MainViewModel after construction.</summary>
+    public ICommand ToggleMuteCommand { get; set; } = null!;
+}
+
 public sealed class TakeRow : ObservableObject
 {
     public TakeRow(Take take, int number, bool isFavorite,
@@ -185,6 +218,8 @@ public sealed class MainViewModel : ObservableObject
                 RefreshSceneDetails();
                 Raise(nameof(NextTakeText));
                 Raise(nameof(SceneHeaderText));
+                if (_playerTake is not null && _playerSceneId != value?.Scene.Id)
+                    _ = UnloadPlayerAsync();
             }
         }
     }
@@ -195,7 +230,18 @@ public sealed class MainViewModel : ObservableObject
     public TakeRow? SelectedTake
     {
         get => _selectedTake;
-        set { if (SetField(ref _selectedTake, value)) Raise(nameof(IsFavorite)); }
+        set
+        {
+            var oldId = _selectedTake?.Take.Id;
+            if (SetField(ref _selectedTake, value))
+            {
+                Raise(nameof(IsFavorite));
+                if (value is not null && value.Take.Id != oldId)
+                    LoadPlayerTake(value.Take);
+                else if (value is null)
+                    _ = UnloadPlayerAsync();
+            }
+        }
     }
 
     private string _status = "No project open.";
@@ -245,6 +291,11 @@ public sealed class MainViewModel : ObservableObject
         ToggleFavoriteCommand = new RelayCommand(() => Mutate(ToggleFavorite), () => HasProject && SelectedTake is not null);
         ToggleRecordCommand = new RelayCommand(ToggleRecordAsync,
             () => HasProject && (IsRecording || SelectedScene is not null));
+        _playerTimer.Tick += (_, _) => UpdatePlayerState();
+        PlayerPlayPauseCommand = new RelayCommand(TogglePlayerPlayPauseAsync,
+            () => _player is not null && !IsRecording);
+        ExportCommand = new RelayCommand(ShowExportDialog,
+            () => HasProject && !IsRecording);
         AddPaletteSourceCommand = new RelayCommand(AddPaletteSourceAsync, () => HasProject && !IsRecording);
         AddSceneSourceCommand = new RelayCommand(AddSceneSource,
             () => HasProject && !IsRecording && SelectedScene is not null && SelectedPaletteSourceToAdd is not null);
@@ -262,7 +313,8 @@ public sealed class MainViewModel : ObservableObject
         foreach (var c in new[] { AddSceneCommand, DeleteSceneCommand, MoveSceneUpCommand,
                                   MoveSceneDownCommand, DeleteTakeCommand, ToggleFavoriteCommand,
                                   ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
-                                  AddPaletteSourceCommand, AddSceneSourceCommand }
+                                  AddPaletteSourceCommand, AddSceneSourceCommand,
+                                  PlayerPlayPauseCommand, ExportCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
         Raise(nameof(HasProject));
@@ -303,6 +355,7 @@ public sealed class MainViewModel : ObservableObject
 
     private void OpenProject(string dir)
     {
+        _ = UnloadPlayerAsync();
         _store = ProjectStore.Open(dir);
         AppSettings.LastProjectDir = dir;
         ProjectName = _store.Project.Name;
@@ -377,16 +430,21 @@ public sealed class MainViewModel : ObservableObject
         RefreshSceneSources();
     }
 
-    private void RefreshTakes()
+    private void RefreshTakes(Take? selectTake = null)
     {
+        var selectedId = selectTake?.Id ?? SelectedTake?.Take.Id;
+        // Don't let the refresh itself unload the player; only a real
+        // selection change does that.
+        _selectedTake = null;
         Takes.Clear();
-        SelectedTake = null;
+        Raise(nameof(SelectedTake));
         if (_store is null || SelectedScene is null) return;
         var fav = SelectedScene.Scene.FavoriteTakeId;
         var n = 1;
         foreach (var t in _store.LoadTakes(SelectedScene.Scene.Id))
             Takes.Add(new TakeRow(t, n++, t.Id == fav, ToggleFavoriteRow, DeleteTakeRow));
         SelectedScene.TakeCount = Takes.Count;
+        SelectedTake = Takes.FirstOrDefault(t => t.Take.Id == selectedId);
         Raise(nameof(NextTakeText));
     }
 
@@ -467,9 +525,11 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void DeleteTakeRow(TakeRow row)
+    private async void DeleteTakeRow(TakeRow row)
     {
         if (_store is null || SelectedScene is null) return;
+        if (_playerTake?.Id == row.Take.Id)
+            await UnloadPlayerAsync();
         var label = row.DisplayName;
         _store.DeleteTake(SelectedScene.Scene.Id, row.Take);
         RefreshTakes();
@@ -547,7 +607,7 @@ public sealed class MainViewModel : ObservableObject
             {
                 var take = await session.StopAsync();
                 await session.DisposeAsync();
-                RefreshTakes();
+                RefreshTakes(take);
                 Status = $"Take {take.Id} saved — {take.Sources.Count} sources, {take.DurationSeconds:F1}s";
             }
             catch (Exception ex)
@@ -560,6 +620,11 @@ public sealed class MainViewModel : ObservableObject
         if (SelectedScene is null) return;
         try
         {
+            // Don't let the preview's audio bleed into the new take's mic.
+            if (_player is not null)
+            {
+                try { await _player.PauseAsync(); } catch { }
+            }
             var scene = SelectedScene.Scene;
             var takeDir = _store.BeginTake(scene);
             var progress = new Progress<TimeSpan>(t => RecordingElapsed = t.ToString(@"m\:ss"));
@@ -578,8 +643,257 @@ public sealed class MainViewModel : ObservableObject
         Raise(nameof(IsRecording));
         Raise(nameof(RecordButtonText));
         if (!IsRecording) RecordingElapsed = "";
-        foreach (var c in new[] { ToggleRecordCommand, NewProjectCommand, OpenProjectCommand }
+        foreach (var c in new[] { ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
+                                  PlayerPlayPauseCommand, ExportCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
+    }
+
+    // ----- player -----
+
+    private MpvPlaybackEngine? _player;
+    private Take? _playerTake;
+    private string? _playerSceneId;
+    private string? _playerError;
+    private bool _playerScrubbing;
+    private readonly DispatcherTimer _playerTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+
+    public ObservableCollection<PlayerTrackRow> PlayerTracks { get; } = new();
+
+    /// <summary>Native child-window handle from MpvVideoHost. 0 = not embedded.</summary>
+    private nint _videoHandle;
+    public nint VideoHandle
+    {
+        get => _videoHandle;
+        set
+        {
+            if (_videoHandle == value) return;
+            _videoHandle = value;
+            if (value == nint.Zero)
+                _ = UnloadPlayerAsync();
+            else if (_playerTake is not null && _player is null)
+                LoadPlayerTake(_playerTake);
+        }
+    }
+
+    public bool HasPlayerTake => _playerTake is not null;
+    public string PlayerPlaceholderText =>
+        _playerError ?? "Select a take to preview";
+
+    private double _playerPositionSeconds;
+    public double PlayerPositionSeconds
+    {
+        get => _playerPositionSeconds;
+        private set
+        {
+            if (SetField(ref _playerPositionSeconds, value))
+                Raise(nameof(PlayerTimeText));
+        }
+    }
+
+    private double _playerDurationSeconds;
+    public double PlayerDurationSeconds
+    {
+        get => _playerDurationSeconds;
+        private set
+        {
+            if (SetField(ref _playerDurationSeconds, value))
+                Raise(nameof(PlayerTimeText));
+        }
+    }
+
+    public string PlayerTimeText =>
+        $"{TimeSpan.FromSeconds(_playerPositionSeconds):m\\:ss} / {TimeSpan.FromSeconds(_playerDurationSeconds):m\\:ss}";
+
+    private bool _isPlayerPlaying;
+    public bool IsPlayerPlaying
+    {
+        get => _isPlayerPlaying;
+        private set
+        {
+            if (SetField(ref _isPlayerPlaying, value))
+                Raise(nameof(PlayerPlayPauseText));
+        }
+    }
+
+    public string PlayerPlayPauseText => IsPlayerPlaying ? "⏸ Pause" : "▶ Play";
+    public ICommand PlayerPlayPauseCommand { get; }
+    public ICommand ExportCommand { get; }
+
+    private async void LoadPlayerTake(Take take)
+    {
+        if (_store is null || IsRecording) return;
+        if (_playerTake?.Id == take.Id && _player is not null) return;
+
+        // Keep continuations on the UI thread: everything below raises
+        // property notifications bound to the UI.
+        await UnloadPlayerAsync();
+        var sceneId = SelectedScene?.Scene.Id;
+        if (sceneId is null) return;
+
+        _playerTake = take;
+        _playerSceneId = sceneId;
+        _playerError = null;
+        Raise(nameof(HasPlayerTake));
+        Raise(nameof(PlayerPlaceholderText));
+
+        try
+        {
+            var scene = SelectedScene!.Scene;
+            var takeDir = _store.TakeDir(sceneId, take.Id);
+            try
+            {
+                await StartPlayerEngineAsync(scene, takeDir, take, _videoHandle);
+            }
+            catch when (_videoHandle != nint.Zero)
+            {
+                // Embedding failed (e.g. unexpected platform handle): fall back
+                // to mpv's own window rather than leaving the take unplayable.
+                await StartPlayerEngineAsync(scene, takeDir, take, nint.Zero);
+                Status = "Video embedding isn't working on this machine — mpv opened its own window.";
+            }
+
+            PlayerTracks.Clear();
+            foreach (var ts in take.Sources)
+            {
+                var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
+                    ?? ts.Kind.DefaultLabel();
+                var row = new PlayerTrackRow(ts, label);
+                row.ToggleMuteCommand = new RelayCommand(() => ToggleTrackMuteAsync(row));
+                PlayerTracks.Add(row);
+            }
+            _playerTimer.Start();
+            ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
+        }
+        catch (Exception ex)
+        {
+            _playerError = ex.Message;
+            await UnloadPlayerAsync();
+            Raise(nameof(PlayerPlaceholderText));
+        }
+    }
+
+    private async Task StartPlayerEngineAsync(Scene scene, string takeDir, Take take, nint handle)
+    {
+        var engine = new MpvPlaybackEngine { EmbedWindowHandle = handle };
+        try
+        {
+            engine.PlaybackEnded += OnPlayerEnded;
+            await engine.LoadAsync(_store!.Project, scene, takeDir, take).ConfigureAwait(false);
+            _player = engine;
+        }
+        catch
+        {
+            await engine.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private void OnPlayerEnded()
+    {
+        // mpv hit end-of-file: rewind and pause for instant replay.
+        Avalonia.Threading.Dispatcher.UIThread.Post(async () =>
+        {
+            if (_player is null) return;
+            try
+            {
+                await _player.SeekAsync(TimeSpan.Zero);
+                await _player.PauseAsync();
+            }
+            catch { /* player is going away */ }
+        });
+    }
+
+    private async Task UnloadPlayerAsync()
+    {
+        _playerTimer?.Stop();
+        PlayerTracks.Clear();
+        var player = _player;
+        _player = null;
+        _playerTake = null;
+        _playerSceneId = null;
+        if (player is not null)
+            await player.DisposeAsync().ConfigureAwait(false);
+        PlayerPositionSeconds = 0;
+        PlayerDurationSeconds = 0;
+        IsPlayerPlaying = false;
+        Raise(nameof(HasPlayerTake));
+        if (_playerError is null) Raise(nameof(PlayerPlaceholderText));
+        if (PlayerPlayPauseCommand is not null)
+            ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
+    }
+
+    private void UpdatePlayerState()
+    {
+        var player = _player;
+        if (player is null) return;
+        IsPlayerPlaying = player.IsPlaying;
+        PlayerDurationSeconds = player.Duration.TotalSeconds;
+        if (!_playerScrubbing)
+            PlayerPositionSeconds = player.Position.TotalSeconds;
+    }
+
+    private async void TogglePlayerPlayPauseAsync()
+    {
+        if (_player is null || IsRecording) return;
+        try
+        {
+            if (_player.IsPlaying) await _player.PauseAsync();
+            else await _player.PlayAsync();
+        }
+        catch (Exception ex) { Status = $"Player: {ex.Message}"; }
+    }
+
+    public void BeginScrub() => _playerScrubbing = true;
+
+    public async void EndScrub(double seconds)
+    {
+        _playerScrubbing = false;
+        if (_player is null) return;
+        try
+        {
+            await _player.SeekAsync(TimeSpan.FromSeconds(seconds));
+            PlayerPositionSeconds = seconds;
+        }
+        catch (Exception ex) { Status = $"Seek: {ex.Message}"; }
+    }
+
+    private async void ToggleTrackMuteAsync(PlayerTrackRow row)
+    {
+        if (_player is null) return;
+        var muting = !row.IsMuted;
+        if (muting && PlayerTracks.All(t => t == row || t.IsMuted))
+        {
+            Status = "Can't mute every track in the take.";
+            return;
+        }
+        try
+        {
+            await _player.SetTrackMutedAsync(row.SourceId, muting);
+            row.IsMuted = muting;
+        }
+        catch (Exception ex) { Status = $"Mute: {ex.Message}"; }
+    }
+
+    // ----- export (shell for M4) -----
+
+    private void ShowExportDialog()
+    {
+        if (_store is null) return;
+        if (Avalonia.Application.Current?.ApplicationLifetime
+            is not IClassicDesktopStyleApplicationLifetime desktop) return;
+        var win = new ExportWindow();
+        var lines = new List<string>();
+        foreach (var scene in _store.LoadScenes())
+        {
+            var takes = _store.LoadTakes(scene.Id).ToList();
+            var favIndex = takes.FindIndex(t => t.Id == scene.FavoriteTakeId);
+            var favText = favIndex < 0
+                ? "no favorite take"
+                : $"★ Take {favIndex + 1:D2}";
+            lines.Add($"{scene.Order + 1:D2} {scene.Title} — {favText}");
+        }
+        win.SetScenes(lines);
+        win.ShowDialog(desktop.MainWindow!);
     }
 }
