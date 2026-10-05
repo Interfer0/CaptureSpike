@@ -76,39 +76,93 @@ public sealed class SceneViewModel(Scene scene, Action save) : ObservableObject
     public string Title
     {
         get => Scene.Title;
-        set { Scene.Title = value; save(); Raise(); }
+        set { Scene.Title = value; save(); Raise(); Raise(nameof(SceneHeader)); }
     }
 
     public string Notes
     {
         get => Scene.Notes;
-        set { Scene.Notes = value; save(); Raise(); }
+        set { Scene.Notes = value; save(); Raise(); Raise(nameof(WordCountText)); }
     }
 
-    public string DisplayName => $"{Scene.Order + 1}. {Scene.Title}";
-    public void RefreshOrder() => Raise(nameof(DisplayName));
+    public string SceneHeader => $"{Scene.Title} · Scene {Scene.Order + 1:D2}";
+    public string DisplayName => $"{Scene.Order + 1:D2} {Scene.Title}";
+
+    private int _takeCount;
+    public int TakeCount
+    {
+        get => _takeCount;
+        set => SetField(ref _takeCount, value);
+    }
+
+    public void RefreshOrder()
+    {
+        Raise(nameof(DisplayName));
+        Raise(nameof(SceneHeader));
+    }
+
+    /// <summary>"56 words · about 0:22 spoken" at ~150 wpm.</summary>
+    public string WordCountText
+    {
+        get
+        {
+            var words = string.IsNullOrWhiteSpace(Scene.Notes) ? 0 :
+                Scene.Notes.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+            var spoken = TimeSpan.FromSeconds(words * 60.0 / 150);
+            return $"{words} word{(words == 1 ? "" : "s")} · about {spoken:m\\:ss} spoken";
+        }
+    }
+}
+
+public sealed class PaletteSourceViewModel(ProjectSource source) : ObservableObject
+{
+    public ProjectSource Source { get; } = source;
+    public string Badge => Source.Kind.Badge();
+    public string Label => Source.Label;
+    /// <summary>Assigned by MainViewModel after construction.</summary>
+    public ICommand DeleteCommand { get; set; } = null!;
+}
+
+public sealed class SceneSourceViewModel(SceneSource sceneSource, ProjectSource palette)
+    : ObservableObject
+{
+    public SceneSource SceneSource { get; } = sceneSource;
+    public string Badge => palette.Kind.Badge();
+    public string Label => palette.Label;
+    public bool IsEnabled => SceneSource.Enabled;
+    public string Dot => SceneSource.Enabled ? "🟢" : "⚪";
+
+    /// <summary>Assigned by MainViewModel after construction.</summary>
+    public ICommand ToggleCommand { get; set; } = null!;
+    /// <summary>Assigned by MainViewModel after construction.</summary>
+    public ICommand RemoveCommand { get; set; } = null!;
+
+    public void Refresh() { Raise(nameof(IsEnabled)); Raise(nameof(Dot)); }
 }
 
 public sealed class TakeRow : ObservableObject
 {
-    public TakeRow(Take take, bool isFavorite)
+    public TakeRow(Take take, int number, bool isFavorite,
+        Action<TakeRow> toggleFavorite, Action<TakeRow> delete)
     {
         Take = take;
+        Number = number;
         IsFavorite = isFavorite;
+        ToggleFavoriteCommand = new RelayCommand(() => toggleFavorite(this));
+        DeleteCommand = new RelayCommand(() => delete(this));
     }
 
     public Take Take { get; }
+    public int Number { get; }
     public bool IsFavorite { get; }
 
-    public string Display
-    {
-        get
-        {
-            var star = IsFavorite ? "★ " : "";
-            var dur = TimeSpan.FromSeconds(Take.DurationSeconds).ToString(@"m\:ss");
-            return $"{star}{Take.Id} · {Take.Sources.Count} sources · {dur}";
-        }
-    }
+    public string DisplayName => $"Take {Number:D2}";
+    public string StarText => IsFavorite ? "★" : "☆";
+    public IReadOnlyList<string> Badges => Take.Sources.Select(s => s.Kind.Badge()).ToList();
+    public string Duration => TimeSpan.FromSeconds(Take.DurationSeconds).ToString(@"m\:ss");
+
+    public ICommand ToggleFavoriteCommand { get; }
+    public ICommand DeleteCommand { get; }
 }
 
 public sealed class MainViewModel : ObservableObject
@@ -117,13 +171,25 @@ public sealed class MainViewModel : ObservableObject
 
     public ObservableCollection<SceneViewModel> Scenes { get; } = new();
     public ObservableCollection<TakeRow> Takes { get; } = new();
+    public ObservableCollection<PaletteSourceViewModel> PaletteSources { get; } = new();
+    public ObservableCollection<SceneSourceViewModel> SceneSources { get; } = new();
 
     private SceneViewModel? _selectedScene;
     public SceneViewModel? SelectedScene
     {
         get => _selectedScene;
-        set { if (SetField(ref _selectedScene, value)) RefreshTakes(); }
+        set
+        {
+            if (SetField(ref _selectedScene, value))
+            {
+                RefreshSceneDetails();
+                Raise(nameof(NextTakeText));
+                Raise(nameof(SceneHeaderText));
+            }
+        }
     }
+
+    public string SceneHeaderText => SelectedScene?.SceneHeader ?? "Scene";
 
     private TakeRow? _selectedTake;
     public TakeRow? SelectedTake
@@ -149,6 +215,8 @@ public sealed class MainViewModel : ObservableObject
     public ICommand DeleteTakeCommand { get; }
     public ICommand ToggleFavoriteCommand { get; }
     public ICommand ToggleRecordCommand { get; }
+    public ICommand AddPaletteSourceCommand { get; }
+    public ICommand AddSceneSourceCommand { get; }
 
     /// <summary>Swappable for tests. Defaults to the real ffmpeg/NAudio recorder.</summary>
     public Func<ProjectStore, IRecorder> RecorderFactory { get; set; } =
@@ -177,6 +245,9 @@ public sealed class MainViewModel : ObservableObject
         ToggleFavoriteCommand = new RelayCommand(() => Mutate(ToggleFavorite), () => HasProject && SelectedTake is not null);
         ToggleRecordCommand = new RelayCommand(ToggleRecordAsync,
             () => HasProject && (IsRecording || SelectedScene is not null));
+        AddPaletteSourceCommand = new RelayCommand(AddPaletteSourceAsync, () => HasProject && !IsRecording);
+        AddSceneSourceCommand = new RelayCommand(AddSceneSource,
+            () => HasProject && !IsRecording && SelectedScene is not null && SelectedPaletteSourceToAdd is not null);
 
         var last = AppSettings.LastProjectDir;
         if (last is not null && Directory.Exists(last))
@@ -190,7 +261,8 @@ public sealed class MainViewModel : ObservableObject
         action();
         foreach (var c in new[] { AddSceneCommand, DeleteSceneCommand, MoveSceneUpCommand,
                                   MoveSceneDownCommand, DeleteTakeCommand, ToggleFavoriteCommand,
-                                  ToggleRecordCommand, NewProjectCommand, OpenProjectCommand }
+                                  ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
+                                  AddPaletteSourceCommand, AddSceneSourceCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
         Raise(nameof(HasProject));
@@ -246,9 +318,27 @@ public sealed class MainViewModel : ObservableObject
         Scenes.Clear();
         if (_store is null) return;
         foreach (var s in _store.LoadScenes())
-            Scenes.Add(new SceneViewModel(s, () => _store.SaveScene(s)));
+        {
+            var vm = new SceneViewModel(s, () => _store.SaveScene(s));
+            vm.TakeCount = _store.LoadTakes(s.Id).Count;
+            Scenes.Add(vm);
+        }
         SelectedScene = Scenes.FirstOrDefault();
         foreach (var vm in Scenes) vm.RefreshOrder();
+        ReloadPalette();
+    }
+
+    private void ReloadPalette()
+    {
+        PaletteSources.Clear();
+        if (_store is null) return;
+        foreach (var p in _store.Project.Sources)
+        {
+            var vm = new PaletteSourceViewModel(p);
+            vm.DeleteCommand = new RelayCommand(() => Mutate(() => DeletePaletteSource(vm)));
+            PaletteSources.Add(vm);
+        }
+        Raise(nameof(AvailablePaletteSources));
     }
 
     private void AddScene()
@@ -279,7 +369,13 @@ public sealed class MainViewModel : ObservableObject
         SelectedScene = Scenes.FirstOrDefault(s => s.Scene.Id == vm.Scene.Id);
     }
 
-    // ----- takes -----
+    // ----- takes + scene sources -----
+
+    private void RefreshSceneDetails()
+    {
+        RefreshTakes();
+        RefreshSceneSources();
+    }
 
     private void RefreshTakes()
     {
@@ -287,27 +383,149 @@ public sealed class MainViewModel : ObservableObject
         SelectedTake = null;
         if (_store is null || SelectedScene is null) return;
         var fav = SelectedScene.Scene.FavoriteTakeId;
+        var n = 1;
         foreach (var t in _store.LoadTakes(SelectedScene.Scene.Id))
-            Takes.Add(new TakeRow(t, t.Id == fav));
+            Takes.Add(new TakeRow(t, n++, t.Id == fav, ToggleFavoriteRow, DeleteTakeRow));
+        SelectedScene.TakeCount = Takes.Count;
+        Raise(nameof(NextTakeText));
+    }
+
+    private void RefreshSceneSources()
+    {
+        SceneSources.Clear();
+        _selectedPaletteSourceToAdd = null;
+        if (_store is null || SelectedScene is null) return;
+        foreach (var ss in SelectedScene.Scene.Sources)
+        {
+            var palette = _store.Project.Sources.FirstOrDefault(p => p.Id == ss.SourceId);
+            if (palette is null) continue; // dangling ref; cleaned on next save
+            var vm = new SceneSourceViewModel(ss, palette);
+            vm.ToggleCommand = new RelayCommand(() => Mutate(() =>
+            {
+                ss.Enabled = !ss.Enabled;
+                _store.SaveScene(SelectedScene.Scene);
+                vm.Refresh();
+            }));
+            vm.RemoveCommand = new RelayCommand(() => Mutate(() =>
+            {
+                SelectedScene.Scene.Sources.Remove(ss);
+                _store.SaveScene(SelectedScene.Scene);
+                RefreshSceneSources();
+            }));
+            SceneSources.Add(vm);
+        }
+        Raise(nameof(AvailablePaletteSources));
+        Raise(nameof(NextTakeText));
+        ((RelayCommand)AddSceneSourceCommand).RaiseCanExecuteChanged();
+    }
+
+    /// <summary>Palette entries not yet assigned to the selected scene.</summary>
+    public IReadOnlyList<PaletteSourceViewModel> AvailablePaletteSources =>
+        _store is null || SelectedScene is null
+            ? []
+            : PaletteSources
+                .Where(p => SelectedScene.Scene.Sources.All(s => s.SourceId != p.Source.Id))
+                .ToList();
+
+    private PaletteSourceViewModel? _selectedPaletteSourceToAdd;
+    public PaletteSourceViewModel? SelectedPaletteSourceToAdd
+    {
+        get => _selectedPaletteSourceToAdd;
+        set
+        {
+            SetField(ref _selectedPaletteSourceToAdd, value);
+            ((RelayCommand)AddSceneSourceCommand).RaiseCanExecuteChanged();
+        }
+    }
+
+    private void AddSceneSource()
+    {
+        if (_store is null || SelectedScene is null || SelectedPaletteSourceToAdd is null) return;
+        var palette = SelectedPaletteSourceToAdd.Source;
+        // New video sources land as a PiP; audio is full-frame (ignored for audio).
+        var videoCount = SelectedScene.Scene.Sources.Count(s =>
+            _store.Project.Sources.FirstOrDefault(p => p.Id == s.SourceId)?.Kind.IsVideo() == true);
+        var layout = palette.Kind.IsVideo()
+            ? (0.72, 0.70 - 0.28 * (videoCount % 3), 0.26, 0.26)
+            : (0.0, 0.0, 1.0, 1.0);
+        SelectedScene.Scene.Sources.Add(new SceneSource
+        {
+            SourceId = palette.Id,
+            X = layout.Item1, Y = layout.Item2, Width = layout.Item3, Height = layout.Item4,
+        });
+        _store.SaveScene(SelectedScene.Scene);
+        Mutate(RefreshSceneSources);
+    }
+
+    public string NextTakeText
+    {
+        get
+        {
+            if (SelectedScene is null) return "";
+            var on = SelectedScene.Scene.Sources.Count(s => s.Enabled);
+            return $"Next: Take {Takes.Count + 1:D2} · {on} source{(on == 1 ? "" : "s")} on";
+        }
+    }
+
+    private void DeleteTakeRow(TakeRow row)
+    {
+        if (_store is null || SelectedScene is null) return;
+        var label = row.DisplayName;
+        _store.DeleteTake(SelectedScene.Scene.Id, row.Take);
+        RefreshTakes();
+        Status = $"Deleted {label}";
+    }
+
+    private void ToggleFavoriteRow(TakeRow row)
+    {
+        if (_store is null || SelectedScene is null) return;
+        var scene = SelectedScene.Scene;
+        var id = row.Take.Id;
+        scene.FavoriteTakeId = scene.FavoriteTakeId == id ? null : id;
+        _store.SaveScene(scene);
+        RefreshTakes();
     }
 
     private void DeleteTake()
     {
-        if (_store is null || SelectedScene is null || SelectedTake is null) return;
-        var id = SelectedTake.Take.Id;
-        _store.DeleteTake(SelectedScene.Scene.Id, SelectedTake.Take);
-        RefreshTakes();
-        Status = $"Deleted take {id}";
+        if (SelectedTake is not null) Mutate(() => DeleteTakeRow(SelectedTake));
     }
 
     private void ToggleFavorite()
     {
-        if (_store is null || SelectedScene is null || SelectedTake is null) return;
-        var scene = SelectedScene.Scene;
-        var id = SelectedTake.Take.Id;
-        scene.FavoriteTakeId = scene.FavoriteTakeId == id ? null : id;
-        _store.SaveScene(scene);
-        RefreshTakes();
+        if (SelectedTake is not null) Mutate(() => ToggleFavoriteRow(SelectedTake));
+    }
+
+    // ----- palette -----
+
+    private async void AddPaletteSourceAsync()
+    {
+        if (_store is null) return;
+        if (Avalonia.Application.Current?.ApplicationLifetime
+            is not IClassicDesktopStyleApplicationLifetime desktop) return;
+        var dialog = new AddSourceWindow();
+        var result = await dialog.ShowDialog<ProjectSource?>(desktop.MainWindow!);
+        if (result is null) return;
+        _store.Project.Sources.Add(result);
+        _store.SaveProject();
+        Mutate(ReloadPalette);
+        Status = $"Added source \"{result.Label}\"";
+    }
+
+    private void DeletePaletteSource(PaletteSourceViewModel vm)
+    {
+        if (_store is null) return;
+        var id = vm.Source.Id;
+        _store.Project.Sources.RemoveAll(p => p.Id == id);
+        foreach (var scene in _store.LoadScenes())
+        {
+            var removed = scene.Sources.RemoveAll(s => s.SourceId == id);
+            if (removed > 0) _store.SaveScene(scene);
+        }
+        _store.SaveProject();
+        ReloadPalette();
+        RefreshSceneSources();
+        Status = $"Deleted source \"{vm.Label}\"";
     }
 
     public bool IsFavorite =>

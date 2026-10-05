@@ -1,7 +1,26 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="CaptureSpike.App.MainWindow"
-        Title="CaptureSpike" Width="1120" Height="700" MinWidth="900" MinHeight="560">
+        Title="CaptureSpike" Width="1180" Height="720" MinWidth="960" MinHeight="600">
+  <Window.Styles>
+    <Style Selector="Border.badge">
+      <Setter Property="CornerRadius" Value="3" />
+      <Setter Property="Padding" Value="5,1" />
+      <Setter Property="Background" Value="#3d3d3d" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.badge > TextBlock">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontFamily" Value="Monospace" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.plain">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="2" />
+    </Style>
+  </Window.Styles>
+
   <DockPanel>
     <Menu DockPanel.Dock="Top">
       <MenuItem Header="_File">
@@ -14,35 +33,67 @@
       <TextBlock Text="{Binding Status}" FontSize="12" Opacity="0.8" />
     </Border>
 
-    <Grid ColumnDefinitions="250,*,320" Margin="8">
-      <!-- Scenes -->
-      <DockPanel Grid.Column="0" Margin="0,0,8,0">
-        <TextBlock DockPanel.Dock="Top" Text="Scenes" FontWeight="Bold" Margin="0,0,0,4" />
-        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">
-          <Button Content="Add" Command="{Binding AddSceneCommand}" />
-          <Button Content="↑" Command="{Binding MoveSceneUpCommand}" />
-          <Button Content="↓" Command="{Binding MoveSceneDownCommand}" />
-          <Button Content="Delete" Command="{Binding DeleteSceneCommand}" />
-        </StackPanel>
-        <ListBox ItemsSource="{Binding Scenes}" SelectedItem="{Binding SelectedScene}">
-          <ListBox.ItemTemplate>
-            <DataTemplate>
-              <TextBlock Text="{Binding DisplayName}" />
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
-      </DockPanel>
+    <Grid ColumnDefinitions="260,*,340" Margin="8">
+      <!-- Scenes + source palette -->
+      <Grid Grid.Column="0" Margin="0,0,8,0" RowDefinitions="2*,8,1*">
+        <DockPanel Grid.Row="0">
+          <TextBlock DockPanel.Dock="Top" Text="Scenes" FontWeight="Bold" Margin="0,0,0,4" />
+          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">
+            <Button Content="Add" Command="{Binding AddSceneCommand}" />
+            <Button Content="↑" Command="{Binding MoveSceneUpCommand}" />
+            <Button Content="↓" Command="{Binding MoveSceneDownCommand}" />
+            <Button Content="Delete" Command="{Binding DeleteSceneCommand}" />
+          </StackPanel>
+          <ListBox ItemsSource="{Binding Scenes}" SelectedItem="{Binding SelectedScene}">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <DockPanel>
+                  <Border DockPanel.Dock="Right" Classes="badge">
+                    <TextBlock Text="{Binding TakeCount}" />
+                  </Border>
+                  <TextBlock Text="{Binding DisplayName}" VerticalAlignment="Center" />
+                </DockPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+
+        <DockPanel Grid.Row="2">
+          <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
+            <Button DockPanel.Dock="Right" Content="+" Command="{Binding AddPaletteSourceCommand}"
+                    ToolTip.Tip="Add a source to the palette" />
+            <TextBlock Text="Sources" FontWeight="Bold" VerticalAlignment="Center" />
+          </DockPanel>
+          <ListBox ItemsSource="{Binding PaletteSources}">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <DockPanel>
+                  <Button DockPanel.Dock="Right" Classes="plain" Content="×"
+                          Command="{Binding DeleteCommand}"
+                          ToolTip.Tip="Delete from palette" />
+                  <Border Classes="badge">
+                    <TextBlock Text="{Binding Badge}" />
+                  </Border>
+                  <TextBlock Text="{Binding Label}" VerticalAlignment="Center" Margin="6,0,0,0" />
+                </DockPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Grid>
 
       <!-- Preview + record -->
       <DockPanel Grid.Column="1" Margin="0,0,8,0">
         <TextBlock DockPanel.Dock="Top" Text="Preview" FontWeight="Bold" Margin="0,0,0,4" />
-        <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,8,0,0">
+        <StackPanel DockPanel.Dock="Bottom" Spacing="6" Margin="0,8,0,0">
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="12">
             <Button Content="{Binding RecordButtonText}" Command="{Binding ToggleRecordCommand}"
                     FontSize="16" />
             <TextBlock Text="{Binding RecordingElapsed}" FontSize="16"
                        VerticalAlignment="Center" FontFamily="Monospace" />
           </StackPanel>
+          <TextBlock Text="{Binding NextTakeText}" FontSize="12" Opacity="0.6"
+                     HorizontalAlignment="Center" />
           <TextBlock Text="{Binding SelectedScene.Notes}" TextWrapping="Wrap" Opacity="0.7"
                      FontStyle="Italic" />
         </StackPanel>
@@ -54,23 +105,99 @@
 
       <!-- Scene details + takes -->
       <DockPanel Grid.Column="2">
-        <TextBlock DockPanel.Dock="Top" Text="Scene" FontWeight="Bold" Margin="0,0,0,4" />
-        <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
+        <TextBlock DockPanel.Dock="Top" Text="{Binding SceneHeaderText}"
+                   FontWeight="Bold" Margin="0,0,0,4" />
+        <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,4">
           <TextBlock Text="Title" FontSize="12" Opacity="0.7" />
           <TextBox Text="{Binding SelectedScene.Title, Mode=TwoWay}" />
-          <TextBlock Text="Notes (teleprompter)" FontSize="12" Opacity="0.7" />
+        </StackPanel>
+
+        <TextBlock DockPanel.Dock="Top" Text="Sources in this scene"
+                   FontSize="12" Opacity="0.7" Margin="0,4,0,4" />
+        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
+          <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddSceneSourceCommand}" />
+          <ComboBox ItemsSource="{Binding AvailablePaletteSources}"
+                    SelectedItem="{Binding SelectedPaletteSourceToAdd}"
+                    HorizontalAlignment="Stretch" Margin="0,0,4,0"
+                    PlaceholderText="Add a source…">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <Border Classes="badge">
+                    <TextBlock Text="{Binding Badge}" />
+                  </Border>
+                  <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                </StackPanel>
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+        </DockPanel>
+        <ListBox DockPanel.Dock="Top" ItemsSource="{Binding SceneSources}" MaxHeight="150">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <DockPanel>
+                <Button DockPanel.Dock="Right" Classes="plain" Content="×"
+                        Command="{Binding RemoveCommand}"
+                        ToolTip.Tip="Take out of this scene" />
+                <Button Command="{Binding ToggleCommand}" Classes="plain"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                        ToolTip.Tip="Click to turn off for the next take">
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock Text="{Binding Dot}" VerticalAlignment="Center" />
+                    <Border Classes="badge">
+                      <TextBlock Text="{Binding Badge}" />
+                    </Border>
+                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                  </StackPanel>
+                </Button>
+              </DockPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock DockPanel.Dock="Top" FontSize="11" Opacity="0.5" TextWrapping="Wrap"
+                   Margin="0,0,0,8"
+                   Text="Click a source to turn it off for the next take. × takes it out of this scene." />
+
+        <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
+          <TextBlock Text="Script and notes" FontSize="12" Opacity="0.7" />
           <TextBox Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
-                   AcceptsReturn="True" Height="90" TextWrapping="Wrap" />
+                   AcceptsReturn="True" Height="80" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding SelectedScene.WordCountText}" FontSize="11" Opacity="0.6" />
         </StackPanel>
+
         <TextBlock DockPanel.Dock="Top" Text="Takes" FontWeight="Bold" Margin="0,0,0,4" />
-        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">
-          <Button Content="★ Favorite" Command="{Binding ToggleFavoriteCommand}" />
-          <Button Content="Delete Take" Command="{Binding DeleteTakeCommand}" />
-        </StackPanel>
         <ListBox ItemsSource="{Binding Takes}" SelectedItem="{Binding SelectedTake}">
           <ListBox.ItemTemplate>
             <DataTemplate>
-              <TextBlock Text="{Binding Display}" />
+              <DockPanel>
+                <Button DockPanel.Dock="Left" Classes="plain" Content="{Binding StarText}"
+                        Command="{Binding ToggleFavoriteCommand}" FontSize="14"
+                        ToolTip.Tip="Mark as favorite" />
+                <Button DockPanel.Dock="Right" Classes="plain" Content="🗑"
+                        Command="{Binding DeleteCommand}"
+                        ToolTip.Tip="Delete take" />
+                <StackPanel Margin="4,0" Spacing="2">
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" />
+                    <TextBlock Text="{Binding Duration}" Opacity="0.6"
+                               VerticalAlignment="Center" />
+                  </StackPanel>
+                  <ItemsControl ItemsSource="{Binding Badges}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <StackPanel Orientation="Horizontal" Spacing="4" />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border Classes="badge">
+                          <TextBlock Text="{Binding}" />
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </DockPanel>
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>

@@ -10,15 +10,27 @@ public sealed class FilterGraphBuilderTests
 {
     private static (Project, Scene, Take) SampleTake()
     {
-        var project = new Project { OutputWidth = 1920, OutputHeight = 1080, Fps = 30 };
+        var project = new Project
+        {
+            OutputWidth = 1920,
+            OutputHeight = 1080,
+            Fps = 30,
+            Sources =
+            [
+                new ProjectSource { Id = "screen", Kind = SourceKind.Screen, Label = "Screen" },
+                new ProjectSource { Id = "cam", Kind = SourceKind.Webcam, Label = "Webcam" },
+                new ProjectSource { Id = "mic", Kind = SourceKind.Microphone, Label = "Mic" },
+                new ProjectSource { Id = "sys", Kind = SourceKind.SystemAudio, Label = "System" },
+            ],
+        };
         var scene = new Scene
         {
             Id = "s1",
             Title = "Intro",
             Sources =
             [
-                new SceneSource { Id = "screen", Kind = SourceKind.Screen, X = 0, Y = 0, Width = 1, Height = 1 },
-                new SceneSource { Id = "cam", Kind = SourceKind.Webcam, X = 0.72, Y = 0.70, Width = 0.26, Height = 0.26 },
+                new SceneSource { SourceId = "screen", X = 0, Y = 0, Width = 1, Height = 1 },
+                new SceneSource { SourceId = "cam", X = 0.72, Y = 0.70, Width = 0.26, Height = 0.26 },
             ],
         };
         var take = new Take

@@ -1,0 +1,20 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CaptureSpike.App.AddSourceWindow"
+        Title="Add Source" Width="340" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" CanResize="False">
+  <StackPanel Margin="16" Spacing="8">
+    <TextBlock Text="Kind" FontSize="12" Opacity="0.7" />
+    <ComboBox x:Name="KindBox" HorizontalAlignment="Stretch" />
+    <TextBlock Text="Label" FontSize="12" Opacity="0.7" />
+    <TextBox x:Name="LabelBox" />
+    <TextBlock Text="Device (optional — blank means the default device)"
+               FontSize="12" Opacity="0.7" />
+    <TextBox x:Name="DeviceBox" Watermark="default" />
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                Spacing="8" Margin="0,8,0,0">
+      <Button Content="Cancel" Click="OnCancel" />
+      <Button Content="Add" Click="OnAdd" />
+    </StackPanel>
+  </StackPanel>
+</Window>

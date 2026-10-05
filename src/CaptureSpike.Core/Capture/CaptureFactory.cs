@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 namespace CaptureSpike.Core.Capture;
 
 /// <summary>
-/// Builds one <see cref="ISourceCapturer"/> per scene source for the current
+/// Builds one <see cref="ISourceCapturer"/> per palette source for the current
 /// OS. Set CAPTURESPIKE_SYNTHETIC=1 to record generated test signals instead
 /// of real devices (for headless CI/dev).
 /// </summary>
@@ -13,7 +13,7 @@ public static class CaptureFactory
     public static bool Synthetic =>
         Environment.GetEnvironmentVariable("CAPTURESPIKE_SYNTHETIC") == "1";
 
-    public static ISourceCapturer Create(Project project, SceneSource source, string outputFile, string ffmpeg)
+    public static ISourceCapturer Create(Project project, ProjectSource source, string outputFile, string ffmpeg)
     {
         if (Synthetic)
             return new FfmpegCapturer(source.Id, source.Kind, outputFile, ffmpeg, SyntheticArgs(project, source, outputFile));
@@ -39,7 +39,7 @@ public static class CaptureFactory
     private static List<string> AudioOutArgs(string outputFile) =>
         new() { "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", "-y", outputFile };
 
-    private static List<string> SyntheticArgs(Project project, SceneSource source, string outputFile)
+    private static List<string> SyntheticArgs(Project project, ProjectSource source, string outputFile)
     {
         var args = BaseArgs();
         if (source.Kind.IsVideo())
@@ -58,7 +58,7 @@ public static class CaptureFactory
 
     // ----- Linux (ffmpeg everywhere) -----
 
-    private static ISourceCapturer CreateLinux(Project project, SceneSource source, string outputFile, string ffmpeg)
+    private static ISourceCapturer CreateLinux(Project project, ProjectSource source, string outputFile, string ffmpeg)
     {
         var args = BaseArgs();
         switch (source.Kind)
@@ -113,7 +113,7 @@ public static class CaptureFactory
 
     // ----- Windows (ffmpeg video, NAudio audio) -----
 
-    private static ISourceCapturer CreateWindows(Project project, SceneSource source, string outputFile, string ffmpeg)
+    private static ISourceCapturer CreateWindows(Project project, ProjectSource source, string outputFile, string ffmpeg)
     {
 #if WINDOWS
         if (source.Kind is SourceKind.Microphone or SourceKind.SystemAudio)

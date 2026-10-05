@@ -29,11 +29,15 @@ public sealed class Recorder : IRecorder
         var started = new List<ISourceCapturer>();
         try
         {
-            foreach (var source in enabled)
+            foreach (var sceneSource in enabled)
             {
-                var ext = source.Kind.IsVideo() ? "mp4" : "wav";
+                var def = project.Sources.FirstOrDefault(p => p.Id == sceneSource.SourceId)
+                    ?? throw new InvalidOperationException(
+                        $"Scene '{scene.Title}' references a source that no longer exists. " +
+                        "Remove it from the scene and try again.");
+                var ext = def.Kind.IsVideo() ? "mp4" : "wav";
                 var capturer = CaptureFactory.Create(
-                    project, source, Path.Combine(takeDir, $"{source.Id}.{ext}"), ffmpeg);
+                    project, def, Path.Combine(takeDir, $"{def.Id}.{ext}"), ffmpeg);
                 await capturer.StartAsync(t0, ct).ConfigureAwait(false);
                 started.Add(capturer);
             }

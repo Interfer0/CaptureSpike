@@ -44,7 +44,7 @@ public static class FilterGraphBuilder
             for (var i = 1; i < videos.Count; i++)
             {
                 var v = videos[i];
-                var layout = LayoutFor(scene, v.Id, i);
+                var layout = LayoutFor(project, scene, v.Id, i);
                 var w = (int)Math.Round(layout.Width * project.OutputWidth);
                 var h = (int)Math.Round(layout.Height * project.OutputHeight);
                 var x = (int)Math.Round(layout.X * project.OutputWidth);
@@ -81,14 +81,14 @@ public static class FilterGraphBuilder
     private static string Sec(double ms) =>
         (ms / 1000.0).ToString("F3", CultureInfo.InvariantCulture);
 
-    private static (double X, double Y, double Width, double Height) LayoutFor(Scene scene, string sourceId, int videoOrdinal)
+    private static (double X, double Y, double Width, double Height) LayoutFor(
+        Project project, Scene scene, string takeSourceId, int videoOrdinal)
     {
-        var src = scene.Sources.FirstOrDefault(s => s.Id == sourceId && s.Kind.IsVideo());
-        if (src is not null) return (src.X, src.Y, src.Width, src.Height);
+        var sceneRef = scene.Sources.FirstOrDefault(s => s.SourceId == takeSourceId);
+        var palette = project.Sources.FirstOrDefault(p => p.Id == takeSourceId);
+        if (sceneRef is not null && palette is not null && palette.Kind.IsVideo())
+            return (sceneRef.X, sceneRef.Y, sceneRef.Width, sceneRef.Height);
         // Take has a video source the scene doesn't know: stack as PiP.
-        return videoOrdinal switch
-        {
-            _ => (0.72, 0.70 - 0.28 * ((videoOrdinal - 1) % 3), 0.26, 0.26),
-        };
+        return (0.72, 0.70 - 0.28 * ((videoOrdinal - 1) % 3), 0.26, 0.26);
     }
 }
