@@ -22,6 +22,11 @@ public partial class MainWindow : Window
                 if (DataContext is MainViewModel vm) vm.VideoHandle = nint.Zero;
             };
         }
+
+        Opened += (_, _) =>
+        {
+            if (DataContext is MainViewModel vm) vm.StartupAsync();
+        };
     }
 
     private void OnSeekPointerPressed(object? sender, PointerPressedEventArgs e)

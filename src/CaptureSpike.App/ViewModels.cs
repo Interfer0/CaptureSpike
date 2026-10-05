@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Windows.Input;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Platform.Storage;
@@ -45,28 +46,56 @@ internal static class AppSettings
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "CaptureSpike", "settings.json");
 
+    private sealed class SettingsData
+    {
+        [JsonPropertyName("lastProjectDir")]
+        public string? LastProjectDir { get; set; }
+        [JsonPropertyName("projectsDir")]
+        public string? ProjectsDir { get; set; }
+    }
+
+    private static SettingsData Load()
+    {
+        try
+        {
+            if (File.Exists(Path_))
+                return JsonSerializer.Deserialize<SettingsData>(File.ReadAllText(Path_))
+                    ?? new SettingsData();
+        }
+        catch { }
+        return new SettingsData();
+    }
+
+    private static void Save(SettingsData data)
+    {
+        try
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path_)!);
+            File.WriteAllText(Path_, JsonSerializer.Serialize(data));
+        }
+        catch { /* settings are best-effort */ }
+    }
+
     public static string? LastProjectDir
     {
-        get
-        {
-            try
-            {
-                if (!File.Exists(Path_)) return null;
-                using var doc = JsonDocument.Parse(File.ReadAllText(Path_));
-                return doc.RootElement.TryGetProperty("lastProjectDir", out var p)
-                    ? p.GetString() : null;
-            }
-            catch { return null; }
-        }
-        set
-        {
-            try
-            {
-                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path_)!);
-                File.WriteAllText(Path_, JsonSerializer.Serialize(new { lastProjectDir = value }));
-            }
-            catch { /* settings are best-effort */ }
-        }
+        get => Load().LastProjectDir;
+        set { var d = Load(); d.LastProjectDir = value; Save(d); }
+    }
+
+    /// <summary>Library folder containing one folder per project.</summary>
+    public static string ProjectsDir
+    {
+        get => Load().ProjectsDir ?? DefaultProjectsDir();
+        set { var d = Load(); d.ProjectsDir = value; Save(d); }
+    }
+
+    public static string DefaultProjectsDir()
+    {
+        var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+        if (string.IsNullOrWhiteSpace(videos))
+            videos = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Videos");
+        return Path.Combine(videos, "CaptureSpike");
     }
 }
 
@@ -430,6 +459,8 @@ public sealed class MainViewModel : ObservableObject
 
     public ICommand NewProjectCommand { get; }
     public ICommand OpenProjectCommand { get; }
+    public ICommand ProjectsCommand { get; }
+    public ICommand SettingsCommand { get; }
     public ICommand AddSceneCommand { get; }
     public ICommand DeleteSceneCommand { get; }
     public ICommand MoveSceneUpCommand { get; }
@@ -457,8 +488,10 @@ public sealed class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
-        NewProjectCommand = new RelayCommand(NewProject, () => !IsRecording);
+        NewProjectCommand = new RelayCommand(() => NewProject(), () => !IsRecording);
         OpenProjectCommand = new RelayCommand(OpenProjectAsync, () => !IsRecording);
+        ProjectsCommand = new RelayCommand(() => ShowProjectBrowser(), () => !IsRecording);
+        SettingsCommand = new RelayCommand(ShowSettings);
         AddSceneCommand = new RelayCommand(() => Mutate(AddScene), () => HasProject);
         DeleteSceneCommand = new RelayCommand(() => Mutate(DeleteScene), () => HasProject && SelectedScene is not null);
         MoveSceneUpCommand = new RelayCommand(() => Mutate(() => MoveScene(-1)), () => HasProject && SelectedScene is not null);
@@ -470,8 +503,6 @@ public sealed class MainViewModel : ObservableObject
         _playerTimer.Tick += (_, _) => UpdatePlayerState();
         PlayerPlayPauseCommand = new RelayCommand(TogglePlayerPlayPauseAsync,
             () => _player is not null && !IsRecording);
-        ExportCommand = new RelayCommand(ShowExportDialog,
-            () => HasProject && !IsRecording);
         foreach (var kind in Enum.GetValues<SourceKind>())
         {
             var chip = new TakeFilterChip(kind);
@@ -485,12 +516,46 @@ public sealed class MainViewModel : ObservableObject
         AddPaletteSourceCommand = new RelayCommand(AddPaletteSourceAsync, () => HasProject && !IsRecording);
         AddSceneSourceCommand = new RelayCommand(AddSceneSource,
             () => HasProject && !IsRecording && SelectedScene is not null && SelectedPaletteSourceToAdd is not null);
+    }
 
+    /// <summary>
+    /// Called by MainWindow once it is shown. Opens the last project, then the
+    /// project browser; falls back to a starter project if nothing is open.
+    /// </summary>
+    public async void StartupAsync()
+    {
         var last = AppSettings.LastProjectDir;
         if (last is not null && Directory.Exists(last))
             OpenProject(last);
-        else
+        await ShowProjectBrowser();
+        if (_store is null)
             NewProject(); // first run: create a starter project so the UI isn't empty
+    }
+
+    public async Task ShowProjectBrowser()
+    {
+        if (Avalonia.Application.Current?.ApplicationLifetime
+            is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow is null) return;
+        if (IsRecording) return;
+        var win = new ProjectBrowserWindow(OpenProjectDir, name => NewProject(name));
+        await win.ShowDialog(desktop.MainWindow);
+    }
+
+    public void OpenProjectDir(string dir)
+    {
+        if (_store is not null && string.Equals(_store.ProjectDir, dir, StringComparison.OrdinalIgnoreCase))
+            return;
+        OpenProject(dir);
+    }
+
+    private void ShowSettings()
+    {
+        if (Avalonia.Application.Current?.ApplicationLifetime
+            is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow is null) return;
+        var win = new SettingsWindow();
+        _ = win.ShowDialog(desktop.MainWindow);
     }
 
     private void Mutate(Action action)
@@ -499,8 +564,8 @@ public sealed class MainViewModel : ObservableObject
         foreach (var c in new[] { AddSceneCommand, DeleteSceneCommand, MoveSceneUpCommand,
                                   MoveSceneDownCommand, DeleteTakeCommand, ToggleFavoriteCommand,
                                   ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
-                                  AddPaletteSourceCommand, AddSceneSourceCommand,
-                                  PlayerPlayPauseCommand, ExportCommand }
+                                  ProjectsCommand, AddPaletteSourceCommand, AddSceneSourceCommand,
+                                  PlayerPlayPauseCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
         Raise(nameof(HasProject));
@@ -508,20 +573,22 @@ public sealed class MainViewModel : ObservableObject
 
     // ----- projects -----
 
-    private string DefaultProjectsDir()
+    private static string SanitizeProjectName(string name)
     {
-        var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-        if (string.IsNullOrWhiteSpace(videos))
-            videos = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Videos");
-        return Path.Combine(videos, "CaptureSpike");
+        var clean = string.Concat(name.Trim().Select(c =>
+            Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+        return string.IsNullOrWhiteSpace(clean) ? "Untitled Tutorial" : clean;
     }
 
-    private void NewProject()
+    public void NewProject(string? name = null)
     {
-        var dir = Path.Combine(DefaultProjectsDir(),
-            $"Tutorial-{DateTime.Now:yyyyMMdd-HHmmss}.csp");
-        var store = ProjectStore.Create(dir, "Untitled Tutorial");
+        var title = string.IsNullOrWhiteSpace(name) ? "Untitled Tutorial" : name.Trim();
+        var folder = SanitizeProjectName(title);
+        var dir = Path.Combine(AppSettings.ProjectsDir, folder + ".csp");
+        if (Directory.Exists(dir))
+            dir = Path.Combine(AppSettings.ProjectsDir,
+                $"{folder}-{DateTime.Now:yyyyMMdd-HHmmss}.csp");
+        var store = ProjectStore.Create(dir, title);
         store.AddScene("Intro");
         store.AddScene("Demo");
         OpenProject(dir);
@@ -634,9 +701,9 @@ public sealed class MainViewModel : ObservableObject
 
     private int _nextTakeNumber = 1;
 
-    private void RefreshTakes(Take? selectTake = null)
+    private void RefreshTakes(Take? selectTake = null, string? selectId = null)
     {
-        var selectedId = selectTake?.Id ?? SelectedTake?.Take.Id;
+        var selectedId = selectTake?.Id ?? selectId ?? SelectedTake?.Take.Id;
         // Don't let the refresh itself unload the player; only a real
         // selection change does that.
         _selectedTake = null;
@@ -751,14 +818,51 @@ public sealed class MainViewModel : ObservableObject
         Status = $"Deleted {label}";
     }
 
-    private void ToggleFavoriteRow(TakeRow row)
+    private const string FavoriteSuffix = "-favorite";
+
+    private static string FavoriteId(string takeId, bool favorite)
+    {
+        var baseId = takeId.EndsWith(FavoriteSuffix, StringComparison.Ordinal)
+            ? takeId[..^FavoriteSuffix.Length] : takeId;
+        return favorite ? baseId + FavoriteSuffix : baseId;
+    }
+
+    private async void ToggleFavoriteRow(TakeRow row)
     {
         if (_store is null || SelectedScene is null) return;
         var scene = SelectedScene.Scene;
         var id = row.Take.Id;
-        scene.FavoriteTakeId = scene.FavoriteTakeId == id ? null : id;
+        var wasFav = scene.FavoriteTakeId == id;
+
+        // The take's folder is about to move; don't leave the player on it.
+        if (_playerTake?.Id == id || (_playerTake is not null && scene.FavoriteTakeId == _playerTake.Id))
+            await UnloadPlayerAsync();
+
+        string? selectId = null;
+        if (!wasFav && scene.FavoriteTakeId is not null)
+        {
+            // Switching favorites: strip the suffix off the old one.
+            var oldFav = scene.FavoriteTakeId;
+            var unmarked = _store.RenameTake(scene.Id, oldFav, FavoriteId(oldFav, false));
+            if (SelectedTake?.Take.Id == oldFav) selectId = unmarked;
+        }
+
+        string newId;
+        if (wasFav)
+        {
+            newId = _store.RenameTake(scene.Id, id, FavoriteId(id, false));
+            scene.FavoriteTakeId = null;
+        }
+        else
+        {
+            newId = _store.RenameTake(scene.Id, id, FavoriteId(id, true));
+            scene.FavoriteTakeId = newId;
+        }
+        if (SelectedTake?.Take.Id == id) selectId = newId;
+
         _store.SaveScene(scene);
-        RefreshTakes();
+        RefreshTakes(selectId: selectId);
+        Status = wasFav ? $"Unmarked {row.DisplayName} as favorite" : $"Marked {row.DisplayName} as favorite";
     }
 
     private void OpenTakeFolder(TakeRow row)
@@ -974,7 +1078,7 @@ public sealed class MainViewModel : ObservableObject
         Raise(nameof(RecordButtonText));
         if (!IsRecording) RecordingElapsed = "";
         foreach (var c in new[] { ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
-                                  PlayerPlayPauseCommand, ExportCommand }
+                                  ProjectsCommand, PlayerPlayPauseCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
     }
@@ -1048,7 +1152,6 @@ public sealed class MainViewModel : ObservableObject
 
     public string PlayerPlayPauseText => IsPlayerPlaying ? "⏸ Pause" : "▶ Play";
     public ICommand PlayerPlayPauseCommand { get; }
-    public ICommand ExportCommand { get; }
 
     private async void LoadPlayerTake(Take take)
     {
@@ -1205,25 +1308,4 @@ public sealed class MainViewModel : ObservableObject
         catch (Exception ex) { Status = $"Mute: {ex.Message}"; }
     }
 
-    // ----- export (shell for M4) -----
-
-    private void ShowExportDialog()
-    {
-        if (_store is null) return;
-        if (Avalonia.Application.Current?.ApplicationLifetime
-            is not IClassicDesktopStyleApplicationLifetime desktop) return;
-        var win = new ExportWindow();
-        var lines = new List<string>();
-        foreach (var scene in _store.LoadScenes())
-        {
-            var takes = _store.LoadTakes(scene.Id).ToList();
-            var favIndex = takes.FindIndex(t => t.Id == scene.FavoriteTakeId);
-            var favText = favIndex < 0
-                ? "no favorite take"
-                : $"★ Take {favIndex + 1:D2}";
-            lines.Add($"{scene.Order + 1:D2} {scene.Title} — {favText}");
-        }
-        win.SetScenes(lines);
-        win.ShowDialog(desktop.MainWindow!);
-    }
 }

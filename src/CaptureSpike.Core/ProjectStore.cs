@@ -226,4 +226,33 @@ public sealed class ProjectStore
 
     public string TakeDir(string sceneId, string takeId) =>
         Path.Combine(TakesDir(sceneId), takeId);
+
+    /// <summary>
+    /// Renames a take's folder (used for the "-favorite" suffix). Returns the
+    /// id actually in effect: if the move fails the old id is returned.
+    /// </summary>
+    public string RenameTake(string sceneId, string takeId, string newId)
+    {
+        if (takeId == newId) return takeId;
+        var from = TakeDir(sceneId, takeId);
+        var to = TakeDir(sceneId, newId);
+        try
+        {
+            if (!Directory.Exists(from) || Directory.Exists(to)) return takeId;
+            Directory.Move(from, to);
+            // Keep take.json's Id in sync with the folder name.
+            var take = LoadTake(sceneId, newId);
+            if (take is not null)
+            {
+                take.Id = newId;
+                File.WriteAllText(Path.Combine(to, "take.json"),
+                    JsonSerializer.Serialize(take, Json));
+            }
+            return newId;
+        }
+        catch
+        {
+            return takeId;
+        }
+    }
 }
