@@ -158,6 +158,11 @@ public sealed class Take
 {
     /// <summary>Folder name, e.g. "20261004-223015". Unique within the scene.</summary>
     public string Id { get; set; } = string.Empty;
+    /// <summary>
+    /// Stable per-scene sequence number ("Take 05"). Assigned as max+1 when the
+    /// take is saved, so deleting a take leaves a gap instead of renumbering.
+    /// </summary>
+    public int Number { get; set; }
     public string SceneId { get; set; } = string.Empty;
     public DateTimeOffset StartedAt { get; set; }
     public double DurationSeconds { get; set; }

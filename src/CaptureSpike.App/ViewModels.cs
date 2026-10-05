@@ -78,7 +78,7 @@ public sealed class SceneViewModel(Scene scene, Action save) : ObservableObject
     public string Title
     {
         get => Scene.Title;
-        set { Scene.Title = value; save(); Raise(); Raise(nameof(SceneHeader)); }
+        set { Scene.Title = value; save(); Raise(); }
     }
 
     public string Notes
@@ -87,7 +87,6 @@ public sealed class SceneViewModel(Scene scene, Action save) : ObservableObject
         set { Scene.Notes = value; save(); Raise(); Raise(nameof(WordCountText)); }
     }
 
-    public string SceneHeader => $"{Scene.Title} · Scene {Scene.Order + 1:D2}";
     public string DisplayName => $"{Scene.Order + 1:D2} {Scene.Title}";
 
     private int _takeCount;
@@ -100,7 +99,6 @@ public sealed class SceneViewModel(Scene scene, Action save) : ObservableObject
     public void RefreshOrder()
     {
         Raise(nameof(DisplayName));
-        Raise(nameof(SceneHeader));
     }
 
     /// <summary>"56 words · about 0:22 spoken" at ~150 wpm.</summary>
@@ -140,6 +138,29 @@ public sealed class SceneSourceViewModel(SceneSource sceneSource, ProjectSource 
     public ICommand RemoveCommand { get; set; } = null!;
 
     public void Refresh() { Raise(nameof(IsEnabled)); Raise(nameof(Dot)); }
+}
+
+/// <summary>A source-kind chip that filters the takes list.</summary>
+public sealed class TakeFilterChip(SourceKind kind) : ObservableObject
+{
+    public SourceKind Kind => kind;
+    public string Badge => kind.Badge();
+
+    private bool _active;
+    public bool IsActive
+    {
+        get => _active;
+        set
+        {
+            if (SetField(ref _active, value))
+                Raise(nameof(ChipOpacity));
+        }
+    }
+
+    public double ChipOpacity => IsActive ? 1.0 : 0.35;
+
+    /// <summary>Assigned by MainViewModel after construction.</summary>
+    public ICommand ToggleCommand { get; set; } = null!;
 }
 
 public sealed class PlayerTrackRow(TakeSource source, string label) : ObservableObject
@@ -189,7 +210,9 @@ public sealed class TakeRow : ObservableObject
     public int Number { get; }
     public bool IsFavorite { get; }
 
-    public string DisplayName => $"Take {Number:D2}";
+    /// <summary>Stable per-scene number; falls back to position for legacy takes.</summary>
+    public int DisplayNumber => Take.Number > 0 ? Take.Number : Number;
+    public string DisplayName => $"Take {DisplayNumber:D2}";
     public string StarText => IsFavorite ? "★" : "☆";
     public IReadOnlyList<string> Badges => Take.Sources.Select(s => s.Kind.Badge()).ToList();
     public string Duration => TimeSpan.FromSeconds(Take.DurationSeconds).ToString(@"m\:ss");
@@ -206,6 +229,7 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<TakeRow> Takes { get; } = new();
     public ObservableCollection<PaletteSourceViewModel> PaletteSources { get; } = new();
     public ObservableCollection<SceneSourceViewModel> SceneSources { get; } = new();
+    public ObservableCollection<TakeFilterChip> TakeFilterChips { get; } = new();
 
     private SceneViewModel? _selectedScene;
     public SceneViewModel? SelectedScene
@@ -217,14 +241,19 @@ public sealed class MainViewModel : ObservableObject
             {
                 RefreshSceneDetails();
                 Raise(nameof(NextTakeText));
-                Raise(nameof(SceneHeaderText));
+                Raise(nameof(SceneNumberText));
+                Raise(nameof(TakeSceneHeader));
                 if (_playerTake is not null && _playerSceneId != value?.Scene.Id)
                     _ = UnloadPlayerAsync();
             }
         }
     }
 
-    public string SceneHeaderText => SelectedScene?.SceneHeader ?? "Scene";
+    public string SceneNumberText =>
+        SelectedScene is null ? "" : $"Scene {SelectedScene.Scene.Order + 1:D2}";
+    public string TakeSceneHeader =>
+        SelectedScene is null ? "" : $"Scene {SelectedScene.Scene.Order + 1:D2} - {SelectedScene.Title}";
+    public string TakeHeaderText => SelectedTake?.DisplayName ?? "No take selected";
 
     private TakeRow? _selectedTake;
     public TakeRow? SelectedTake
@@ -236,6 +265,7 @@ public sealed class MainViewModel : ObservableObject
             if (SetField(ref _selectedTake, value))
             {
                 Raise(nameof(IsFavorite));
+                Raise(nameof(TakeHeaderText));
                 if (value is not null && value.Take.Id != oldId)
                     LoadPlayerTake(value.Take);
                 else if (value is null)
@@ -290,12 +320,22 @@ public sealed class MainViewModel : ObservableObject
         DeleteTakeCommand = new RelayCommand(() => Mutate(DeleteTake), () => HasProject && SelectedTake is not null);
         ToggleFavoriteCommand = new RelayCommand(() => Mutate(ToggleFavorite), () => HasProject && SelectedTake is not null);
         ToggleRecordCommand = new RelayCommand(ToggleRecordAsync,
-            () => HasProject && (IsRecording || SelectedScene is not null));
+            () => HasProject && !_starting && (IsRecording || SelectedScene is not null));
         _playerTimer.Tick += (_, _) => UpdatePlayerState();
         PlayerPlayPauseCommand = new RelayCommand(TogglePlayerPlayPauseAsync,
             () => _player is not null && !IsRecording);
         ExportCommand = new RelayCommand(ShowExportDialog,
             () => HasProject && !IsRecording);
+        foreach (var kind in Enum.GetValues<SourceKind>())
+        {
+            var chip = new TakeFilterChip(kind);
+            chip.ToggleCommand = new RelayCommand(() =>
+            {
+                chip.IsActive = !chip.IsActive;
+                RefreshTakes();
+            });
+            TakeFilterChips.Add(chip);
+        }
         AddPaletteSourceCommand = new RelayCommand(AddPaletteSourceAsync, () => HasProject && !IsRecording);
         AddSceneSourceCommand = new RelayCommand(AddSceneSource,
             () => HasProject && !IsRecording && SelectedScene is not null && SelectedPaletteSourceToAdd is not null);
@@ -430,6 +470,8 @@ public sealed class MainViewModel : ObservableObject
         RefreshSceneSources();
     }
 
+    private int _nextTakeNumber = 1;
+
     private void RefreshTakes(Take? selectTake = null)
     {
         var selectedId = selectTake?.Id ?? SelectedTake?.Take.Id;
@@ -438,12 +480,20 @@ public sealed class MainViewModel : ObservableObject
         _selectedTake = null;
         Takes.Clear();
         Raise(nameof(SelectedTake));
+        Raise(nameof(TakeHeaderText));
         if (_store is null || SelectedScene is null) return;
         var fav = SelectedScene.Scene.FavoriteTakeId;
+        var all = _store.LoadTakes(SelectedScene.Scene.Id);
+        _nextTakeNumber = all.Select(t => t.Number).DefaultIfEmpty(0).Max() + 1;
+        var activeKinds = TakeFilterChips.Where(c => c.IsActive).Select(c => c.Kind).ToHashSet();
         var n = 1;
-        foreach (var t in _store.LoadTakes(SelectedScene.Scene.Id))
+        foreach (var t in all)
+        {
+            if (activeKinds.Count > 0 && !activeKinds.All(k => t.Sources.Any(s => s.Kind == k)))
+                continue;
             Takes.Add(new TakeRow(t, n++, t.Id == fav, ToggleFavoriteRow, DeleteTakeRow));
-        SelectedScene.TakeCount = Takes.Count;
+        }
+        SelectedScene.TakeCount = all.Count;
         SelectedTake = Takes.FirstOrDefault(t => t.Take.Id == selectedId);
         Raise(nameof(NextTakeText));
     }
@@ -521,7 +571,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (SelectedScene is null) return "";
             var on = SelectedScene.Scene.Sources.Count(s => s.Enabled);
-            return $"Next: Take {Takes.Count + 1:D2} · {on} source{(on == 1 ? "" : "s")} on";
+            return $"Next: Take {_nextTakeNumber:D2} · {on} source{(on == 1 ? "" : "s")} on";
         }
     }
 
@@ -597,44 +647,136 @@ public sealed class MainViewModel : ObservableObject
     private async void ToggleRecordAsync()
     {
         if (_store is null) return;
-
         if (_session is not null)
         {
-            var session = _session;
-            _session = null;
-            RaiseRecordingState();
+            await StopRecordingAsync();
+            return;
+        }
+        if (SelectedScene is null) return;
+        await StartRecordingAsync();
+    }
+
+    private static Avalonia.Controls.Window? MainWindow =>
+        (Avalonia.Application.Current?.ApplicationLifetime
+            as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+
+    private bool _starting; // countdown in progress; recorder not yet running
+    private volatile bool _cancelStarting;
+
+    private async Task StartRecordingAsync()
+    {
+        if (_store is null || SelectedScene is null || _session is not null || _starting) return;
+        _starting = true;
+        RaiseRecordingState();
+        var hotkeyInstalled = false;
+        string? hotkeyError = null;
+        try
+        {
+            // The window minimizes during the countdown so it never ends up in
+            // its own screen recording.
+            var window = MainWindow;
+            if (window is not null)
+                window.WindowState = Avalonia.Controls.WindowState.Minimized;
+            RecordingElapsed = "starting…";
+
+            // Install first so F9 already works during the countdown (cancels).
             try
             {
-                var take = await session.StopAsync();
-                await session.DisposeAsync();
-                RefreshTakes(take);
-                Status = $"Take {take.Id} saved — {take.Sources.Count} sources, {take.DurationSeconds:F1}s";
+                await Task.Run(() => StopHotkey.Install(OnStopHotkey));
+                hotkeyInstalled = true;
             }
             catch (Exception ex)
             {
-                Status = $"Stop failed: {ex.Message}";
+                hotkeyError = ex.Message;
             }
+
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            if (_cancelStarting)
+            {
+                _cancelStarting = false;
+                Status = "Recording cancelled.";
+            }
+            else
+            {
+                try
+                {
+                    // Don't let the preview's audio bleed into the new take's mic.
+                    if (_player is not null)
+                    {
+                        try { await _player.PauseAsync(); } catch { }
+                    }
+                    var scene = SelectedScene.Scene;
+                    var takeDir = _store.BeginTake(scene);
+                    var progress = new Progress<TimeSpan>(t => RecordingElapsed = t.ToString(@"m\:ss"));
+                    _session = await RecorderFactory(_store).StartAsync(_store.Project, scene, takeDir, progress);
+                    Status = hotkeyInstalled
+                        ? $"Recording '{scene.Title}' — press F9 to stop"
+                        : $"Recording '{scene.Title}' — F9 unavailable ({hotkeyError}); restore the window and click ■ Stop.";
+                }
+                catch (Exception ex)
+                {
+                    _session = null;
+                    Status = $"Record failed: {ex.Message}";
+                }
+            }
+
+            if (_session is null)
+            {
+                if (hotkeyInstalled)
+                {
+                    try { StopHotkey.Uninstall(); } catch { }
+                }
+                if (window is not null)
+                {
+                    window.WindowState = Avalonia.Controls.WindowState.Normal;
+                    window.Activate();
+                }
+                RecordingElapsed = "";
+            }
+        }
+        finally
+        {
+            _starting = false;
+            RaiseRecordingState();
+        }
+    }
+
+    private void OnStopHotkey()
+    {
+        if (_starting)
+        {
+            _cancelStarting = true;
             return;
         }
+        Avalonia.Threading.Dispatcher.UIThread.Post(async () => await StopRecordingAsync());
+    }
 
-        if (SelectedScene is null) return;
+    private async Task StopRecordingAsync()
+    {
+        var session = _session;
+        if (session is null) return;
+        _session = null;
+        try { StopHotkey.Uninstall(); } catch { }
+        RaiseRecordingState();
         try
         {
-            // Don't let the preview's audio bleed into the new take's mic.
-            if (_player is not null)
-            {
-                try { await _player.PauseAsync(); } catch { }
-            }
-            var scene = SelectedScene.Scene;
-            var takeDir = _store.BeginTake(scene);
-            var progress = new Progress<TimeSpan>(t => RecordingElapsed = t.ToString(@"m\:ss"));
-            _session = await RecorderFactory(_store).StartAsync(_store.Project, scene, takeDir, progress);
-            RaiseRecordingState();
-            Status = $"Recording '{scene.Title}' → {Path.GetFileName(takeDir)}";
+            var take = await session.StopAsync();
+            await session.DisposeAsync();
+            RefreshTakes(take);
+            Status = $"Take {take.Number:D2} saved — {take.Sources.Count} sources, {take.DurationSeconds:F1}s";
         }
         catch (Exception ex)
         {
-            Status = $"Record failed: {ex.Message}";
+            Status = $"Stop failed: {ex.Message}";
+        }
+        finally
+        {
+            var window = MainWindow;
+            if (window is not null)
+            {
+                window.WindowState = Avalonia.Controls.WindowState.Normal;
+                window.Activate();
+            }
         }
     }
 

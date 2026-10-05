@@ -98,6 +98,7 @@ public sealed class RecordingSession : IRecordingSession
         {
             Id = Path.GetFileName(_takeDir),
             SceneId = _scene.Id,
+            Number = _store.LoadTakes(_scene.Id).Select(t => t.Number).DefaultIfEmpty(0).Max() + 1,
             StartedAt = _t0,
             DurationSeconds = (endedAt - _t0).TotalSeconds,
             Sources = _capturers
