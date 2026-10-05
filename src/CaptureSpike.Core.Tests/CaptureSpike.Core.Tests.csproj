@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <!-- xunit v3 (MTP): the test assembly is a console app; run it directly. -->
+    <OutputType>Exe</OutputType>
+    <RootNamespace>CaptureSpike.Core.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- xunit v3 runs on Microsoft Testing Platform: no VSTest adapter needed.
+         Run tests by executing the built test assembly directly. -->
+    <PackageReference Include="xunit.v3" Version="4.0.1" />
+    <ProjectReference Include="..\CaptureSpike.Core\CaptureSpike.Core.csproj" />
+  </ItemGroup>
+
+</Project>

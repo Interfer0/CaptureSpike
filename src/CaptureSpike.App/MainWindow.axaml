@@ -37,8 +37,12 @@
       <DockPanel Grid.Column="1" Margin="0,0,8,0">
         <TextBlock DockPanel.Dock="Top" Text="Preview" FontWeight="Bold" Margin="0,0,0,4" />
         <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,8,0,0">
-          <Button Content="● Record" FontSize="16" HorizontalAlignment="Center"
-                  IsEnabled="False" ToolTip.Tip="Recording arrives in M2" />
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="12">
+            <Button Content="{Binding RecordButtonText}" Command="{Binding ToggleRecordCommand}"
+                    FontSize="16" />
+            <TextBlock Text="{Binding RecordingElapsed}" FontSize="16"
+                       VerticalAlignment="Center" FontFamily="Monospace" />
+          </StackPanel>
           <TextBlock Text="{Binding SelectedScene.Notes}" TextWrapping="Wrap" Opacity="0.7"
                      FontStyle="Italic" />
         </StackPanel>

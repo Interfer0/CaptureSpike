@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/CaptureSpike.App/CaptureSpike.App.csproj" />
+    <Project Path="src/CaptureSpike.Core.Tests/CaptureSpike.Core.Tests.csproj" />
     <Project Path="src/CaptureSpike.Core/CaptureSpike.Core.csproj" />
   </Folder>
 </Solution>

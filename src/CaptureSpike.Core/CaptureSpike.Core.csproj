@@ -1,10 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net10.0;net10.0-windows10.0.19041</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>CaptureSpike.Core</RootNamespace>
+    <!-- Lets the Windows TFM compile on Linux/macOS (compile-only; never run here). -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- WINDOWS is defined only for the Windows TFM, where NAudio.Wasapi is available. -->
+    <DefineConstants Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041'">$(DefineConstants);WINDOWS</DefineConstants>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- NAudio 2.2.1: classic, stable WASAPI API (WasapiCapture/WasapiLoopbackCapture).
+         3.x replaced these with an unverifiable-from-here builder API; revisit when
+         the Windows path can be tested. Windows TFM only. -->
+    <PackageReference Include="NAudio" Version="2.2.1"
+                      Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041'" />
+  </ItemGroup>
 
 </Project>

@@ -6,6 +6,7 @@ using System.Windows.Input;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Platform.Storage;
 using CaptureSpike.Core;
+using CaptureSpike.Core.Capture;
 
 namespace CaptureSpike.App;
 
@@ -147,17 +148,35 @@ public sealed class MainViewModel : ObservableObject
     public ICommand MoveSceneDownCommand { get; }
     public ICommand DeleteTakeCommand { get; }
     public ICommand ToggleFavoriteCommand { get; }
+    public ICommand ToggleRecordCommand { get; }
+
+    /// <summary>Swappable for tests. Defaults to the real ffmpeg/NAudio recorder.</summary>
+    public Func<ProjectStore, IRecorder> RecorderFactory { get; set; } =
+        store => new Recorder(store);
+
+    private IRecordingSession? _session;
+    public bool IsRecording => _session is not null;
+    public string RecordButtonText => IsRecording ? "■ Stop" : "● Record";
+
+    private string _recordingElapsed = "";
+    public string RecordingElapsed
+    {
+        get => _recordingElapsed;
+        set => SetField(ref _recordingElapsed, value);
+    }
 
     public MainViewModel()
     {
-        NewProjectCommand = new RelayCommand(NewProject);
-        OpenProjectCommand = new RelayCommand(OpenProjectAsync);
+        NewProjectCommand = new RelayCommand(NewProject, () => !IsRecording);
+        OpenProjectCommand = new RelayCommand(OpenProjectAsync, () => !IsRecording);
         AddSceneCommand = new RelayCommand(() => Mutate(AddScene), () => HasProject);
         DeleteSceneCommand = new RelayCommand(() => Mutate(DeleteScene), () => HasProject && SelectedScene is not null);
         MoveSceneUpCommand = new RelayCommand(() => Mutate(() => MoveScene(-1)), () => HasProject && SelectedScene is not null);
         MoveSceneDownCommand = new RelayCommand(() => Mutate(() => MoveScene(1)), () => HasProject && SelectedScene is not null);
         DeleteTakeCommand = new RelayCommand(() => Mutate(DeleteTake), () => HasProject && SelectedTake is not null);
         ToggleFavoriteCommand = new RelayCommand(() => Mutate(ToggleFavorite), () => HasProject && SelectedTake is not null);
+        ToggleRecordCommand = new RelayCommand(ToggleRecordAsync,
+            () => HasProject && (IsRecording || SelectedScene is not null));
 
         var last = AppSettings.LastProjectDir;
         if (last is not null && Directory.Exists(last))
@@ -170,7 +189,8 @@ public sealed class MainViewModel : ObservableObject
     {
         action();
         foreach (var c in new[] { AddSceneCommand, DeleteSceneCommand, MoveSceneUpCommand,
-                                  MoveSceneDownCommand, DeleteTakeCommand, ToggleFavoriteCommand }
+                                  MoveSceneDownCommand, DeleteTakeCommand, ToggleFavoriteCommand,
+                                  ToggleRecordCommand, NewProjectCommand, OpenProjectCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
         Raise(nameof(HasProject));
@@ -293,4 +313,55 @@ public sealed class MainViewModel : ObservableObject
     public bool IsFavorite =>
         SelectedScene is not null && SelectedTake is not null &&
         SelectedScene.Scene.FavoriteTakeId == SelectedTake.Take.Id;
+
+    // ----- recording -----
+
+    private async void ToggleRecordAsync()
+    {
+        if (_store is null) return;
+
+        if (_session is not null)
+        {
+            var session = _session;
+            _session = null;
+            RaiseRecordingState();
+            try
+            {
+                var take = await session.StopAsync();
+                await session.DisposeAsync();
+                RefreshTakes();
+                Status = $"Take {take.Id} saved — {take.Sources.Count} sources, {take.DurationSeconds:F1}s";
+            }
+            catch (Exception ex)
+            {
+                Status = $"Stop failed: {ex.Message}";
+            }
+            return;
+        }
+
+        if (SelectedScene is null) return;
+        try
+        {
+            var scene = SelectedScene.Scene;
+            var takeDir = _store.BeginTake(scene);
+            var progress = new Progress<TimeSpan>(t => RecordingElapsed = t.ToString(@"m\:ss"));
+            _session = await RecorderFactory(_store).StartAsync(_store.Project, scene, takeDir, progress);
+            RaiseRecordingState();
+            Status = $"Recording '{scene.Title}' → {Path.GetFileName(takeDir)}";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Record failed: {ex.Message}";
+        }
+    }
+
+    private void RaiseRecordingState()
+    {
+        Raise(nameof(IsRecording));
+        Raise(nameof(RecordButtonText));
+        if (!IsRecording) RecordingElapsed = "";
+        foreach (var c in new[] { ToggleRecordCommand, NewProjectCommand, OpenProjectCommand }
+                 .OfType<RelayCommand>())
+            c.RaiseCanExecuteChanged();
+    }
 }
