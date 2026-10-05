@@ -290,17 +290,31 @@ public sealed class PlayerTrackRow(TakeSource source, string label) : Observable
     public ICommand ToggleMuteCommand { get; set; } = null!;
 }
 
+public sealed class TakeFileRow(string fileName, long bytes)
+{
+    public string FileName { get; } = fileName;
+    public string SizeText => Bytes switch
+    {
+        < 1024 => $"{Bytes} B",
+        < 1024 * 1024 => $"{Bytes / 1024.0:F1} KB",
+        _ => $"{Bytes / (1024.0 * 1024):F1} MB",
+    };
+    private long Bytes { get; } = bytes;
+}
+
 public sealed class TakeRow : ObservableObject
 {
-    public TakeRow(Take take, int number, bool isFavorite,
+    public TakeRow(Take take, int number, bool isFavorite, string folderPath,
         Action<TakeRow> toggleFavorite, Action<TakeRow> delete, Action<TakeRow> openFolder)
     {
         Take = take;
         Number = number;
         IsFavorite = isFavorite;
+        FolderPath = folderPath;
         ToggleFavoriteCommand = new RelayCommand(() => toggleFavorite(this));
         DeleteCommand = new RelayCommand(() => delete(this));
         OpenFolderCommand = new RelayCommand(() => openFolder(this));
+        ToggleExpandedCommand = new RelayCommand(() => IsExpanded = !IsExpanded);
     }
 
     public Take Take { get; }
@@ -317,6 +331,40 @@ public sealed class TakeRow : ObservableObject
     public ICommand ToggleFavoriteCommand { get; }
     public ICommand DeleteCommand { get; }
     public ICommand OpenFolderCommand { get; }
+    public ICommand ToggleExpandedCommand { get; }
+
+    /// <summary>Take folder on disk; listed when the row is expanded.</summary>
+    public string FolderPath { get; }
+    public ObservableCollection<TakeFileRow> Files { get; } = new();
+
+    private bool _isExpanded;
+    public bool IsExpanded
+    {
+        get => _isExpanded;
+        set
+        {
+            if (SetField(ref _isExpanded, value))
+            {
+                Raise(nameof(ExpandGlyph));
+                if (value) LoadFiles();
+            }
+        }
+    }
+    public string ExpandGlyph => IsExpanded ? "▾" : "▸";
+
+    private void LoadFiles()
+    {
+        if (Files.Count > 0 || string.IsNullOrEmpty(FolderPath)) return;
+        try
+        {
+            foreach (var f in Directory.GetFiles(FolderPath).OrderBy(Path.GetFileName))
+                Files.Add(new TakeFileRow(Path.GetFileName(f)!, new FileInfo(f).Length));
+        }
+        catch
+        {
+            // Folder may vanish if deleted externally; the row just stays empty.
+        }
+    }
 }
 
 public sealed class MainViewModel : ObservableObject
@@ -605,7 +653,8 @@ public sealed class MainViewModel : ObservableObject
         {
             if (activeKinds.Count > 0 && !activeKinds.All(k => t.Sources.Any(s => s.Kind == k)))
                 continue;
-            Takes.Add(new TakeRow(t, n++, t.Id == fav, ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder));
+            Takes.Add(new TakeRow(t, n++, t.Id == fav, _store.TakeDir(t.SceneId, t.Id),
+                ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder));
         }
         SelectedScene.TakeCount = all.Count;
         SelectedTake = Takes.FirstOrDefault(t => t.Take.Id == selectedId);
