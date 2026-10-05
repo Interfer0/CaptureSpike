@@ -1,7 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- Both TFMs: the plain one for Linux, the Windows one for NAudio/WASAPI audio. -->
+    <TargetFrameworks>net10.0;net10.0-windows10.0.19041</TargetFrameworks>
+    <!-- Lets the Windows TFM compile on Linux/macOS (compile-only; never run here). -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <OutputType>WinExe</OutputType>
