@@ -23,12 +23,16 @@
   </Window.Styles>
 
   <DockPanel>
-    <Menu DockPanel.Dock="Top">
-      <MenuItem Header="_File">
-        <MenuItem Header="_New Project" Command="{Binding NewProjectCommand}" />
-        <MenuItem Header="_Open Project..." Command="{Binding OpenProjectCommand}" />
-      </MenuItem>
-    </Menu>
+    <DockPanel DockPanel.Dock="Top">
+      <TextBlock DockPanel.Dock="Right" Text="{Binding ProjectFolderText}"
+                 VerticalAlignment="Center" Margin="0,0,8,0" FontSize="12" Opacity="0.6" />
+      <Menu>
+        <MenuItem Header="_File">
+          <MenuItem Header="_New Project" Command="{Binding NewProjectCommand}" />
+          <MenuItem Header="_Open Project..." Command="{Binding OpenProjectCommand}" />
+        </MenuItem>
+      </Menu>
+    </DockPanel>
 
     <Border DockPanel.Dock="Bottom" BorderThickness="0,1,0,0" BorderBrush="Gray" Padding="8,4">
       <TextBlock Text="{Binding Status}" FontSize="12" Opacity="0.8" />
@@ -68,15 +72,33 @@
           <ListBox ItemsSource="{Binding PaletteSources}">
             <ListBox.ItemTemplate>
               <DataTemplate>
-                <DockPanel>
-                  <Button DockPanel.Dock="Right" Classes="plain" Content="×"
-                          Command="{Binding DeleteCommand}"
-                          ToolTip.Tip="Delete from palette" />
-                  <Border Classes="badge">
-                    <TextBlock Text="{Binding Badge}" />
-                  </Border>
-                  <TextBlock Text="{Binding Label}" VerticalAlignment="Center" Margin="6,0,0,0" />
-                </DockPanel>
+                <StackPanel Spacing="2">
+                  <DockPanel>
+                    <Button DockPanel.Dock="Right" Classes="plain" Content="×"
+                            Command="{Binding DeleteCommand}"
+                            ToolTip.Tip="Delete from palette" />
+                    <Border Classes="badge">
+                      <TextBlock Text="{Binding Badge}" />
+                    </Border>
+                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center" Margin="6,0,0,0" />
+                  </DockPanel>
+                  <DockPanel Margin="22,0,0,0">
+                    <Button DockPanel.Dock="Right" Classes="plain"
+                            Content="{Binding RefreshGlyph}"
+                            Command="{Binding RefreshDevicesCommand}"
+                            ToolTip.Tip="Detect devices" />
+                    <ComboBox ItemsSource="{Binding Devices}"
+                              SelectedItem="{Binding SelectedDevice}"
+                              HorizontalAlignment="Stretch"
+                              ToolTip.Tip="Which device to capture">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding Label}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                  </DockPanel>
+                </StackPanel>
               </DataTemplate>
             </ListBox.ItemTemplate>
           </ListBox>
@@ -177,6 +199,8 @@
                         ToolTip.Tip="Mark as favorite" />
                 <Button DockPanel.Dock="Right" Classes="plain" Content="🗑"
                         Command="{Binding DeleteCommand}" ToolTip.Tip="Delete take" />
+                <Button DockPanel.Dock="Right" Classes="plain" Content="📁"
+                        Command="{Binding OpenFolderCommand}" ToolTip.Tip="Open take folder" />
                 <TextBlock DockPanel.Dock="Right" Text="{Binding Duration}" Opacity="0.6"
                            VerticalAlignment="Center" Margin="8,0" FontSize="12" />
                 <TextBlock Text="{Binding DisplayName}" FontWeight="Bold"
@@ -244,12 +268,16 @@
                 <Button Command="{Binding ToggleCommand}" Classes="plain"
                         HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
                         ToolTip.Tip="Click to turn off for the next take">
-                  <StackPanel Orientation="Horizontal" Spacing="6">
-                    <TextBlock Text="{Binding Dot}" VerticalAlignment="Center" />
-                    <Border Classes="badge">
-                      <TextBlock Text="{Binding Badge}" />
-                    </Border>
-                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                  <StackPanel Spacing="1">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <TextBlock Text="{Binding Dot}" VerticalAlignment="Center" />
+                      <Border Classes="badge">
+                        <TextBlock Text="{Binding Badge}" />
+                      </Border>
+                      <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding DeviceLabel}" FontSize="11" Opacity="0.6"
+                               Margin="22,0,0,0" />
                   </StackPanel>
                 </Button>
               </DockPanel>

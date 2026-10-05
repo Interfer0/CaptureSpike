@@ -13,7 +13,9 @@ namespace CaptureSpike.Core.Capture;
 public sealed class NAudioCapturer : ISourceCapturer
 {
     private readonly bool _loopback;
+    private readonly string? _deviceId;
     private WasapiCapture? _capture;
+    private MMDevice? _mmDevice;
     private WaveFileWriter? _writer;
     private readonly TaskCompletionSource _firstDataTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _stoppedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -24,12 +26,14 @@ public sealed class NAudioCapturer : ISourceCapturer
     public string OutputFile { get; }
     public DateTimeOffset? FirstDataAt { get; private set; }
 
-    public NAudioCapturer(string sourceId, SourceKind kind, string outputFile, bool loopback)
+    public NAudioCapturer(string sourceId, SourceKind kind, string outputFile,
+        bool loopback, string? deviceId = null)
     {
         SourceId = sourceId;
         Kind = kind;
         OutputFile = outputFile;
         _loopback = loopback;
+        _deviceId = string.IsNullOrWhiteSpace(deviceId) ? null : deviceId;
     }
 
     public async Task StartAsync(DateTimeOffset t0, CancellationToken ct)
@@ -38,7 +42,30 @@ public sealed class NAudioCapturer : ISourceCapturer
         if (!OperatingSystem.IsWindows())
             throw new PlatformNotSupportedException("NAudio capture requires Windows.");
 
-        WasapiCapture capture = _loopback ? new WasapiLoopbackCapture() : new WasapiCapture();
+        WasapiCapture capture;
+        try
+        {
+            var enumerator = new MMDeviceEnumerator();
+            try
+            {
+                _mmDevice = _deviceId is null
+                    ? enumerator.GetDefaultAudioEndpoint(
+                        _loopback ? DataFlow.Render : DataFlow.Capture, Role.Multimedia)
+                    : enumerator.GetDevice(_deviceId);
+            }
+            finally
+            {
+                enumerator.Dispose();
+            }
+            capture = _loopback
+                ? new WasapiLoopbackCapture(_mmDevice)
+                : new WasapiCapture(_mmDevice);
+        }
+        catch (Exception ex) when (ex is not CaptureException)
+        {
+            throw new CaptureException(SourceId,
+                $"Could not open audio device '{_deviceId ?? "default"}': {ex.Message}");
+        }
         _capture = capture;
         _writer = new WaveFileWriter(OutputFile, capture.WaveFormat);
 
@@ -108,6 +135,7 @@ public sealed class NAudioCapturer : ISourceCapturer
         try { _capture?.StopRecording(); } catch { }
         try { _writer?.Dispose(); } catch { } finally { _writer = null; }
         try { _capture?.Dispose(); } catch { } finally { _capture = null; }
+        try { _mmDevice?.Dispose(); } catch { } finally { _mmDevice = null; }
         await Task.CompletedTask.ConfigureAwait(false);
     }
 }

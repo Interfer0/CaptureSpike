@@ -64,6 +64,16 @@ public static class CaptureFactory
         switch (source.Kind)
         {
             case SourceKind.Screen:
+            {
+                args.AddRange(new[] { "-f", "x11grab", "-framerate", project.Fps.ToString() });
+                var disp = DisplayName();
+                if (DeviceParsers.TryParseGeometry(source.Device, out var geo))
+                    args.AddRange(new[] { "-video_size", $"{geo.Width}x{geo.Height}", "-i", $"{disp}+{geo.X},{geo.Y}" });
+                else
+                    args.AddRange(new[] { "-i", disp });
+                args.AddRange(VideoOutArgs(project, outputFile));
+                break;
+            }
             case SourceKind.Window:
                 // True per-window capture on X11 needs the window geometry (v2).
                 args.AddRange(new[] { "-f", "x11grab", "-framerate", project.Fps.ToString(), "-i", DisplayName() });
@@ -78,7 +88,8 @@ public static class CaptureFactory
                 args.AddRange(AudioOutArgs(outputFile));
                 break;
             case SourceKind.SystemAudio:
-                args.AddRange(new[] { "-f", "pulse", "-i", PulseMonitorSource() });
+                args.AddRange(new[] { "-f", "pulse", "-i",
+                    string.IsNullOrWhiteSpace(source.Device) ? PulseMonitorSource() : source.Device });
                 args.AddRange(AudioOutArgs(outputFile));
                 break;
             default:
@@ -118,7 +129,7 @@ public static class CaptureFactory
 #if WINDOWS
         if (source.Kind is SourceKind.Microphone or SourceKind.SystemAudio)
             return new NAudioCapturer(source.Id, source.Kind, outputFile,
-                loopback: source.Kind == SourceKind.SystemAudio);
+                loopback: source.Kind == SourceKind.SystemAudio, deviceId: source.Device);
 #else
         if (source.Kind is SourceKind.Microphone or SourceKind.SystemAudio)
             throw new PlatformNotSupportedException("Windows audio capture needs the Windows build of this app.");
@@ -127,9 +138,15 @@ public static class CaptureFactory
         switch (source.Kind)
         {
             case SourceKind.Screen:
-                args.AddRange(new[] { "-f", "gdigrab", "-framerate", project.Fps.ToString(), "-i", "desktop" });
+            {
+                args.AddRange(new[] { "-f", "gdigrab", "-framerate", project.Fps.ToString() });
+                if (DeviceParsers.TryParseGeometry(source.Device, out var geo))
+                    args.AddRange(new[] { "-offset_x", geo.X.ToString(), "-offset_y", geo.Y.ToString(),
+                                          "-video_size", $"{geo.Width}x{geo.Height}" });
+                args.AddRange(new[] { "-i", "desktop" });
                 args.AddRange(VideoOutArgs(project, outputFile));
                 break;
+            }
             case SourceKind.Window:
                 if (string.IsNullOrWhiteSpace(source.Device))
                     throw new CaptureException(source.Id,
@@ -163,16 +180,8 @@ public static class CaptureFactory
         using var p = Process.Start(psi);
         var output = p?.StandardError.ReadToEnd() ?? "";
         try { p?.WaitForExit(10000); } catch { }
-        // Lines look like: [dshow @ 0000023a] "USB Camera" (video)
-        foreach (var line in output.Split('\n'))
-        {
-            var q1 = line.IndexOf('"');
-            if (q1 < 0) continue;
-            var q2 = line.IndexOf('"', q1 + 1);
-            if (q2 < 0) continue;
-            if (line.Contains("(video)", StringComparison.OrdinalIgnoreCase))
-                return line.Substring(q1 + 1, q2 - q1 - 1);
-        }
+        var first = DeviceParsers.ParseDShowDevices(output, "(video)").FirstOrDefault();
+        if (first is not null) return first;
         throw new CaptureException("webcam",
             "No DirectShow video devices found. Plug in a camera or set the source's device to its DirectShow name.");
     }

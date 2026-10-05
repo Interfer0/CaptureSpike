@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Windows.Input;
@@ -114,13 +115,103 @@ public sealed class SceneViewModel(Scene scene, Action save) : ObservableObject
     }
 }
 
-public sealed class PaletteSourceViewModel(ProjectSource source) : ObservableObject
+public sealed class PaletteSourceViewModel : ObservableObject
 {
-    public ProjectSource Source { get; } = source;
+    private static readonly DeviceOption DefaultOption = new("", "Default");
+
+    private readonly Action _save;
+    private readonly Action _onDeviceChanged;
+
+    public PaletteSourceViewModel(ProjectSource source, Action save, Action onDeviceChanged)
+    {
+        Source = source;
+        _save = save;
+        _onDeviceChanged = onDeviceChanged;
+        Devices.Add(DefaultOption);
+        _selectedDevice = DefaultOption;
+        RefreshDevicesCommand = new RelayCommand(
+            async () => await RefreshDevicesAsync(), () => !IsDetecting);
+    }
+
+    public ProjectSource Source { get; }
     public string Badge => Source.Kind.Badge();
     public string Label => Source.Label;
     /// <summary>Assigned by MainViewModel after construction.</summary>
     public ICommand DeleteCommand { get; set; } = null!;
+
+    // ----- device picker -----
+
+    public ObservableCollection<DeviceOption> Devices { get; } = new();
+
+    private DeviceOption? _selectedDevice;
+    public DeviceOption? SelectedDevice
+    {
+        get => _selectedDevice;
+        set
+        {
+            if (SetField(ref _selectedDevice, value))
+            {
+                Source.Device = string.IsNullOrEmpty(value?.Id) ? null : value.Id;
+                _save();
+                Raise(nameof(DeviceDisplay));
+                _onDeviceChanged();
+            }
+        }
+    }
+
+    public string DeviceDisplay => SelectedDevice?.Label ?? "Default";
+
+    private bool _detecting;
+    public bool IsDetecting
+    {
+        get => _detecting;
+        private set
+        {
+            if (SetField(ref _detecting, value))
+            {
+                Raise(nameof(RefreshGlyph));
+                (RefreshDevicesCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+    public string RefreshGlyph => IsDetecting ? "…" : "↻";
+    public ICommand RefreshDevicesCommand { get; }
+
+    /// <summary>Detects real devices in the background; never throws.</summary>
+    public async Task RefreshDevicesAsync()
+    {
+        if (IsDetecting) return;
+        IsDetecting = true;
+        try
+        {
+            string ffmpeg;
+            try { ffmpeg = ToolPaths.Resolve("ffmpeg"); }
+            catch { ffmpeg = "ffmpeg"; } // let the OS resolve it; failures -> empty list
+            var kind = Source.Kind;
+            var found = await Task.Run(() => DeviceEnumeration.GetDevices(kind, ffmpeg));
+            Devices.Clear();
+            Devices.Add(DefaultOption);
+            foreach (var d in found) Devices.Add(d);
+            var current = Source.Device;
+            var match = Devices.FirstOrDefault(d => d.Id == current);
+            if (match is null && !string.IsNullOrEmpty(current))
+            {
+                match = new DeviceOption(current, $"{current} (not connected)");
+                Devices.Add(match);
+            }
+            _selectedDevice = match ?? DefaultOption;
+            Raise(nameof(SelectedDevice));
+            Raise(nameof(DeviceDisplay));
+        }
+        catch
+        {
+            // Detection is best-effort; the Default entry always remains.
+        }
+        finally
+        {
+            IsDetecting = false;
+        }
+    }
 }
 
 public sealed class SceneSourceViewModel(SceneSource sceneSource, ProjectSource palette)
@@ -131,6 +222,11 @@ public sealed class SceneSourceViewModel(SceneSource sceneSource, ProjectSource 
     public string Label => palette.Label;
     public bool IsEnabled => SceneSource.Enabled;
     public string Dot => SceneSource.Enabled ? "🟢" : "⚪";
+
+    private PaletteSourceViewModel? _paletteVm;
+    public void SetPaletteSource(PaletteSourceViewModel? vm) => _paletteVm = vm;
+    public string DeviceLabel => _paletteVm?.DeviceDisplay ?? "Default";
+    public void RaiseDeviceLabel() => Raise(nameof(DeviceLabel));
 
     /// <summary>Assigned by MainViewModel after construction.</summary>
     public ICommand ToggleCommand { get; set; } = null!;
@@ -197,13 +293,14 @@ public sealed class PlayerTrackRow(TakeSource source, string label) : Observable
 public sealed class TakeRow : ObservableObject
 {
     public TakeRow(Take take, int number, bool isFavorite,
-        Action<TakeRow> toggleFavorite, Action<TakeRow> delete)
+        Action<TakeRow> toggleFavorite, Action<TakeRow> delete, Action<TakeRow> openFolder)
     {
         Take = take;
         Number = number;
         IsFavorite = isFavorite;
         ToggleFavoriteCommand = new RelayCommand(() => toggleFavorite(this));
         DeleteCommand = new RelayCommand(() => delete(this));
+        OpenFolderCommand = new RelayCommand(() => openFolder(this));
     }
 
     public Take Take { get; }
@@ -219,6 +316,7 @@ public sealed class TakeRow : ObservableObject
 
     public ICommand ToggleFavoriteCommand { get; }
     public ICommand DeleteCommand { get; }
+    public ICommand OpenFolderCommand { get; }
 }
 
 public sealed class MainViewModel : ObservableObject
@@ -402,7 +500,11 @@ public sealed class MainViewModel : ObservableObject
         ReloadScenes();
         Status = $"Project: {dir}";
         Raise(nameof(HasProject));
+        Raise(nameof(ProjectFolderText));
     }
+
+    public string ProjectFolderText =>
+        _store is null ? "" : $"Folder: {Path.GetFileName(_store.ProjectDir)}";
 
     // ----- scenes -----
 
@@ -427,11 +529,23 @@ public sealed class MainViewModel : ObservableObject
         if (_store is null) return;
         foreach (var p in _store.Project.Sources)
         {
-            var vm = new PaletteSourceViewModel(p);
+            var vm = new PaletteSourceViewModel(p,
+                () => _store.SaveProject(),
+                RefreshSceneDeviceLabels);
             vm.DeleteCommand = new RelayCommand(() => Mutate(() => DeletePaletteSource(vm)));
             PaletteSources.Add(vm);
+            _ = vm.RefreshDevicesAsync(); // fire-and-forget background detection
         }
+        // Palette VMs were rebuilt; re-wire the scene rows' device labels.
+        foreach (var svm in SceneSources)
+            svm.SetPaletteSource(
+                PaletteSources.FirstOrDefault(ps => ps.Source.Id == svm.SceneSource.SourceId));
         Raise(nameof(AvailablePaletteSources));
+    }
+
+    private void RefreshSceneDeviceLabels()
+    {
+        foreach (var vm in SceneSources) vm.RaiseDeviceLabel();
     }
 
     private void AddScene()
@@ -491,7 +605,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (activeKinds.Count > 0 && !activeKinds.All(k => t.Sources.Any(s => s.Kind == k)))
                 continue;
-            Takes.Add(new TakeRow(t, n++, t.Id == fav, ToggleFavoriteRow, DeleteTakeRow));
+            Takes.Add(new TakeRow(t, n++, t.Id == fav, ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder));
         }
         SelectedScene.TakeCount = all.Count;
         SelectedTake = Takes.FirstOrDefault(t => t.Take.Id == selectedId);
@@ -508,6 +622,8 @@ public sealed class MainViewModel : ObservableObject
             var palette = _store.Project.Sources.FirstOrDefault(p => p.Id == ss.SourceId);
             if (palette is null) continue; // dangling ref; cleaned on next save
             var vm = new SceneSourceViewModel(ss, palette);
+            vm.SetPaletteSource(
+                PaletteSources.FirstOrDefault(p => p.Source.Id == ss.SourceId));
             vm.ToggleCommand = new RelayCommand(() => Mutate(() =>
             {
                 ss.Enabled = !ss.Enabled;
@@ -594,6 +710,29 @@ public sealed class MainViewModel : ObservableObject
         scene.FavoriteTakeId = scene.FavoriteTakeId == id ? null : id;
         _store.SaveScene(scene);
         RefreshTakes();
+    }
+
+    private void OpenTakeFolder(TakeRow row)
+    {
+        if (_store is null) return;
+        var path = _store.TakeDir(row.Take.SceneId, row.Take.Id);
+        try
+        {
+            if (!Directory.Exists(path))
+            {
+                Status = "Take folder no longer exists.";
+                return;
+            }
+            var psi = OperatingSystem.IsWindows()
+                ? new ProcessStartInfo("explorer.exe", $"\"{path}\"")
+                : new ProcessStartInfo("xdg-open", $"\"{path}\"");
+            psi.UseShellExecute = true;
+            Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            Status = $"Couldn't open the take folder: {ex.Message}";
+        }
     }
 
     private void DeleteTake()
