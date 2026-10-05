@@ -1,0 +1,76 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CaptureSpike.App.MainWindow"
+        Title="CaptureSpike" Width="1120" Height="700" MinWidth="900" MinHeight="560">
+  <DockPanel>
+    <Menu DockPanel.Dock="Top">
+      <MenuItem Header="_File">
+        <MenuItem Header="_New Project" Command="{Binding NewProjectCommand}" />
+        <MenuItem Header="_Open Project..." Command="{Binding OpenProjectCommand}" />
+      </MenuItem>
+    </Menu>
+
+    <Border DockPanel.Dock="Bottom" BorderThickness="0,1,0,0" BorderBrush="Gray" Padding="8,4">
+      <TextBlock Text="{Binding Status}" FontSize="12" Opacity="0.8" />
+    </Border>
+
+    <Grid ColumnDefinitions="250,*,320" Margin="8">
+      <!-- Scenes -->
+      <DockPanel Grid.Column="0" Margin="0,0,8,0">
+        <TextBlock DockPanel.Dock="Top" Text="Scenes" FontWeight="Bold" Margin="0,0,0,4" />
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">
+          <Button Content="Add" Command="{Binding AddSceneCommand}" />
+          <Button Content="↑" Command="{Binding MoveSceneUpCommand}" />
+          <Button Content="↓" Command="{Binding MoveSceneDownCommand}" />
+          <Button Content="Delete" Command="{Binding DeleteSceneCommand}" />
+        </StackPanel>
+        <ListBox ItemsSource="{Binding Scenes}" SelectedItem="{Binding SelectedScene}">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <TextBlock Text="{Binding DisplayName}" />
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+
+      <!-- Preview + record -->
+      <DockPanel Grid.Column="1" Margin="0,0,8,0">
+        <TextBlock DockPanel.Dock="Top" Text="Preview" FontWeight="Bold" Margin="0,0,0,4" />
+        <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,8,0,0">
+          <Button Content="● Record" FontSize="16" HorizontalAlignment="Center"
+                  IsEnabled="False" ToolTip.Tip="Recording arrives in M2" />
+          <TextBlock Text="{Binding SelectedScene.Notes}" TextWrapping="Wrap" Opacity="0.7"
+                     FontStyle="Italic" />
+        </StackPanel>
+        <Border BorderThickness="1" BorderBrush="Gray" CornerRadius="4">
+          <TextBlock Text="Player arrives in M3" HorizontalAlignment="Center"
+                     VerticalAlignment="Center" Opacity="0.5" />
+        </Border>
+      </DockPanel>
+
+      <!-- Scene details + takes -->
+      <DockPanel Grid.Column="2">
+        <TextBlock DockPanel.Dock="Top" Text="Scene" FontWeight="Bold" Margin="0,0,0,4" />
+        <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
+          <TextBlock Text="Title" FontSize="12" Opacity="0.7" />
+          <TextBox Text="{Binding SelectedScene.Title, Mode=TwoWay}" />
+          <TextBlock Text="Notes (teleprompter)" FontSize="12" Opacity="0.7" />
+          <TextBox Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
+                   AcceptsReturn="True" Height="90" TextWrapping="Wrap" />
+        </StackPanel>
+        <TextBlock DockPanel.Dock="Top" Text="Takes" FontWeight="Bold" Margin="0,0,0,4" />
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">
+          <Button Content="★ Favorite" Command="{Binding ToggleFavoriteCommand}" />
+          <Button Content="Delete Take" Command="{Binding DeleteTakeCommand}" />
+        </StackPanel>
+        <ListBox ItemsSource="{Binding Takes}" SelectedItem="{Binding SelectedTake}">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <TextBlock Text="{Binding Display}" />
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+    </Grid>
+  </DockPanel>
+</Window>
