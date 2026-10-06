@@ -26,7 +26,11 @@ public static class CaptureFactory
     // ----- shared argument pieces -----
 
     private static List<string> BaseArgs() =>
-        new() { "-hide_banner", "-loglevel", "warning", "-progress", "pipe:1", "-nostats" };
+        // -stats_period 0.1: progress updates every 100ms (default ~0.5s),
+        // so first-data detection (and the measured offset) is accurate
+        // to ~0.1s instead of ~0.5s.
+        new() { "-hide_banner", "-loglevel", "warning", "-progress", "pipe:1",
+                "-nostats", "-stats_period", "0.1" };
 
     private static List<string> VideoOutArgs(Project project, string outputFile) =>
         new()

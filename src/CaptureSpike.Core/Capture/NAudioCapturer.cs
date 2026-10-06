@@ -9,14 +9,35 @@ namespace CaptureSpike.Core.Capture;
 /// WASAPI-loopback input, so mic (<see cref="WasapiCapture"/>) and system
 /// audio (<see cref="WasapiLoopbackCapture"/>) are captured here and written
 /// as WAV. Only compiled into the Windows TFM; instantiated only on Windows.
+///
+/// Loopback note: WASAPI sends no data during silence, which would make the
+/// capturer time out if nothing is playing, or leave gaps that drift the
+/// audio earlier than the video. A silent keep-alive stream plays through
+/// the same render device so the capture clock never stops.
 /// </summary>
 public sealed class NAudioCapturer : ISourceCapturer
 {
+    /// <summary>Endless silence; keeps a WASAPI render stream alive.</summary>
+    private sealed class SilenceProvider : WaveProvider32
+    {
+        public SilenceProvider(WaveFormat format)
+        {
+            SetWaveFormat(format.SampleRate, format.Channels);
+        }
+
+        public override int Read(float[] buffer, int offset, int sampleCount)
+        {
+            Array.Clear(buffer, offset, sampleCount);
+            return sampleCount;
+        }
+    }
+
     private readonly bool _loopback;
     private readonly string? _deviceId;
     private WasapiCapture? _capture;
     private MMDevice? _mmDevice;
     private WaveFileWriter? _writer;
+    private IWavePlayer? _keepAlive;
     private readonly TaskCompletionSource _firstDataTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _stoppedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _disposed;
@@ -68,6 +89,16 @@ public sealed class NAudioCapturer : ISourceCapturer
         }
         _capture = capture;
         _writer = new WaveFileWriter(OutputFile, capture.WaveFormat);
+
+        // Loopback: keep the render stream alive with silence so WASAPI
+        // delivers continuous data even when nothing is playing.
+        if (_loopback)
+        {
+            var keepAlive = new WasapiOut(_mmDevice, AudioClientShareMode.Shared, false, 100);
+            keepAlive.Init(new SilenceProvider(capture.WaveFormat));
+            keepAlive.Play();
+            _keepAlive = keepAlive;
+        }
 
         capture.DataAvailable += (_, e) =>
         {
@@ -124,6 +155,9 @@ public sealed class NAudioCapturer : ISourceCapturer
         try { capture.StopRecording(); } catch { }
         try { await _stoppedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
         catch { }
+        // Stop the keep-alive first so no more silence is captured.
+        try { _keepAlive?.Stop(); } catch { }
+        try { _keepAlive?.Dispose(); } catch { } finally { _keepAlive = null; }
         // Disposing the writer finalizes the WAV header.
         try { _writer?.Dispose(); } catch { } finally { _writer = null; }
     }
@@ -133,6 +167,8 @@ public sealed class NAudioCapturer : ISourceCapturer
         if (_disposed) return;
         _disposed = true;
         try { _capture?.StopRecording(); } catch { }
+        try { _keepAlive?.Stop(); } catch { }
+        try { _keepAlive?.Dispose(); } catch { } finally { _keepAlive = null; }
         try { _writer?.Dispose(); } catch { } finally { _writer = null; }
         try { _capture?.Dispose(); } catch { } finally { _capture = null; }
         try { _mmDevice?.Dispose(); } catch { } finally { _mmDevice = null; }

@@ -72,7 +72,9 @@ internal static class AppSettings
         try
         {
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path_)!);
-            File.WriteAllText(Path_, JsonSerializer.Serialize(data));
+            var tmp = Path_ + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(data));
+            File.Move(tmp, Path_, overwrite: true);
         }
         catch { /* settings are best-effort */ }
     }
@@ -686,10 +688,10 @@ public sealed class MainViewModel : ObservableObject
         ProjectsCommand = new RelayCommand(() => ShowProjectBrowser(), () => !IsRecording);
         SettingsCommand = new RelayCommand(ShowSettings);
         AddSceneCommand = new RelayCommand(() => Mutate(AddScene), () => HasProject);
-        DeleteSceneCommand = new RelayCommand(() => Mutate(DeleteScene), () => HasProject && SelectedScene is not null);
+        DeleteSceneCommand = new RelayCommand(() => Mutate(DeleteScene), () => HasProject && SelectedScene is not null && !IsRecording);
         MoveSceneUpCommand = new RelayCommand(() => Mutate(() => MoveScene(-1)), () => HasProject && SelectedScene is not null);
         MoveSceneDownCommand = new RelayCommand(() => Mutate(() => MoveScene(1)), () => HasProject && SelectedScene is not null);
-        DeleteTakeCommand = new RelayCommand(() => Mutate(DeleteTake), () => HasProject && SelectedTake is not null);
+        DeleteTakeCommand = new RelayCommand(() => Mutate(DeleteTake), () => HasProject && SelectedTake is not null && !IsRecording);
         ToggleFavoriteCommand = new RelayCommand(() => Mutate(ToggleFavorite), () => HasProject && SelectedTake is not null);
         ToggleRecordCommand = new RelayCommand(ToggleRecordAsync,
             () => HasProject && !_starting && (IsRecording || SelectedScene is not null));
@@ -782,6 +784,47 @@ public sealed class MainViewModel : ObservableObject
         Raise(nameof(HasProject));
     }
 
+    /// <summary>Shows a Yes/No confirmation dialog. Returns false if the window is gone.</summary>
+    private async Task<bool> ConfirmAsync(string title, string message)
+    {
+        if (Avalonia.Application.Current?.ApplicationLifetime
+            is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow is null) return false;
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dialog = new Avalonia.Controls.Window
+        {
+            Title = title,
+            Width = 420, Height = 170,
+            WindowStartupLocation = Avalonia.Controls.WindowStartupLocation.CenterOwner,
+        };
+        var panel = new Avalonia.Controls.StackPanel
+        {
+            Margin = new Avalonia.Thickness(16), Spacing = 16,
+        };
+        panel.Children.Add(new Avalonia.Controls.TextBlock
+        {
+            Text = message,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+        });
+        var buttons = new Avalonia.Controls.StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+        };
+        var delete = new Avalonia.Controls.Button { Content = "Delete" };
+        var cancel = new Avalonia.Controls.Button { Content = "Cancel" };
+        delete.Click += (_, _) => { tcs.TrySetResult(true); dialog.Close(); };
+        cancel.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
+        buttons.Children.Add(delete);
+        buttons.Children.Add(cancel);
+        panel.Children.Add(buttons);
+        dialog.Content = panel;
+        dialog.Closed += (_, _) => tcs.TrySetResult(false);
+        _ = dialog.ShowDialog(desktop.MainWindow);
+        return await tcs.Task.ConfigureAwait(false);
+    }
+
     // ----- projects -----
 
     private static string SanitizeProjectName(string name)
@@ -858,7 +901,9 @@ public sealed class MainViewModel : ObservableObject
             var vm = new PaletteSourceViewModel(p,
                 () => _store.SaveProject(),
                 RefreshSceneDeviceLabels);
-            vm.DeleteCommand = new RelayCommand(() => Mutate(() => DeletePaletteSource(vm)));
+            vm.DeleteCommand = new RelayCommand(
+                () => Mutate(() => DeletePaletteSource(vm)),
+                () => !IsRecording);
             vm.OnBadgeChanged = () => { RefreshSceneSources(); RefreshTakes(); };
             PaletteSources.Add(vm);
             _ = vm.RefreshDevicesAsync(); // fire-and-forget background detection
@@ -885,13 +930,23 @@ public sealed class MainViewModel : ObservableObject
         Status = $"Added scene \"{scene.Title}\"";
     }
 
-    private void DeleteScene()
+    private async void DeleteScene()
     {
-        if (_store is null || SelectedScene is null) return;
+        if (_store is null || SelectedScene is null || IsRecording) return;
         var title = SelectedScene.Title;
-        _store.DeleteScene(SelectedScene.Scene);
-        ReloadScenes();
-        Status = $"Deleted scene \"{title}\"";
+        if (!await ConfirmAsync("Delete scene",
+                $"Delete scene \"{title}\" and all its takes? This cannot be undone."))
+            return;
+        try
+        {
+            _store.DeleteScene(SelectedScene.Scene);
+            ReloadScenes();
+            Status = $"Deleted scene \"{title}\"";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Delete failed: {ex.Message}";
+        }
     }
 
     private void MoveScene(int delta)
@@ -1038,13 +1093,23 @@ public sealed class MainViewModel : ObservableObject
 
     private async void DeleteTakeRow(TakeRow row)
     {
-        if (_store is null || SelectedScene is null) return;
-        if (_playerTake?.Id == row.Take.Id)
-            await UnloadPlayerAsync();
+        if (_store is null || SelectedScene is null || IsRecording) return;
         var label = row.DisplayName;
-        _store.DeleteTake(SelectedScene.Scene.Id, row.Take);
-        RefreshTakes();
-        Status = $"Deleted {label}";
+        if (!await ConfirmAsync("Delete take",
+                $"Delete {label}? The take folder and all its files will be removed. This cannot be undone."))
+            return;
+        try
+        {
+            if (_playerTake?.Id == row.Take.Id)
+                await UnloadPlayerAsync();
+            _store.DeleteTake(SelectedScene.Scene.Id, row.Take);
+            RefreshTakes();
+            Status = $"Deleted {label}";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Delete failed: {ex.Message}";
+        }
     }
 
     private const string FavoriteSuffix = "-favorite";
@@ -1143,20 +1208,35 @@ public sealed class MainViewModel : ObservableObject
         Status = $"Added source \"{result.Label}\"";
     }
 
-    private void DeletePaletteSource(PaletteSourceViewModel vm)
+    private async void DeletePaletteSource(PaletteSourceViewModel vm)
     {
-        if (_store is null) return;
-        var id = vm.Source.Id;
-        _store.Project.Sources.RemoveAll(p => p.Id == id);
-        foreach (var scene in _store.LoadScenes())
+        if (_store is null || IsRecording) return;
+        if (!await ConfirmAsync("Delete source",
+                $"Delete source \"{vm.Label}\" from the palette? It will be removed from all scenes. This cannot be undone."))
+            return;
+        try
         {
-            var removed = scene.Sources.RemoveAll(s => s.SourceId == id);
-            if (removed > 0) _store.SaveScene(scene);
+            var id = vm.Source.Id;
+            _store.Project.Sources.RemoveAll(p => p.Id == id);
+            foreach (var scene in _store.LoadScenes())
+            {
+                var removed = scene.Sources.RemoveAll(s => s.SourceId == id);
+                if (removed > 0) _store.SaveScene(scene);
+            }
+            // Also remove from the in-memory scenes the UI is holding;
+            // otherwise the dangling reference stays enabled and breaks
+            // the next recording.
+            foreach (var svm in Scenes)
+                svm.Scene.Sources.RemoveAll(s => s.SourceId == id);
+            _store.SaveProject();
+            ReloadPalette();
+            RefreshSceneSources();
+            Status = $"Deleted source \"{vm.Label}\"";
         }
-        _store.SaveProject();
-        ReloadPalette();
-        RefreshSceneSources();
-        Status = $"Deleted source \"{vm.Label}\"";
+        catch (Exception ex)
+        {
+            Status = $"Delete failed: {ex.Message}";
+        }
     }
 
     public bool IsFavorite =>
@@ -1188,7 +1268,10 @@ public sealed class MainViewModel : ObservableObject
     {
         if (_store is null || SelectedScene is null || _session is not null || _starting) return;
         _starting = true;
+        // A stale flag from a previous F9 must not cancel this countdown.
+        _cancelStarting = false;
         RaiseRecordingState();
+        string? takeDir = null;
         try
         {
             // The window minimizes during the countdown so it never ends up in
@@ -1198,38 +1281,67 @@ public sealed class MainViewModel : ObservableObject
                 window.WindowState = Avalonia.Controls.WindowState.Minimized;
             RecordingElapsed = "starting…";
 
-            // F9 is already installed globally (StartupAsync); it cancels the
-            // countdown via _cancelStarting.
-            await Task.Delay(TimeSpan.FromSeconds(3));
+            // Don't let the preview's audio bleed into the new take's mic.
+            if (_player is not null)
+            {
+                try { await _player.PauseAsync(); } catch { }
+            }
+
+            var scene = SelectedScene.Scene;
+            takeDir = _store.BeginTake(scene);
+            var progress = new Progress<TimeSpan>(t => RecordingElapsed = t.ToString(@"m\:ss"));
+
+            // Scheduled start: t0 is now; sources warm up IN PARALLEL during
+            // the 3s countdown (instead of starting one-by-one after it).
+            // F9 cancels via _cancelStarting, which aborts the startup.
+            using var cts = new CancellationTokenSource();
+            var startTask = RecorderFactory(_store).StartAsync(
+                _store.Project, scene, takeDir, progress, cts.Token);
+
+            // Countdown overlaps warmup: poll for F9 every 100ms.
+            for (var i = 0; i < 30 && !_cancelStarting; i++)
+                await Task.Delay(100).ConfigureAwait(false);
+
             if (_cancelStarting)
             {
                 _cancelStarting = false;
+                cts.Cancel();
+                try { await startTask.ConfigureAwait(false); } catch { }
                 Status = "Recording cancelled.";
             }
             else
             {
                 try
                 {
-                    // Don't let the preview's audio bleed into the new take's mic.
-                    if (_player is not null)
+                    _session = await startTask.ConfigureAwait(false);
+                    // F9 pressed while the last sources were starting: the user
+                    // meant stop, so stop immediately instead of poisoning the
+                    // next countdown with a stale flag.
+                    if (_cancelStarting)
                     {
-                        try { await _player.PauseAsync(); } catch { }
+                        _cancelStarting = false;
+                        await StopRecordingAsync().ConfigureAwait(false);
                     }
-                    var scene = SelectedScene.Scene;
-                    var takeDir = _store.BeginTake(scene);
-                    var progress = new Progress<TimeSpan>(t => RecordingElapsed = t.ToString(@"m\:ss"));
-                    _session = await RecorderFactory(_store).StartAsync(_store.Project, scene, takeDir, progress);
-                    Status = $"Recording '{scene.Title}' — press F9 to stop";
+                    else
+                    {
+                        Status = $"Recording '{scene.Title}' — press F9 to stop";
+                        Log($"Recording started: '{scene.Title}' ({_session.ActiveSourceIds.Count} sources)");
+                    }
                 }
                 catch (Exception ex)
                 {
                     _session = null;
+                    // Don't leave an orphan take folder (possibly with partial files).
+                    try { if (Directory.Exists(takeDir)) Directory.Delete(takeDir, recursive: true); } catch { }
+                    takeDir = null;
                     Status = $"Record failed: {ex.Message}";
                 }
             }
 
             if (_session is null)
             {
+                // Cancelled: also remove the reserved take folder.
+                try { if (takeDir is not null && Directory.Exists(takeDir)) Directory.Delete(takeDir, recursive: true); } catch { }
                 if (window is not null)
                 {
                     window.WindowState = Avalonia.Controls.WindowState.Normal;
@@ -1264,7 +1376,8 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private async Task StopRecordingAsync()
+    /// <summary>Stops recording and saves the take. Safe to call when not recording.</summary>
+    public async Task StopRecordingAsync()
     {
         var session = _session;
         if (session is null) return;
@@ -1299,9 +1412,12 @@ public sealed class MainViewModel : ObservableObject
         Raise(nameof(RecordButtonText));
         if (!IsRecording) RecordingElapsed = "";
         foreach (var c in new[] { ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
-                                  ProjectsCommand, PlayerPlayPauseCommand }
+                                  ProjectsCommand, PlayerPlayPauseCommand,
+                                  DeleteSceneCommand, DeleteTakeCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
+        foreach (var ps in PaletteSources)
+            (ps.DeleteCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
     // ----- player -----

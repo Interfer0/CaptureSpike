@@ -2,8 +2,10 @@ namespace CaptureSpike.Core.Capture;
 
 /// <summary>
 /// Starts one capturer per enabled scene source against a shared t0.
-/// Fail-fast: if any source fails to start, the ones already running are
-/// torn down and the error surfaces — no half-recorded takes.
+/// All capturers start in parallel (not one after another), so a 4-source
+/// scene takes ~10s max instead of up to 40s. Fail-fast: if any source fails
+/// to start, the ones already running are torn down and the error surfaces —
+/// no half-recorded takes.
 /// </summary>
 public sealed class Recorder : IRecorder
 {
@@ -26,31 +28,36 @@ public sealed class Recorder : IRecorder
             throw new InvalidOperationException($"Scene '{scene.Title}' has no enabled sources.");
 
         var t0 = DateTimeOffset.UtcNow;
-        var started = new List<ISourceCapturer>();
+
+        // Create all capturers up front so a missing source fails before
+        // any process is launched.
+        var capturers = enabled.Select(sceneSource =>
+        {
+            var def = project.Sources.FirstOrDefault(p => p.Id == sceneSource.SourceId)
+                ?? throw new InvalidOperationException(
+                    $"Scene '{scene.Title}' references a source that no longer exists. " +
+                    "Remove it from the scene and try again.");
+            // MKV, not MP4: a killed ffmpeg/crash/power cut still leaves a
+            // playable file (no moov atom needed at the end).
+            var ext = def.Kind.IsVideo() ? "mkv" : "wav";
+            return CaptureFactory.Create(
+                project, def, Path.Combine(takeDir, $"{def.Id}.{ext}"), ffmpeg);
+        }).ToList();
+
         try
         {
-            foreach (var sceneSource in enabled)
-            {
-                var def = project.Sources.FirstOrDefault(p => p.Id == sceneSource.SourceId)
-                    ?? throw new InvalidOperationException(
-                        $"Scene '{scene.Title}' references a source that no longer exists. " +
-                        "Remove it from the scene and try again.");
-                var ext = def.Kind.IsVideo() ? "mp4" : "wav";
-                var capturer = CaptureFactory.Create(
-                    project, def, Path.Combine(takeDir, $"{def.Id}.{ext}"), ffmpeg);
-                await capturer.StartAsync(t0, ct).ConfigureAwait(false);
-                started.Add(capturer);
-            }
+            // Parallel start: every source warms up at once.
+            await Task.WhenAll(capturers.Select(c => c.StartAsync(t0, ct))).ConfigureAwait(false);
         }
         catch
         {
-            foreach (var c in started)
+            foreach (var c in capturers)
             {
                 try { await c.DisposeAsync().ConfigureAwait(false); } catch { }
             }
             throw;
         }
-        return new RecordingSession(_store, scene, takeDir, t0, started, progress);
+        return new RecordingSession(_store, scene, takeDir, t0, capturers, progress);
     }
 }
 

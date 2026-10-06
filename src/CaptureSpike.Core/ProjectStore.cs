@@ -18,6 +18,17 @@ public sealed class ProjectStore
         Converters = { new JsonStringEnumConverter() },
     };
 
+    /// <summary>
+    /// Writes JSON atomically: temp file + rename, so a crash mid-write
+    /// can't leave an empty or partial file behind.
+    /// </summary>
+    private static void WriteJsonAtomic(string path, string content)
+    {
+        var tmp = path + ".tmp";
+        File.WriteAllText(tmp, content);
+        File.Move(tmp, path, overwrite: true);
+    }
+
     public string ProjectDir { get; }
     public Project Project { get; private set; }
 
@@ -117,7 +128,7 @@ public sealed class ProjectStore
     }
 
     public void SaveProject() =>
-        File.WriteAllText(Path.Combine(ProjectDir, "project.json"),
+        WriteJsonAtomic(Path.Combine(ProjectDir, "project.json"),
             JsonSerializer.Serialize(Project, Json));
 
     private string ScenesDir => Path.Combine(ProjectDir, "scenes");
@@ -155,7 +166,7 @@ public sealed class ProjectStore
     }
 
     public void SaveScene(Scene scene) =>
-        File.WriteAllText(Path.Combine(SceneDir(scene.Id), "scene.json"),
+        WriteJsonAtomic(Path.Combine(SceneDir(scene.Id), "scene.json"),
             JsonSerializer.Serialize(scene, Json));
 
     public void DeleteScene(Scene scene)
@@ -210,7 +221,7 @@ public sealed class ProjectStore
     }
 
     public void SaveTake(string takeDir, Take take) =>
-        File.WriteAllText(Path.Combine(takeDir, "take.json"),
+        WriteJsonAtomic(Path.Combine(takeDir, "take.json"),
             JsonSerializer.Serialize(take, Json));
 
     public void DeleteTake(string sceneId, Take take)
@@ -245,7 +256,7 @@ public sealed class ProjectStore
             if (take is not null)
             {
                 take.Id = newId;
-                File.WriteAllText(Path.Combine(to, "take.json"),
+                WriteJsonAtomic(Path.Combine(to, "take.json"),
                     JsonSerializer.Serialize(take, Json));
             }
             return newId;

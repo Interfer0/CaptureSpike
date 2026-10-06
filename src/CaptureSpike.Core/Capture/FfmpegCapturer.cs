@@ -5,11 +5,12 @@ namespace CaptureSpike.Core.Capture;
 /// <summary>
 /// Records one source by driving an ffmpeg subprocess.
 ///
-/// First-data detection uses <c>-progress pipe:1</c>: the first
-/// <c>frame=N&gt;0</c> (video) or <c>out_time_ms&gt;0</c> (audio) line marks
-/// when this source really started producing data. If ffmpeg dies before
-/// that, Start fails fast with the device error instead of recording nothing.
-/// Stopping sends "q" so ffmpeg finalizes the file (writes the mp4 moov).
+/// First-data detection uses <c>-progress pipe:1</c> with
+/// <c>-stats_period 0.1</c>: the first <c>frame=N&gt;0</c> (video) or
+/// <c>out_time_ms&gt;0</c> (audio) line marks when this source really started
+/// producing data, accurate to ~0.1s. If ffmpeg dies before that, Start fails
+/// fast with the device error instead of recording nothing.
+/// Stopping sends "q" so ffmpeg finalizes the file.
 /// </summary>
 public sealed class FfmpegCapturer : ISourceCapturer
 {

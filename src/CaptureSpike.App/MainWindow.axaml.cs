@@ -37,6 +37,18 @@ public partial class MainWindow : Window
                 }
             }
         };
+
+        // Don't lose the take if the window is closed mid-recording:
+        // stop gracefully (writes take.json, finalizes files) before closing.
+        Closing += async (_, e) =>
+        {
+            if (DataContext is MainViewModel vm && vm.IsRecording)
+            {
+                e.Cancel = true;
+                await vm.StopRecordingAsync();
+                Close();
+            }
+        };
     }
 
     private void OnSeekPointerPressed(object? sender, PointerPressedEventArgs e)
