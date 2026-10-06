@@ -1325,6 +1325,8 @@ public sealed class MainViewModel : ObservableObject
             _playerTimer.Start();
             ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
             await player.PlayAsync();
+            // All sources are up; hide the loading overlay in the tiled window.
+            tiledWindow?.SetLoadingComplete();
         }
         catch (Exception ex)
         {

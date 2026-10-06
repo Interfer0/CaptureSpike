@@ -27,10 +27,13 @@ public sealed class TiledPlaybackWindow : Window
         public required Border Border;
         public required TaskCompletionSource<nint> HandleTcs;
         public TextBlock? MuteGlyph;
+        public TextBlock? MuteLabel;
+        public Panel? AudioPanel;
     }
 
     private readonly List<Tile> _tiles = new();
     private readonly Action<string> _onAudioTileClicked;
+    private TextBlock? _loadingText;
 
     public TiledPlaybackWindow(
         string title,
@@ -123,6 +126,14 @@ public sealed class TiledPlaybackWindow : Window
                     Foreground = Brushes.Gray,
                     HorizontalAlignment = HorizontalAlignment.Center,
                 };
+                var muteLabel = new TextBlock
+                {
+                    Text = "",
+                    FontSize = 12,
+                    FontWeight = FontWeight.Bold,
+                    Foreground = Brushes.Red,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                };
                 var hint = new TextBlock
                 {
                     Text = "click to mute",
@@ -139,13 +150,27 @@ public sealed class TiledPlaybackWindow : Window
                 stack.Children.Add(muteGlyph);
                 stack.Children.Add(labelBlock);
                 stack.Children.Add(fileBlock);
+                stack.Children.Add(muteLabel);
                 stack.Children.Add(hint);
-                border.Child = stack;
+                var audioPanel = new Panel { Background = Brushes.Black };
+                audioPanel.Children.Add(stack);
+                border.Child = audioPanel;
                 border.Cursor = new Cursor(StandardCursorType.Hand);
 
                 var capturedId = src.SourceId;
                 border.PointerPressed += (_, _) => _onAudioTileClicked(capturedId);
                 tcs.TrySetResult(nint.Zero);
+
+                _tiles.Add(new Tile
+                {
+                    SourceId = src.SourceId,
+                    Border = border,
+                    HandleTcs = tcs,
+                    MuteGlyph = muteGlyph,
+                    MuteLabel = muteLabel,
+                    AudioPanel = audioPanel,
+                });
+                continue;
             }
 
             Grid.SetRow(border, i / cols);
@@ -157,11 +182,24 @@ public sealed class TiledPlaybackWindow : Window
                 SourceId = src.SourceId,
                 Border = border,
                 HandleTcs = tcs,
-                MuteGlyph = muteGlyph,
             });
         }
 
-        Content = grid;
+        // Loading overlay (hidden when SetLoadingComplete is called).
+        _loadingText = new TextBlock
+        {
+            Text = "⏳ Loading sources...",
+            FontSize = 18,
+            Foreground = Brushes.White,
+            Background = new SolidColorBrush(Color.FromArgb(200, 0, 0, 0)),
+            Padding = new Thickness(20, 12),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var root = new Panel();
+        root.Children.Add(grid);
+        root.Children.Add(_loadingText);
+        Content = root;
     }
 
     /// <summary>Handles for each tile's native child, in tile order. 0 = no video / embedding failed.</summary>
@@ -188,10 +226,26 @@ public sealed class TiledPlaybackWindow : Window
         if (tile is not null) tile.Border.IsVisible = visible;
     }
 
-    /// <summary>Updates the mute glyph on an audio tile.</summary>
+    /// <summary>Updates the mute visual on an audio tile (glyph + red MUTED banner).</summary>
     public void SetTileMuted(string sourceId, bool muted)
     {
         var tile = _tiles.FirstOrDefault(t => t.SourceId == sourceId);
-        if (tile?.MuteGlyph is not null) tile.MuteGlyph.Text = muted ? "🔇" : "🔊";
+        if (tile is null) return;
+        if (tile.MuteGlyph is not null)
+            tile.MuteGlyph.Text = muted ? "🔇" : "🔊";
+        if (tile.MuteLabel is not null)
+            tile.MuteLabel.Text = muted ? "MUTED" : "";
+        if (tile.AudioPanel is not null)
+            tile.AudioPanel.Background = muted
+                ? new SolidColorBrush(Color.FromArgb(255, 60, 10, 10))
+                : Brushes.Black;
+        tile.Border.BorderBrush = muted ? Brushes.Red : Brushes.Gray;
+    }
+
+    /// <summary>Hides the loading overlay once all sources are playing.</summary>
+    public void SetLoadingComplete()
+    {
+        if (_loadingText is not null)
+            _loadingText.IsVisible = false;
     }
 }
