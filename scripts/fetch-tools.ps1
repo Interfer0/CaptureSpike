@@ -3,7 +3,9 @@
 # Binaries are gitignored; the app finds them via ToolPaths (bundled tools/<rid>/ first).
 
 $ErrorActionPreference = "Stop"
-$tools = Join-Path $PSScriptRoot ".." "tools" "win-x64"
+function Join-Many([string[]]$parts) { [System.IO.Path]::Combine($parts) }
+$repoRoot = Join-Many @($PSScriptRoot, "..")
+$tools = Join-Many @($repoRoot, "tools", "win-x64")
 New-Item -ItemType Directory -Force -Path $tools | Out-Null
 
 # --- ffmpeg (gyan.dev essentials build; includes gdigrab + dshow capture) ---
@@ -47,7 +49,7 @@ $exe = Get-ChildItem -Path $tmpDir -Recurse -Filter "mpv.exe" | Select-Object -F
 if (-not $exe) { throw "mpv.exe not found inside $($asset.name)." }
 Copy-Item $exe.FullName (Join-Path $tools "mpv.exe")
 # mpv is GPL-2.0-or-later: keep a copy of the source offer next to the binary.
-Copy-Item (Join-Path $PSScriptRoot ".." "tools" "THIRD-PARTY-LICENSES.md") (Join-Path $tools "THIRD-PARTY-LICENSES.md")
+Copy-Item (Join-Many @($repoRoot, "tools", "THIRD-PARTY-LICENSES.md")) (Join-Path $tools "THIRD-PARTY-LICENSES.md")
 Remove-Item -Recurse -Force $tmpDir
 
 Write-Host "Done. Binaries live in $tools (gitignored)."
