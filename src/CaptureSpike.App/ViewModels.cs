@@ -887,11 +887,13 @@ public sealed class MainViewModel : ObservableObject
                 row =>
                 {
                     _store.SaveTake(_store.TakeDir(row.Take.SceneId, row.Take.Id), row.Take);
-                    // If this take is currently playing, push offset updates live.
+                    // If this take is currently playing, push offset updates live
+                    // and re-seek so the change is visible immediately.
                     if (_player is TiledTakePlayer tiled && _playerTake?.Id == row.Take.Id)
                     {
                         foreach (var s in row.Take.Sources)
                             tiled.UpdateSourceOffset(s.Id, s.EffectiveOffsetMs);
+                        _ = tiled.SeekAsync(tiled.Position);
                     }
                 }));
         }
