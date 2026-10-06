@@ -137,6 +137,8 @@
         <DockPanel Grid.Row="1" IsEnabled="{Binding HasPlayerTake}" Margin="0,8,0,0">
           <Button DockPanel.Dock="Left" Content="{Binding PlayerPlayPauseText}"
                   Command="{Binding PlayerPlayPauseCommand}" Margin="0,0,8,0" />
+          <Button DockPanel.Dock="Left" Content="■" ToolTip.Tip="Stop and close playback"
+                  Command="{Binding PlayerStopCommand}" Margin="0,0,8,0" />
           <TextBlock DockPanel.Dock="Right" Text="{Binding PlayerTimeText}"
                      VerticalAlignment="Center" FontFamily="Monospace" Margin="8,0,0,0" />
           <Slider Minimum="0" Maximum="{Binding PlayerDurationSeconds}"
@@ -256,11 +258,11 @@
                                     IsVisible="{Binding HasOffset}">
                           <TextBlock Text="{Binding OffsetSummaryText}" FontSize="12" Opacity="0.7"
                                      VerticalAlignment="Center" FontFamily="Monospace" />
-                          <TextBlock Text="manual ms:" FontSize="12" Opacity="0.7"
+                          <TextBlock Text="offset ms:" FontSize="12" Opacity="0.7"
                                      VerticalAlignment="Center" />
-                          <NumericUpDown Value="{Binding ManualOffsetMs}" FontSize="12"
-                                         Width="100" Increment="10" Minimum="0" Maximum="60000"
-                                         VerticalAlignment="Center" />
+                          <TextBox Text="{Binding EditableOffsetMs, UpdateSourceTrigger=LostFocus}" FontSize="12"
+                                   Width="80" VerticalAlignment="Center"
+                                   ToolTip.Tip="Type an offset in milliseconds, Enter to apply" />
                           <Button Content="Reset" Command="{Binding ResetOffsetCommand}"
                                   FontSize="12" Padding="8,2" VerticalAlignment="Center"
                                   ToolTip.Tip="Clear manual offset, use recorded value" />

@@ -389,7 +389,28 @@ public sealed class TakeFileRow : ObservableObject
     public string RecordedOffsetText =>
         Source is null ? "" : $"recorded: {Source.OffsetMs:F0}ms";
 
-    /// <summary>Manual offset in ms. Null = use recorded. Setting saves take.json.</summary>
+    /// <summary>
+    /// Editable offset in ms. Shows the manual value if set, else the recorded
+    /// value. Setting it makes it manual (saves take.json).
+    /// </summary>
+    public double EditableOffsetMs
+    {
+        get => Source?.ManualOffsetMs ?? Source?.OffsetMs ?? 0;
+        set
+        {
+            if (Source is null) return;
+            // Only mark as manual if it differs from the recorded value.
+            var newManual = Math.Abs(value - Source.OffsetMs) < 0.5 ? null : (double?)value;
+            if (Source.ManualOffsetMs == newManual) return;
+            Source.ManualOffsetMs = newManual;
+            _onOffsetChanged();
+            Raise(nameof(EditableOffsetMs));
+            Raise(nameof(OffsetSummaryText));
+            ((RelayCommand)ResetOffsetCommand).RaiseCanExecuteChanged();
+        }
+    }
+
+    /// <summary>Manual offset in ms (null = use recorded). Kept for binding compat.</summary>
     public double? ManualOffsetMs
     {
         get => Source?.ManualOffsetMs;
@@ -399,6 +420,7 @@ public sealed class TakeFileRow : ObservableObject
             Source.ManualOffsetMs = value;
             _onOffsetChanged();
             Raise(nameof(ManualOffsetMs));
+            Raise(nameof(EditableOffsetMs));
             Raise(nameof(OffsetSummaryText));
             ((RelayCommand)ResetOffsetCommand).RaiseCanExecuteChanged();
         }
@@ -419,6 +441,7 @@ public sealed class TakeFileRow : ObservableObject
         Source.ManualOffsetMs = null;
         _onOffsetChanged();
         Raise(nameof(ManualOffsetMs));
+        Raise(nameof(EditableOffsetMs));
         Raise(nameof(OffsetSummaryText));
         ((RelayCommand)ResetOffsetCommand).RaiseCanExecuteChanged();
     }
@@ -619,6 +642,8 @@ public sealed class MainViewModel : ObservableObject
             () => HasProject && !_starting && (IsRecording || SelectedScene is not null));
         _playerTimer.Tick += (_, _) => UpdatePlayerState();
         PlayerPlayPauseCommand = new RelayCommand(TogglePlayerPlayPauseAsync,
+            () => _player is not null && !IsRecording);
+        PlayerStopCommand = new RelayCommand(async () => await UnloadPlayerAsync(),
             () => _player is not null && !IsRecording);
         foreach (var kind in Enum.GetValues<SourceKind>())
         {
@@ -1277,7 +1302,7 @@ public sealed class MainViewModel : ObservableObject
 
     public string PlayerPlayPauseText => IsPlayerPlaying ? "⏸ Pause" : "▶ Play";
     public ICommand PlayerPlayPauseCommand { get; }
-
+    public ICommand PlayerStopCommand { get; }
 
     /// <summary>
     /// Plays a take with all video sources tiled in one window, in sync.
@@ -1379,6 +1404,7 @@ public sealed class MainViewModel : ObservableObject
             }
             _playerTimer.Start();
             ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
+            ((RelayCommand)PlayerStopCommand).RaiseCanExecuteChanged();
             await player.PlayAsync();
             // All sources are up; hide the loading overlay in the tiled window.
             tiledWindow?.SetLoadingComplete();
@@ -1417,6 +1443,8 @@ public sealed class MainViewModel : ObservableObject
         if (_playerError is null) Raise(nameof(PlayerPlaceholderText));
         if (PlayerPlayPauseCommand is not null)
             ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
+        if (PlayerStopCommand is not null)
+            ((RelayCommand)PlayerStopCommand).RaiseCanExecuteChanged();
     }
 
     private void UpdatePlayerState()

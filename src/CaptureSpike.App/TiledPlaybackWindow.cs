@@ -100,6 +100,12 @@ public sealed class TiledPlaybackWindow : Window
                 panel.Children.Add(caption);
                 border.Child = panel;
                 // Video tile: TCS completes when the native handle is created.
+                _tiles.Add(new Tile
+                {
+                    SourceId = src.SourceId,
+                    Border = border,
+                    HandleTcs = tcs,
+                });
             }
             else
             {
@@ -170,19 +176,11 @@ public sealed class TiledPlaybackWindow : Window
                     MuteLabel = muteLabel,
                     AudioPanel = audioPanel,
                 });
-                continue;
             }
 
             Grid.SetRow(border, i / cols);
             Grid.SetColumn(border, i % cols);
             grid.Children.Add(border);
-
-            _tiles.Add(new Tile
-            {
-                SourceId = src.SourceId,
-                Border = border,
-                HandleTcs = tcs,
-            });
         }
 
         // Loading overlay (hidden when SetLoadingComplete is called).
