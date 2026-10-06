@@ -21,7 +21,21 @@ public partial class MainWindow : Window
 
         Opened += (_, _) =>
         {
-            if (DataContext is MainViewModel vm) vm.StartupAsync();
+            if (DataContext is MainViewModel vm)
+            {
+                vm.StartupAsync();
+                // Keep the log pinned to the newest line.
+                var logBox = this.FindControl<ListBox>("LogListBox");
+                if (logBox is not null)
+                {
+                    vm.LogLines.CollectionChanged += (_, e) =>
+                    {
+                        if (e.NewItems?.Count > 0)
+                            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                                logBox.ScrollIntoView(e.NewItems[^1]!));
+                    };
+                }
+            }
         };
     }
 

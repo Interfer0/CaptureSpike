@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows.Input;
+using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
@@ -591,7 +592,58 @@ public sealed class MainViewModel : ObservableObject
     }
 
     private string _status = "No project open.";
-    public string Status { get => _status; set => SetField(ref _status, value); }
+    public string Status
+    {
+        get => _status;
+        set
+        {
+            if (SetField(ref _status, value))
+                Log(value);
+        }
+    }
+
+    // ----- Log output panel -----
+
+    public ObservableCollection<string> LogLines { get; } = new();
+
+    /// <summary>Appends a timestamped line to the log panel (capped at 500).</summary>
+    public void Log(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return;
+        LogLines.Add($"{DateTime.Now:HH:mm:ss} {message}");
+        while (LogLines.Count > 500) LogLines.RemoveAt(0);
+    }
+
+    public ICommand ClearLogCommand { get; }
+
+    private bool _isLogVisible = true;
+    public bool IsLogVisible
+    {
+        get => _isLogVisible;
+        set => SetField(ref _isLogVisible, value);
+    }
+
+    private bool _isSourcesVisible = true;
+    public bool IsSourcesVisible
+    {
+        get => _isSourcesVisible;
+        set
+        {
+            if (SetField(ref _isSourcesVisible, value))
+            {
+                Raise(nameof(SourcesRowHeight));
+                Raise(nameof(SourcesSplitterHeight));
+            }
+        }
+    }
+
+    /// <summary>Grid row height for the Sources panel (collapses to 0 when hidden).</summary>
+    public GridLength SourcesRowHeight =>
+        IsSourcesVisible ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+
+    /// <summary>Grid row height for the spacer above Sources (collapses when hidden).</summary>
+    public GridLength SourcesSplitterHeight =>
+        IsSourcesVisible ? new GridLength(8) : new GridLength(0);
 
     private string _projectName = "";
     public string ProjectName { get => _projectName; set => SetField(ref _projectName, value); }
@@ -659,6 +711,7 @@ public sealed class MainViewModel : ObservableObject
         AddPaletteSourceCommand = new RelayCommand(AddPaletteSourceAsync, () => HasProject && !IsRecording);
         AddSceneSourceCommand = new RelayCommand(AddSceneSource,
             () => HasProject && !IsRecording && SelectedScene is not null && SelectedPaletteSourceToAdd is not null);
+        ClearLogCommand = new RelayCommand(() => LogLines.Clear());
     }
 
     /// <summary>
@@ -889,11 +942,13 @@ public sealed class MainViewModel : ObservableObject
                     _store.SaveTake(_store.TakeDir(row.Take.SceneId, row.Take.Id), row.Take);
                     // If this take is currently playing, push offset updates live
                     // and re-seek so the change is visible immediately.
+                    // Capture the take-time BEFORE updating offsets.
                     if (_player is TiledTakePlayer tiled && _playerTake?.Id == row.Take.Id)
                     {
+                        var takeTime = tiled.Position;
                         foreach (var s in row.Take.Sources)
                             tiled.UpdateSourceOffset(s.Id, s.EffectiveOffsetMs);
-                        _ = tiled.SeekAsync(tiled.Position);
+                        _ = tiled.SeekAsync(takeTime);
                     }
                 }));
         }

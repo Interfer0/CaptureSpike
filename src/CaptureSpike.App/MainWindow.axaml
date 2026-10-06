@@ -48,6 +48,12 @@
           <Separator />
           <MenuItem Header="_Settings..." Command="{Binding SettingsCommand}" />
         </MenuItem>
+        <MenuItem Header="_View">
+          <MenuItem Header="Sources Panel" ToggleType="CheckBox"
+                    IsChecked="{Binding IsSourcesVisible, Mode=TwoWay}" />
+          <MenuItem Header="Log Output" ToggleType="CheckBox"
+                    IsChecked="{Binding IsLogVisible, Mode=TwoWay}" />
+        </MenuItem>
       </Menu>
     </DockPanel>
 
@@ -55,9 +61,28 @@
       <TextBlock Text="{Binding Status}" FontSize="15" Opacity="0.8" />
     </Border>
 
+    <!-- Log output: drag the splitter above it to show more lines -->
+    <DockPanel DockPanel.Dock="Bottom" IsVisible="{Binding IsLogVisible}" Height="150">
+      <DockPanel DockPanel.Dock="Top" Margin="8,4,8,2">
+        <Button DockPanel.Dock="Right" Classes="plain" Content="Clear"
+                Command="{Binding ClearLogCommand}" FontSize="13"
+                ToolTip.Tip="Clear the log" />
+        <TextBlock Text="Log" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" />
+      </DockPanel>
+      <ListBox x:Name="LogListBox" ItemsSource="{Binding LogLines}" Margin="8,0,8,6"
+               FontFamily="Monospace" FontSize="12" />
+    </DockPanel>
+    <GridSplitter DockPanel.Dock="Bottom" Height="5" HorizontalAlignment="Stretch"
+                  ResizeDirection="Rows" IsVisible="{Binding IsLogVisible}" />
+
     <Grid ColumnDefinitions="260,*,340" Margin="8">
       <!-- Scenes + source palette -->
-      <Grid Grid.Column="0" Margin="0,0,8,0" RowDefinitions="2*,8,1*">
+      <Grid Grid.Column="0" Margin="0,0,8,0">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="2*" />
+          <RowDefinition Height="{Binding SourcesSplitterHeight}" />
+          <RowDefinition Height="{Binding SourcesRowHeight}" />
+        </Grid.RowDefinitions>
         <DockPanel Grid.Row="0">
           <TextBlock DockPanel.Dock="Top" Text="Scenes" FontWeight="Bold" Margin="0,0,0,4" />
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">
@@ -80,7 +105,7 @@
           </ListBox>
         </DockPanel>
 
-        <DockPanel Grid.Row="2">
+        <DockPanel Grid.Row="2" IsVisible="{Binding IsSourcesVisible}">
           <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
             <Button DockPanel.Dock="Right" Content="+" Command="{Binding AddPaletteSourceCommand}"
                     ToolTip.Tip="Add a source to the palette" />

@@ -8,10 +8,11 @@ namespace CaptureSpike.App;
 /// (handles provided by the caller), audio sources play headless.
 /// One shared transport (play/pause/seek) drives every source.
 ///
-/// Offset model: each source's take.json offsetMs is a per-source delay.
-/// Playback seeks each source directly to its offset, so the number shown
-/// in the UI is exactly how far into that file playback starts. Editing a
-/// source's offset visibly moves that source.
+/// Offset model (matches FilterGraphBuilder): each source's take.json
+/// offsetMs says how late its file-time 0 sits on the take timeline.
+/// Offsets are normalized by subtracting the smallest, so at take-time T
+/// a source is at file-time (T - relativeOffset). A source with a larger
+/// offset shows earlier file content at the same take-time.
 /// </summary>
 public sealed class TiledTakePlayer : IPlayer
 {
@@ -64,15 +65,21 @@ public sealed class TiledTakePlayer : IPlayer
         });
     }
 
+    private double MinOffsetSec => _players.Count == 0 ? 0 : _players.Min(p => p.OffsetSec);
+
+    /// <summary>Offset normalized like FilterGraphBuilder (smallest = 0).</summary>
+    private double RelativeOffsetSec(SourcePlayer p) =>
+        Math.Max(0, p.OffsetSec - MinOffsetSec);
+
     public TimeSpan Position
     {
         get
         {
-            // Take-time = file-time minus the source's offset.
+            // Take-time = file-time + relative offset.
             var p = _players.FirstOrDefault(x => x.Included);
             if (p is null) return TimeSpan.Zero;
             return TimeSpan.FromSeconds(
-                Math.Max(0, p.Engine.Position.TotalSeconds - p.OffsetSec));
+                Math.Max(0, p.Engine.Position.TotalSeconds + RelativeOffsetSec(p)));
         }
     }
 
@@ -87,13 +94,17 @@ public sealed class TiledTakePlayer : IPlayer
     }
 
     /// <summary>
-    /// Seeks each source directly to its offset, then plays.
-    /// The offset you see in the UI is exactly where that video starts.
+    /// Seeks each source to its offset-aligned start position, then plays.
+    /// Starts at take-time = largest relative offset so every source has
+    /// a valid file position and all show the same take-time.
     /// </summary>
     public async Task PlayAlignedAsync(CancellationToken ct = default)
     {
+        var startTakeTime = _players.Where(p => p.Included)
+            .Select(RelativeOffsetSec).DefaultIfEmpty(0).Max();
         var tasks = _players.Where(p => p.Included).Select(p =>
-            p.Engine.SeekAsync(TimeSpan.FromSeconds(p.OffsetSec), ct));
+            p.Engine.SeekAsync(
+                TimeSpan.FromSeconds(Math.Max(0, startTakeTime - RelativeOffsetSec(p))), ct));
         await Task.WhenAll(tasks).ConfigureAwait(false);
         await PlayAsync(ct).ConfigureAwait(false);
     }
@@ -104,12 +115,12 @@ public sealed class TiledTakePlayer : IPlayer
         await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    /// <summary>Seeks every included source to take-time + its offset.</summary>
+    /// <summary>Seeks every included source to take-time minus its relative offset.</summary>
     public async Task SeekAsync(TimeSpan position, CancellationToken ct = default)
     {
         var tasks = _players.Where(p => p.Included).Select(p =>
             p.Engine.SeekAsync(
-                TimeSpan.FromSeconds(Math.Max(0, position.TotalSeconds + p.OffsetSec)), ct));
+                TimeSpan.FromSeconds(Math.Max(0, position.TotalSeconds - RelativeOffsetSec(p))), ct));
         await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
@@ -128,7 +139,7 @@ public sealed class TiledTakePlayer : IPlayer
             // Rejoin at the current take-time; resume if the group is playing.
             var wasPlaying = IsPlaying;
             await p.Engine.SeekAsync(
-                TimeSpan.FromSeconds(Math.Max(0, Position.TotalSeconds + p.OffsetSec)), ct)
+                TimeSpan.FromSeconds(Math.Max(0, Position.TotalSeconds - RelativeOffsetSec(p))), ct)
                 .ConfigureAwait(false);
             if (wasPlaying) await p.Engine.PlayAsync(ct).ConfigureAwait(false);
         }
