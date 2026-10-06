@@ -123,9 +123,9 @@
         </DockPanel>
       </Grid>
 
-      <!-- Take workspace: preview + takes -->
+      <!-- Take workspace: transport + takes (video plays in popup windows) -->
       <Grid Grid.Column="1" Margin="0,0,8,0"
-            RowDefinitions="Auto,3*,Auto,Auto,Auto,Auto,2*">
+            RowDefinitions="Auto,Auto,Auto,Auto,Auto,2*">
         <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,4">
           <TextBlock Text="{Binding TakeHeaderText}" FontWeight="Bold" FontSize="17" />
           <TextBlock Text="{Binding TakeSceneHeader}" Opacity="0.6"
@@ -134,18 +134,7 @@
                      VerticalAlignment="Center" IsVisible="{Binding HasPlayerTake}" />
         </StackPanel>
 
-        <Border Grid.Row="1" BorderThickness="1" BorderBrush="Gray" CornerRadius="4"
-                ClipToBounds="True" Background="Black">
-          <Panel>
-            <app:MpvVideoHost x:Name="VideoHost" />
-            <TextBlock Text="{Binding PlayerPlaceholderText}"
-                       HorizontalAlignment="Center" VerticalAlignment="Center"
-                       Opacity="0.6" TextAlignment="Center" TextWrapping="Wrap" Margin="24"
-                       IsVisible="{Binding !HasPlayerTake}" />
-          </Panel>
-        </Border>
-
-        <DockPanel Grid.Row="2" IsEnabled="{Binding HasPlayerTake}" Margin="0,8,0,0">
+        <DockPanel Grid.Row="1" IsEnabled="{Binding HasPlayerTake}" Margin="0,8,0,0">
           <Button DockPanel.Dock="Left" Content="{Binding PlayerPlayPauseText}"
                   Command="{Binding PlayerPlayPauseCommand}" Margin="0,0,8,0" />
           <TextBlock DockPanel.Dock="Right" Text="{Binding PlayerTimeText}"
@@ -157,7 +146,7 @@
                   PointerReleased="OnSeekPointerReleased" />
         </DockPanel>
 
-        <ItemsControl Grid.Row="3" ItemsSource="{Binding PlayerTracks}"
+        <ItemsControl Grid.Row="2" ItemsSource="{Binding PlayerTracks}"
                       IsVisible="{Binding HasPlayerTake}">
           <ItemsControl.ItemsPanel>
             <ItemsPanelTemplate>
@@ -173,8 +162,7 @@
                 <TextBlock Text="{Binding Label}" VerticalAlignment="Center" FontSize="15" />
                 <Button Classes="plain" Content="{Binding IncludeIcon}"
                         Command="{Binding ToggleIncludeCommand}"
-                        ToolTip.Tip="{Binding IncludeTip}" FontSize="17"
-                        IsVisible="{Binding $parent[ItemsControl].DataContext.IsMultiWindow}" />
+                        ToolTip.Tip="{Binding IncludeTip}" FontSize="17" />
                 <Button Classes="plain" Content="{Binding MuteIcon}"
                         Command="{Binding ToggleMuteCommand}"
                         ToolTip.Tip="{Binding MuteTip}" FontSize="17" />
@@ -182,11 +170,11 @@
             </DataTemplate>
           </ItemsControl.ItemTemplate>
         </ItemsControl>
-        <TextBlock Grid.Row="4" Text="{Binding PlayerCaptionText}"
+        <TextBlock Grid.Row="3" Text="{Binding PlayerCaptionText}"
                    FontSize="14" Opacity="0.5" Margin="0,2,0,0"
                    IsVisible="{Binding HasPlayerTake}" />
 
-        <DockPanel Grid.Row="5" Margin="0,8,0,4">
+        <DockPanel Grid.Row="4" Margin="0,8,0,4">
           <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="6">
             <TextBlock Text="Takes" FontWeight="Bold" VerticalAlignment="Center" />
             <Border Classes="badge" VerticalAlignment="Center">
@@ -213,7 +201,7 @@
           </ItemsControl>
         </DockPanel>
 
-        <ListBox Grid.Row="6" ItemsSource="{Binding Takes}"
+        <ListBox Grid.Row="5" ItemsSource="{Binding Takes}"
                  SelectedItem="{Binding SelectedTake}">
           <ListBox.ItemTemplate>
             <DataTemplate>

@@ -69,7 +69,10 @@ public sealed class MultiWindowPlayer : IPlayer
         Func<TakeSource, string, SourcePlaybackWindow> createWindow,
         CancellationToken ct = default)
     {
-        var isVideo = source.Kind.IsVideo();
+        // Decide by file type, not Kind: a mislabeled palette entry shouldn't
+        // silently lose its window. We record .wav for audio; anything else
+        // gets a window (mpv shows black if there's no video stream).
+        var isVideo = !Path.GetExtension(filePath).Equals(".wav", StringComparison.OrdinalIgnoreCase);
         SourcePlaybackWindow? window = null;
         nint handle = 0;
         if (isVideo)

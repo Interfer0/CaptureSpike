@@ -504,9 +504,9 @@ public sealed class MainViewModel : ObservableObject
             {
                 Raise(nameof(IsFavorite));
                 Raise(nameof(TakeHeaderText));
-                if (value is not null && value.Take.Id != oldId)
-                    LoadPlayerTake(value.Take, value.DisplayName);
-                else if (value is null)
+                // Selection no longer auto-plays; use the take's play button
+                // for multi-window playback.
+                if (value is null)
                     _ = UnloadPlayerAsync();
             }
         }
@@ -1175,22 +1175,6 @@ public sealed class MainViewModel : ObservableObject
 
     public ObservableCollection<PlayerTrackRow> PlayerTracks { get; } = new();
 
-    /// <summary>Native child-window handle from MpvVideoHost. 0 = not embedded.</summary>
-    private nint _videoHandle;
-    public nint VideoHandle
-    {
-        get => _videoHandle;
-        set
-        {
-            if (_videoHandle == value) return;
-            _videoHandle = value;
-            if (value == nint.Zero)
-                _ = UnloadPlayerAsync();
-            else if (_playerTake is not null && _player is null)
-                LoadPlayerTake(_playerTake, _playerDisplayName);
-        }
-    }
-
     public bool HasPlayerTake => _playerTake is not null;
     /// <summary>True when the take is playing in per-source windows.</summary>
     public bool IsMultiWindow => _player is MultiWindowPlayer;
@@ -1236,85 +1220,7 @@ public sealed class MainViewModel : ObservableObject
     public string PlayerPlayPauseText => IsPlayerPlaying ? "⏸ Pause" : "▶ Play";
     public ICommand PlayerPlayPauseCommand { get; }
 
-    private async void LoadPlayerTake(Take take, string? displayName = null)
-    {
-        if (_store is null || IsRecording) return;
-        if (_playerTake?.Id == take.Id && _player is not null) return;
 
-        // Keep continuations on the UI thread: everything below raises
-        // property notifications bound to the UI.
-        await UnloadPlayerAsync();
-        var sceneId = SelectedScene?.Scene.Id;
-        if (sceneId is null) return;
-
-        _playerTake = take;
-        _playerSceneId = sceneId;
-        _playerError = null;
-        if (displayName is not null)
-        {
-            _playerDisplayName = displayName;
-            NowPlayingText = $"▶ {displayName} · full take ({take.Sources.Count} sources)";
-            PlayerCaptionText = "Tracks play in sync using the start offsets in take.json.";
-        }
-        Raise(nameof(HasPlayerTake));
-        Raise(nameof(PlayerPlaceholderText));
-
-        try
-        {
-            var scene = SelectedScene!.Scene;
-            var takeDir = _store.TakeDir(sceneId, take.Id);
-            try
-            {
-                await StartPlayerEngineAsync(scene, takeDir, take, _videoHandle);
-            }
-            catch when (_videoHandle != nint.Zero)
-            {
-                // Embedding failed (e.g. unexpected platform handle): fall back
-                // to mpv's own window rather than leaving the take unplayable.
-                await StartPlayerEngineAsync(scene, takeDir, take, nint.Zero);
-                Status = "Video embedding isn't working on this machine — mpv opened its own window.";
-            }
-
-            PlayerTracks.Clear();
-            foreach (var ts in take.Sources)
-            {
-                var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
-                    ?? ts.Kind.DefaultLabel();
-                var badge = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
-                    ?? ts.Kind.Badge();
-                var row = new PlayerTrackRow(ts, label, badge);
-                row.ToggleMuteCommand = new RelayCommand(() => ToggleTrackMuteAsync(row));
-                PlayerTracks.Add(row);
-            }
-            _playerTimer.Start();
-            ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
-        }
-        catch (Exception ex)
-        {
-            _playerError = ex.Message;
-            await UnloadPlayerAsync();
-            Raise(nameof(PlayerPlaceholderText));
-        }
-    }
-
-    private async Task StartPlayerEngineAsync(Scene scene, string takeDir, Take take, nint handle)
-    {
-        var engine = new MpvPlaybackEngine { EmbedWindowHandle = handle };
-        try
-        {
-            engine.PlaybackEnded += OnPlayerEnded;
-            await engine.LoadAsync(_store!.Project, scene, takeDir, take).ConfigureAwait(false);
-            _player = engine;
-            Raise(nameof(IsMultiWindow));
-        }
-        catch
-        {
-            await engine.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
-    }
-
-    /// <summary>Plays one source file from a take (no filter graph, no track toggles).</summary>
     /// <summary>
     /// Plays a take with each source in its own synchronized window.
     /// </summary>
@@ -1397,21 +1303,6 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void OnPlayerEnded()
-    {
-        // mpv hit end-of-file: rewind and pause for instant replay.
-        Avalonia.Threading.Dispatcher.UIThread.Post(async () =>
-        {
-            if (_player is null) return;
-            try
-            {
-                await _player.SeekAsync(TimeSpan.Zero);
-                await _player.PauseAsync();
-            }
-            catch { /* player is going away */ }
-        });
-    }
-
     private async Task UnloadPlayerAsync()
     {
         _playerTimer?.Stop();
@@ -1473,7 +1364,7 @@ public sealed class MainViewModel : ObservableObject
 
     private async void ToggleTrackMuteAsync(PlayerTrackRow row)
     {
-        if (_player is null) return;
+        if (_player is not MultiWindowPlayer multi) return;
         var muting = !row.IsMuted;
         if (muting && PlayerTracks.All(t => t == row || t.IsMuted))
         {
@@ -1482,10 +1373,7 @@ public sealed class MainViewModel : ObservableObject
         }
         try
         {
-            if (_player is MultiWindowPlayer multi)
-                await multi.SetSourceMutedAsync(row.SourceId, muting);
-            else if (_player is MpvPlaybackEngine engine)
-                await engine.SetTrackMutedAsync(row.SourceId, muting);
+            await multi.SetSourceMutedAsync(row.SourceId, muting);
             row.IsMuted = muting;
         }
         catch (Exception ex) { Status = $"Mute: {ex.Message}"; }

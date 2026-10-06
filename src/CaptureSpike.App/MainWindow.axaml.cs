@@ -10,19 +10,6 @@ public partial class MainWindow : Window
     {
         AvaloniaXamlLoader.Load(this);
 
-        var host = this.FindControl<MpvVideoHost>("VideoHost");
-        if (host is not null)
-        {
-            host.HandleCreated += h =>
-            {
-                if (DataContext is MainViewModel vm) vm.VideoHandle = h;
-            };
-            host.HandleDestroyed += () =>
-            {
-                if (DataContext is MainViewModel vm) vm.VideoHandle = nint.Zero;
-            };
-        }
-
         Opened += (_, _) =>
         {
             if (DataContext is MainViewModel vm) vm.StartupAsync();
