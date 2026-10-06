@@ -1494,10 +1494,13 @@ public sealed class MainViewModel : ObservableObject
         if (_player is null) return;
         try
         {
-            Status = $"Seeking to {seconds:F1}s...";
+            // Seek reliably: pause, seek, then resume if it was playing.
+            // (Seeking while playing doesn't take effect on some mpv builds.)
+            var wasPlaying = _player.IsPlaying;
+            if (wasPlaying) await _player.PauseAsync();
             await _player.SeekAsync(TimeSpan.FromSeconds(seconds));
             PlayerPositionSeconds = seconds;
-            Status = $"Seeked to {seconds:F1}s";
+            if (wasPlaying) await _player.PlayAsync();
         }
         catch (Exception ex) { Status = $"Seek: {ex.Message}"; }
     }
