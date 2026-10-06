@@ -3,5 +3,19 @@
              x:Class="CaptureSpike.App.App">
   <Application.Styles>
     <FluentTheme />
+    <!-- Base font size bump: the UI was set too small to read comfortably.
+         Explicit per-control sizes in the windows scale up from here. -->
+    <Style Selector="TextBlock">
+      <Setter Property="FontSize" Value="15" />
+    </Style>
+    <Style Selector="Button">
+      <Setter Property="FontSize" Value="15" />
+    </Style>
+    <Style Selector="TextBox">
+      <Setter Property="FontSize" Value="15" />
+    </Style>
+    <Style Selector="ComboBox">
+      <Setter Property="FontSize" Value="15" />
+    </Style>
   </Application.Styles>
 </Application>

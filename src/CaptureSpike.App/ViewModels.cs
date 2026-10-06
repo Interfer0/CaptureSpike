@@ -319,22 +319,42 @@ public sealed class PlayerTrackRow(TakeSource source, string label) : Observable
     public ICommand ToggleMuteCommand { get; set; } = null!;
 }
 
-public sealed class TakeFileRow(string fileName, long bytes)
+public sealed class TakeFileRow
 {
-    public string FileName { get; } = fileName;
+    public TakeFileRow(string fullPath, long bytes, string? sourceLabel, Action<TakeFileRow> play)
+    {
+        FullPath = fullPath;
+        Bytes = bytes;
+        FileName = Path.GetFileName(fullPath)!;
+        SourceLabel = sourceLabel;
+        PlayCommand = new RelayCommand(() => play(this));
+        var ext = Path.GetExtension(fullPath).ToLowerInvariant();
+        IsPlayable = ext is ".mp4" or ".wav";
+    }
+
+    public string FullPath { get; }
+    public string FileName { get; }
+    /// <summary>Palette label of the source that produced this file (null for take.json).</summary>
+    public string? SourceLabel { get; }
+    /// <summary>Only media files can be previewed.</summary>
+    public bool IsPlayable { get; }
+    public ICommand PlayCommand { get; }
+    public string DisplayName =>
+        SourceLabel is not null ? $"{SourceLabel} — {FileName}" : FileName;
     public string SizeText => Bytes switch
     {
         < 1024 => $"{Bytes} B",
         < 1024 * 1024 => $"{Bytes / 1024.0:F1} KB",
         _ => $"{Bytes / (1024.0 * 1024):F1} MB",
     };
-    private long Bytes { get; } = bytes;
+    private long Bytes { get; }
 }
 
 public sealed class TakeRow : ObservableObject
 {
     public TakeRow(Take take, int number, bool isFavorite, string folderPath,
-        Action<TakeRow> toggleFavorite, Action<TakeRow> delete, Action<TakeRow> openFolder)
+        Action<TakeRow> toggleFavorite, Action<TakeRow> delete, Action<TakeRow> openFolder,
+        Func<string, string?> sourceLabel, Action<TakeRow, TakeFileRow> playFile)
     {
         Take = take;
         Number = number;
@@ -344,6 +364,8 @@ public sealed class TakeRow : ObservableObject
         DeleteCommand = new RelayCommand(() => delete(this));
         OpenFolderCommand = new RelayCommand(() => openFolder(this));
         ToggleExpandedCommand = new RelayCommand(() => IsExpanded = !IsExpanded);
+        _sourceLabel = sourceLabel;
+        _playFile = playFile;
     }
 
     public Take Take { get; }
@@ -366,6 +388,9 @@ public sealed class TakeRow : ObservableObject
     public string FolderPath { get; }
     public ObservableCollection<TakeFileRow> Files { get; } = new();
 
+    private readonly Func<string, string?> _sourceLabel;
+    private readonly Action<TakeRow, TakeFileRow> _playFile;
+
     private bool _isExpanded;
     public bool IsExpanded
     {
@@ -387,7 +412,14 @@ public sealed class TakeRow : ObservableObject
         try
         {
             foreach (var f in Directory.GetFiles(FolderPath).OrderBy(Path.GetFileName))
-                Files.Add(new TakeFileRow(Path.GetFileName(f)!, new FileInfo(f).Length));
+            {
+                var name = Path.GetFileName(f)!;
+                var ts = Take.Sources.FirstOrDefault(s =>
+                    s.File.Equals(name, StringComparison.OrdinalIgnoreCase));
+                var label = ts is null ? null : _sourceLabel(ts.Id);
+                Files.Add(new TakeFileRow(f, new FileInfo(f).Length, label,
+                    row => _playFile(this, row)));
+            }
         }
         catch
         {
@@ -442,7 +474,7 @@ public sealed class MainViewModel : ObservableObject
                 Raise(nameof(IsFavorite));
                 Raise(nameof(TakeHeaderText));
                 if (value is not null && value.Take.Id != oldId)
-                    LoadPlayerTake(value.Take);
+                    LoadPlayerTake(value.Take, value.DisplayName);
                 else if (value is null)
                     _ = UnloadPlayerAsync();
             }
@@ -721,7 +753,9 @@ public sealed class MainViewModel : ObservableObject
             if (activeKinds.Count > 0 && !activeKinds.All(k => t.Sources.Any(s => s.Kind == k)))
                 continue;
             Takes.Add(new TakeRow(t, n++, t.Id == fav, _store.TakeDir(t.SceneId, t.Id),
-                ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder));
+                ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder,
+                id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label,
+                PlayTakeFileRow));
         }
         SelectedScene.TakeCount = all.Count;
         SelectedTake = Takes.FirstOrDefault(t => t.Take.Id == selectedId);
@@ -1094,6 +1128,15 @@ public sealed class MainViewModel : ObservableObject
     private Take? _playerTake;
     private string? _playerSceneId;
     private string? _playerError;
+    private string? _playerDisplayName;
+
+    /// <summary>What the preview is currently playing, e.g. "Take 05 · screen.mp4".</summary>
+    private string _nowPlaying = "";
+    public string NowPlayingText { get => _nowPlaying; set => SetField(ref _nowPlaying, value); }
+
+    /// <summary>Caption under the preview: sync note for full takes, single-file note otherwise.</summary>
+    private string _playerCaption = "";
+    public string PlayerCaptionText { get => _playerCaption; set => SetField(ref _playerCaption, value); }
     private bool _playerScrubbing;
     private readonly DispatcherTimer _playerTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
 
@@ -1111,7 +1154,7 @@ public sealed class MainViewModel : ObservableObject
             if (value == nint.Zero)
                 _ = UnloadPlayerAsync();
             else if (_playerTake is not null && _player is null)
-                LoadPlayerTake(_playerTake);
+                LoadPlayerTake(_playerTake, _playerDisplayName);
         }
     }
 
@@ -1158,7 +1201,7 @@ public sealed class MainViewModel : ObservableObject
     public string PlayerPlayPauseText => IsPlayerPlaying ? "⏸ Pause" : "▶ Play";
     public ICommand PlayerPlayPauseCommand { get; }
 
-    private async void LoadPlayerTake(Take take)
+    private async void LoadPlayerTake(Take take, string? displayName = null)
     {
         if (_store is null || IsRecording) return;
         if (_playerTake?.Id == take.Id && _player is not null) return;
@@ -1172,6 +1215,12 @@ public sealed class MainViewModel : ObservableObject
         _playerTake = take;
         _playerSceneId = sceneId;
         _playerError = null;
+        if (displayName is not null)
+        {
+            _playerDisplayName = displayName;
+            NowPlayingText = $"▶ {displayName} · full take ({take.Sources.Count} sources)";
+            PlayerCaptionText = "Tracks play in sync using the start offsets in take.json.";
+        }
         Raise(nameof(HasPlayerTake));
         Raise(nameof(PlayerPlaceholderText));
 
@@ -1227,6 +1276,61 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>Plays one source file from a take (no filter graph, no track toggles).</summary>
+    private async void PlayTakeFileRow(TakeRow row, TakeFileRow file)
+    {
+        if (_store is null || IsRecording) return;
+
+        await UnloadPlayerAsync();
+        var sceneId = SelectedScene?.Scene.Id;
+        if (sceneId is null) return;
+
+        _playerTake = row.Take;
+        _playerSceneId = sceneId;
+        _playerDisplayName = $"{row.DisplayName} · {file.FileName}";
+        _playerError = null;
+        NowPlayingText = $"▶ {_playerDisplayName}";
+        PlayerCaptionText = "Playing a single source file.";
+        Raise(nameof(HasPlayerTake));
+        Raise(nameof(PlayerPlaceholderText));
+
+        try
+        {
+            var engine = new MpvPlaybackEngine { EmbedWindowHandle = _videoHandle };
+            try
+            {
+                engine.PlaybackEnded += OnPlayerEnded;
+                try
+                {
+                    await engine.LoadSingleFileAsync(file.FullPath).ConfigureAwait(false);
+                }
+                catch when (_videoHandle != nint.Zero)
+                {
+                    // Embedding failed: fall back to mpv's own window.
+                    engine.EmbedWindowHandle = nint.Zero;
+                    await engine.LoadSingleFileAsync(file.FullPath).ConfigureAwait(false);
+                    Status = "Video embedding isn't working on this machine — mpv opened its own window.";
+                }
+                _player = engine;
+            }
+            catch
+            {
+                await engine.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+
+            PlayerTracks.Clear();
+            _playerTimer.Start();
+            ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
+        }
+        catch (Exception ex)
+        {
+            _playerError = ex.Message;
+            await UnloadPlayerAsync();
+            Raise(nameof(PlayerPlaceholderText));
+        }
+    }
+
     private void OnPlayerEnded()
     {
         // mpv hit end-of-file: rewind and pause for instant replay.
@@ -1250,6 +1354,9 @@ public sealed class MainViewModel : ObservableObject
         _player = null;
         _playerTake = null;
         _playerSceneId = null;
+        _playerDisplayName = null;
+        NowPlayingText = "";
+        PlayerCaptionText = "";
         if (player is not null)
             await player.DisposeAsync().ConfigureAwait(false);
         PlayerPositionSeconds = 0;

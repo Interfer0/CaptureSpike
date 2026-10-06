@@ -4,13 +4,13 @@
         Title="Settings" Width="460" SizeToContent="Height"
         WindowStartupLocation="CenterOwner" CanResize="False">
   <StackPanel Margin="16" Spacing="8">
-    <TextBlock Text="Projects folder" FontSize="12" Opacity="0.7" />
+    <TextBlock Text="Projects folder" FontSize="15" Opacity="0.7" />
     <DockPanel>
       <Button DockPanel.Dock="Right" Content="Browse…" Click="OnBrowse" Margin="8,0,0,0" />
       <TextBox x:Name="FolderBox" />
     </DockPanel>
     <TextBlock Text="New projects are created here. Existing projects stay where they are."
-               FontSize="11" Opacity="0.5" TextWrapping="Wrap" />
+               FontSize="14" Opacity="0.5" TextWrapping="Wrap" />
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                 Spacing="8" Margin="0,8,0,0">
       <Button Content="Cancel" Click="OnCancel" />

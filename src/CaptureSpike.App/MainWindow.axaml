@@ -27,9 +27,9 @@
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8"
                   VerticalAlignment="Center" Margin="0,0,8,0">
         <TextBlock Text="{Binding ProjectFolderText}"
-                   VerticalAlignment="Center" FontSize="12" Opacity="0.6" />
+                   VerticalAlignment="Center" FontSize="15" Opacity="0.6" />
         <Button Content="Projects" Command="{Binding ProjectsCommand}"
-                FontSize="12" Padding="8,2" />
+                FontSize="15" Padding="8,2" />
       </StackPanel>
       <Menu>
         <MenuItem Header="_File">
@@ -43,7 +43,7 @@
     </DockPanel>
 
     <Border DockPanel.Dock="Bottom" BorderThickness="0,1,0,0" BorderBrush="Gray" Padding="8,4">
-      <TextBlock Text="{Binding Status}" FontSize="12" Opacity="0.8" />
+      <TextBlock Text="{Binding Status}" FontSize="15" Opacity="0.8" />
     </Border>
 
     <Grid ColumnDefinitions="260,*,340" Margin="8">
@@ -117,9 +117,11 @@
       <Grid Grid.Column="1" Margin="0,0,8,0"
             RowDefinitions="Auto,3*,Auto,Auto,Auto,Auto,2*">
         <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,4">
-          <TextBlock Text="{Binding TakeHeaderText}" FontWeight="Bold" FontSize="14" />
+          <TextBlock Text="{Binding TakeHeaderText}" FontWeight="Bold" FontSize="17" />
           <TextBlock Text="{Binding TakeSceneHeader}" Opacity="0.6"
                      VerticalAlignment="Center" />
+          <TextBlock Text="{Binding NowPlayingText}" FontWeight="SemiBold"
+                     VerticalAlignment="Center" IsVisible="{Binding HasPlayerTake}" />
         </StackPanel>
 
         <Border Grid.Row="1" BorderThickness="1" BorderBrush="Gray" CornerRadius="4"
@@ -158,16 +160,16 @@
                 <Border Classes="badge">
                   <TextBlock Text="{Binding Badge}" />
                 </Border>
-                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" FontSize="12" />
+                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" FontSize="15" />
                 <Button Classes="plain" Content="{Binding MuteIcon}"
                         Command="{Binding ToggleMuteCommand}"
-                        ToolTip.Tip="{Binding MuteTip}" FontSize="14" />
+                        ToolTip.Tip="{Binding MuteTip}" FontSize="17" />
               </StackPanel>
             </DataTemplate>
           </ItemsControl.ItemTemplate>
         </ItemsControl>
-        <TextBlock Grid.Row="4" Text="Tracks play in sync using the start offsets in take.json."
-                   FontSize="11" Opacity="0.5" Margin="0,2,0,0"
+        <TextBlock Grid.Row="4" Text="{Binding PlayerCaptionText}"
+                   FontSize="14" Opacity="0.5" Margin="0,2,0,0"
                    IsVisible="{Binding HasPlayerTake}" />
 
         <DockPanel Grid.Row="5" Margin="0,8,0,4">
@@ -204,17 +206,17 @@
               <StackPanel>
                 <DockPanel>
                   <Button DockPanel.Dock="Left" Classes="plain" Content="{Binding ExpandGlyph}"
-                          Command="{Binding ToggleExpandedCommand}" FontSize="10"
+                          Command="{Binding ToggleExpandedCommand}" FontSize="13"
                           ToolTip.Tip="Show take files" />
                   <Button DockPanel.Dock="Left" Classes="plain" Content="{Binding StarText}"
-                          Command="{Binding ToggleFavoriteCommand}" FontSize="13"
+                          Command="{Binding ToggleFavoriteCommand}" FontSize="16"
                           ToolTip.Tip="Mark as favorite" />
                   <Button DockPanel.Dock="Right" Classes="plain" Content="🗑"
                           Command="{Binding DeleteCommand}" ToolTip.Tip="Delete take" />
                   <Button DockPanel.Dock="Right" Classes="plain" Content="📁"
                           Command="{Binding OpenFolderCommand}" ToolTip.Tip="Open take folder" />
                   <TextBlock DockPanel.Dock="Right" Text="{Binding Duration}" Opacity="0.6"
-                             VerticalAlignment="Center" Margin="8,0" FontSize="12" />
+                             VerticalAlignment="Center" Margin="8,0" FontSize="15" />
                   <TextBlock Text="{Binding DisplayName}" FontWeight="Bold"
                              VerticalAlignment="Center" Margin="4,0,8,0" />
                   <ItemsControl ItemsSource="{Binding Badges}" VerticalAlignment="Center">
@@ -237,10 +239,14 @@
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
                       <DockPanel>
+                        <Button DockPanel.Dock="Left" Classes="plain" Content="▶"
+                                Command="{Binding PlayCommand}" FontSize="13"
+                                ToolTip.Tip="Play this file" Margin="0,0,4,0"
+                                IsVisible="{Binding IsPlayable}" />
                         <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" Opacity="0.6"
-                                   FontSize="11" FontFamily="Monospace"
+                                   FontSize="14" FontFamily="Monospace"
                                    VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding FileName}" FontSize="11" Opacity="0.85"
+                        <TextBlock Text="{Binding DisplayName}" FontSize="14" Opacity="0.85"
                                    FontFamily="Monospace" VerticalAlignment="Center" />
                       </DockPanel>
                     </DataTemplate>
@@ -256,17 +262,17 @@
       <DockPanel Grid.Column="2">
         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8"
                     Margin="0,0,0,4">
-          <TextBlock Text="{Binding SelectedScene.Title}" FontWeight="Bold" FontSize="14" />
+          <TextBlock Text="{Binding SelectedScene.Title}" FontWeight="Bold" FontSize="17" />
           <TextBlock Text="{Binding SceneNumberText}" Opacity="0.6"
                      VerticalAlignment="Center" />
         </StackPanel>
         <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
-          <TextBlock Text="Title" FontSize="12" Opacity="0.7" />
+          <TextBlock Text="Title" FontSize="15" Opacity="0.7" />
           <TextBox Text="{Binding SelectedScene.Title, Mode=TwoWay}" />
         </StackPanel>
 
         <TextBlock DockPanel.Dock="Top" Text="Sources in this scene"
-                   FontSize="12" Opacity="0.7" Margin="0,0,0,4" />
+                   FontSize="15" Opacity="0.7" Margin="0,0,0,4" />
         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
           <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddSceneSourceCommand}" />
           <ComboBox ItemsSource="{Binding AvailablePaletteSources}"
@@ -303,7 +309,7 @@
                       </Border>
                       <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
                     </StackPanel>
-                    <TextBlock Text="{Binding DeviceLabel}" FontSize="11" Opacity="0.6"
+                    <TextBlock Text="{Binding DeviceLabel}" FontSize="14" Opacity="0.6"
                                Margin="22,0,0,0" />
                   </StackPanel>
                 </Button>
@@ -311,28 +317,28 @@
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>
-        <TextBlock DockPanel.Dock="Top" FontSize="11" Opacity="0.5" TextWrapping="Wrap"
+        <TextBlock DockPanel.Dock="Top" FontSize="14" Opacity="0.5" TextWrapping="Wrap"
                    Margin="0,0,0,8"
                    Text="Click a source to turn it off for the next take. × takes it out of this scene." />
 
         <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,4">
           <Button Content="{Binding RecordButtonText}" Command="{Binding ToggleRecordCommand}"
-                  FontSize="16" HorizontalAlignment="Stretch"
+                  FontSize="19" HorizontalAlignment="Stretch"
                   HorizontalContentAlignment="Center" Padding="8" />
-          <TextBlock Text="{Binding RecordingElapsed}" FontFamily="Monospace" FontSize="14"
+          <TextBlock Text="{Binding RecordingElapsed}" FontFamily="Monospace" FontSize="17"
                      HorizontalAlignment="Center" IsVisible="{Binding IsRecording}" />
         </StackPanel>
-        <TextBlock DockPanel.Dock="Top" Text="{Binding NextTakeText}" FontSize="12"
+        <TextBlock DockPanel.Dock="Top" Text="{Binding NextTakeText}" FontSize="15"
                    Opacity="0.6" HorizontalAlignment="Center" Margin="0,0,0,4" />
-        <TextBlock DockPanel.Dock="Top" FontSize="11" Opacity="0.5" TextWrapping="Wrap"
+        <TextBlock DockPanel.Dock="Top" FontSize="14" Opacity="0.5" TextWrapping="Wrap"
                    HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,8"
                    Text="The window minimizes during the countdown. Stop with F9." />
 
         <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
-          <TextBlock Text="Script and notes" FontSize="12" Opacity="0.7" />
+          <TextBlock Text="Script and notes" FontSize="15" Opacity="0.7" />
           <TextBox Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
                    AcceptsReturn="True" Height="80" TextWrapping="Wrap" />
-          <TextBlock Text="{Binding SelectedScene.WordCountText}" FontSize="11" Opacity="0.6" />
+          <TextBlock Text="{Binding SelectedScene.WordCountText}" FontSize="14" Opacity="0.6" />
         </StackPanel>
 
       </DockPanel>

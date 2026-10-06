@@ -27,6 +27,9 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
     private Scene? _scene;
     private string? _takeDir;
     private Take? _take;
+    /// <summary>Single-file playback mode (play one source file, no filter graph).</summary>
+    private string? _singleFile;
+    private double _singleFileDurationSec;
     private readonly HashSet<string> _muted = new(StringComparer.Ordinal);
 
     private double _positionSec;
@@ -46,7 +49,9 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
     public TimeSpan Position => TimeSpan.FromSeconds(Math.Max(0, _positionSec));
 
     public TimeSpan Duration =>
-        _take is null ? TimeSpan.Zero : TimeSpan.FromSeconds(Math.Max(0, _take.DurationSeconds));
+        _take is not null ? TimeSpan.FromSeconds(Math.Max(0, _take.DurationSeconds)) :
+        _singleFile is not null ? TimeSpan.FromSeconds(Math.Max(0, _singleFileDurationSec)) :
+        TimeSpan.Zero;
 
     public bool IsPlaying => _loaded && !_paused;
 
@@ -63,6 +68,30 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
             _scene = scene;
             _takeDir = takeDir;
             _take = take;
+            _singleFile = null;
+            _muted.Clear();
+            await StartMpvAsync(positionSec: 0, startPaused: false, ct).ConfigureAwait(false);
+            _loaded = true;
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// Plays a single media file (e.g. one source's MP4/WAV from a take folder)
+    /// without the take's filter graph. Muting does not apply in this mode.
+    /// </summary>
+    public async Task LoadSingleFileAsync(string filePath, CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await StopInternalAsync().ConfigureAwait(false);
+            _project = null;
+            _scene = null;
+            _takeDir = null;
+            _take = null;
+            _singleFile = filePath;
+            _singleFileDurationSec = 0;
             _muted.Clear();
             await StartMpvAsync(positionSec: 0, startPaused: false, ct).ConfigureAwait(false);
             _loaded = true;
@@ -127,13 +156,28 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
 
         var mpv = ToolPaths.Resolve("mpv", _mpvPathOverride);
 
-        var take = _take!;
-        var files = take.Sources.Select(s => Path.Combine(_takeDir!, s.File)).ToList();
-        var missing = files.FirstOrDefault(f => !File.Exists(f));
-        if (missing is not null)
-            throw new FileNotFoundException($"Take media file is missing: {missing}");
+        List<string> files;
+        string? graph = null;
+        if (_take is not null)
+        {
+            var take = _take;
+            files = take.Sources.Select(s => Path.Combine(_takeDir!, s.File)).ToList();
+            var missing = files.FirstOrDefault(f => !File.Exists(f));
+            if (missing is not null)
+                throw new FileNotFoundException($"Take media file is missing: {missing}");
 
-        var graph = FilterGraphBuilder.Build(_project!, _scene!, take, _muted);
+            graph = FilterGraphBuilder.Build(_project!, _scene!, take, _muted);
+        }
+        else if (_singleFile is not null)
+        {
+            if (!File.Exists(_singleFile))
+                throw new FileNotFoundException($"Media file is missing: {_singleFile}");
+            files = new List<string> { _singleFile };
+        }
+        else
+        {
+            throw new InvalidOperationException("Nothing to play: no take or file was loaded.");
+        }
 
         var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         var sockId = Guid.NewGuid().ToString("N");
@@ -163,7 +207,8 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
         psi.ArgumentList.Add("--no-terminal");
         psi.ArgumentList.Add("--msg-level=all=no");
         psi.ArgumentList.Add($"--input-ipc-server={ipcArg}");
-        psi.ArgumentList.Add($"--lavfi-complex={graph}");
+        if (graph is not null)
+            psi.ArgumentList.Add($"--lavfi-complex={graph}");
         psi.ArgumentList.Add("--keep-open=no");
         psi.ArgumentList.Add("--osd-level=0");
         psi.ArgumentList.Add(startPaused ? "--pause" : "--no-pause");
@@ -202,7 +247,7 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
         _paused = startPaused;
         _pollTimer.Change(TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(250));
 
-        // Fail fast if mpv rejected the graph: it exits within a second or two.
+        // Fail fast if mpv rejected the startup: it exits within a second or two.
         await Task.Delay(800, ct).ConfigureAwait(false);
         if (process.HasExited && process.ExitCode != 0)
         {
@@ -231,6 +276,11 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
             if (pos.HasValue) _positionSec = pos.Value;
             var paused = await ipc.GetPropertyAsync<bool?>("pause").ConfigureAwait(false);
             if (paused.HasValue) _paused = paused.Value;
+            if (_take is null && _singleFile is not null)
+            {
+                var dur = await ipc.GetPropertyAsync<double?>("duration").ConfigureAwait(false);
+                if (dur.HasValue) _singleFileDurationSec = dur.Value;
+            }
         }
         catch { /* transient: next tick retries */ }
         finally { Interlocked.Exchange(ref _polling, 0); }

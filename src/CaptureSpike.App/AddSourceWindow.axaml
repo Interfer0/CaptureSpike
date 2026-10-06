@@ -4,12 +4,12 @@
         Title="Add Source" Width="340" SizeToContent="Height"
         WindowStartupLocation="CenterOwner" CanResize="False">
   <StackPanel Margin="16" Spacing="8">
-    <TextBlock Text="Kind" FontSize="12" Opacity="0.7" />
+    <TextBlock Text="Kind" FontSize="15" Opacity="0.7" />
     <ComboBox x:Name="KindBox" HorizontalAlignment="Stretch" />
-    <TextBlock Text="Label" FontSize="12" Opacity="0.7" />
+    <TextBlock Text="Label" FontSize="15" Opacity="0.7" />
     <TextBox x:Name="LabelBox" />
     <TextBlock Text="Device (optional — blank means the default device)"
-               FontSize="12" Opacity="0.7" />
+               FontSize="15" Opacity="0.7" />
     <TextBox x:Name="DeviceBox" PlaceholderText="default" />
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                 Spacing="8" Margin="0,8,0,0">

@@ -4,7 +4,7 @@
         Title="Projects" Width="520" Height="440"
         WindowStartupLocation="CenterOwner">
   <DockPanel Margin="16">
-    <TextBlock DockPanel.Dock="Top" x:Name="LibraryLabel" FontSize="11" Opacity="0.6"
+    <TextBlock DockPanel.Dock="Top" x:Name="LibraryLabel" FontSize="14" Opacity="0.6"
                TextWrapping="Wrap" Margin="0,0,0,4" />
     <StackPanel DockPanel.Dock="Bottom" Spacing="6" Margin="0,8,0,0">
       <TextBlock Text="New project" FontWeight="Bold" />
@@ -22,7 +22,7 @@
         <DataTemplate>
           <StackPanel Spacing="1" Margin="4">
             <TextBlock Text="{Binding Name}" FontWeight="Bold" />
-            <TextBlock Text="{Binding Info}" FontSize="11" Opacity="0.6" />
+            <TextBlock Text="{Binding Info}" FontSize="14" Opacity="0.6" />
           </StackPanel>
         </DataTemplate>
       </ListBox.ItemTemplate>
