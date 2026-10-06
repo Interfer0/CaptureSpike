@@ -390,21 +390,22 @@ public sealed class TakeFileRow : ObservableObject
         Source is null ? "" : $"recorded: {Source.OffsetMs:F0}ms";
 
     /// <summary>
-    /// Editable offset in ms. Shows the manual value if set, else the recorded
-    /// value. Setting it makes it manual (saves take.json).
+    /// Editable offset as text. Shows the manual value if set, else the recorded
+    /// value. Setting it parses and makes it manual (saves take.json).
     /// </summary>
-    public double EditableOffsetMs
+    public string EditableOffsetText
     {
-        get => Source?.ManualOffsetMs ?? Source?.OffsetMs ?? 0;
+        get => (Source?.ManualOffsetMs ?? Source?.OffsetMs ?? 0).ToString("F0");
         set
         {
             if (Source is null) return;
+            if (!double.TryParse(value, out var parsed)) return;
             // Only mark as manual if it differs from the recorded value.
-            var newManual = Math.Abs(value - Source.OffsetMs) < 0.5 ? null : (double?)value;
+            var newManual = Math.Abs(parsed - Source.OffsetMs) < 0.5 ? null : (double?)parsed;
             if (Source.ManualOffsetMs == newManual) return;
             Source.ManualOffsetMs = newManual;
             _onOffsetChanged();
-            Raise(nameof(EditableOffsetMs));
+            Raise(nameof(EditableOffsetText));
             Raise(nameof(OffsetSummaryText));
             ((RelayCommand)ResetOffsetCommand).RaiseCanExecuteChanged();
         }
@@ -420,7 +421,7 @@ public sealed class TakeFileRow : ObservableObject
             Source.ManualOffsetMs = value;
             _onOffsetChanged();
             Raise(nameof(ManualOffsetMs));
-            Raise(nameof(EditableOffsetMs));
+            Raise(nameof(EditableOffsetText));
             Raise(nameof(OffsetSummaryText));
             ((RelayCommand)ResetOffsetCommand).RaiseCanExecuteChanged();
         }
@@ -441,7 +442,7 @@ public sealed class TakeFileRow : ObservableObject
         Source.ManualOffsetMs = null;
         _onOffsetChanged();
         Raise(nameof(ManualOffsetMs));
-        Raise(nameof(EditableOffsetMs));
+        Raise(nameof(EditableOffsetText));
         Raise(nameof(OffsetSummaryText));
         ((RelayCommand)ResetOffsetCommand).RaiseCanExecuteChanged();
     }
@@ -1385,11 +1386,16 @@ public sealed class MainViewModel : ObservableObject
             }
 
             var player = new TiledTakePlayer(take.DurationSeconds);
-            foreach (var (source, _, _, filePath, isVideo) in items)
+            var offsetInfo = new List<string>();
+            foreach (var (source, label, _, filePath, isVideo) in items)
             {
                 var handle = isVideo && handles.TryGetValue(source.Id, out var h) ? h : nint.Zero;
                 await player.AddSourceAsync(source, filePath, handle);
+                var eff = source.EffectiveOffsetMs;
+                var manual = source.ManualOffsetMs is not null ? " (manual)" : "";
+                offsetInfo.Add($"{label}={eff:F0}ms{manual}");
             }
+            Status = $"Playing {row.DisplayName} with offsets: {string.Join(", ", offsetInfo)}";
             _player = player;
             _tiledWindow = tiledWindow;
             Raise(nameof(IsMultiWindow));

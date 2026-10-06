@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 
 namespace CaptureSpike.App;
@@ -24,12 +25,12 @@ public partial class MainWindow : Window
         };
     }
 
-    private void OnSeekPointerPressed(object? sender, PointerPressedEventArgs e)
+    private void OnSeekGotFocus(object? sender, RoutedEventArgs e)
     {
         if (DataContext is MainViewModel vm) vm.BeginScrub();
     }
 
-    private void OnSeekPointerReleased(object? sender, PointerReleasedEventArgs e)
+    private void OnSeekLostFocus(object? sender, RoutedEventArgs e)
     {
         if (DataContext is MainViewModel vm && sender is Slider slider)
             vm.EndScrub(slider.Value);
