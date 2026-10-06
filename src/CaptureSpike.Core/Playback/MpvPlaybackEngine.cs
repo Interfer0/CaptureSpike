@@ -13,7 +13,7 @@ namespace CaptureSpike.Core.Playback;
 /// and composites the scene layout. Muting/hiding a track rebuilds the
 /// graph and restarts mpv at the previous position.
 /// </summary>
-public sealed class MpvPlaybackEngine : IPlaybackEngine
+public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
 {
     private readonly string? _mpvPathOverride;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -45,6 +45,12 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
 
     /// <summary>Native window handle mpv should render into (0 = its own window).</summary>
     public nint EmbedWindowHandle { get; set; }
+
+    /// <summary>
+    /// When true, mpv holds the last frame instead of exiting at end-of-file.
+    /// Used by multi-window playback so shorter sources wait for longer ones.
+    /// </summary>
+    public bool KeepOpen { get; set; }
 
     public TimeSpan Position => TimeSpan.FromSeconds(Math.Max(0, _positionSec));
 
@@ -80,7 +86,7 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
     /// Plays a single media file (e.g. one source's MP4/WAV from a take folder)
     /// without the take's filter graph. Muting does not apply in this mode.
     /// </summary>
-    public async Task LoadSingleFileAsync(string filePath, CancellationToken ct = default)
+    public async Task LoadSingleFileAsync(string filePath, bool startPaused = false, CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -93,10 +99,17 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
             _singleFile = filePath;
             _singleFileDurationSec = 0;
             _muted.Clear();
-            await StartMpvAsync(positionSec: 0, startPaused: false, ct).ConfigureAwait(false);
+            await StartMpvAsync(positionSec: 0, startPaused: startPaused, ct).ConfigureAwait(false);
             _loaded = true;
         }
         finally { _gate.Release(); }
+    }
+
+    /// <summary>Mutes/unmutes mpv's audio output (set_property mute).</summary>
+    public async Task SetMutedAsync(bool muted, CancellationToken ct = default)
+    {
+        var ipc = RequireIpc();
+        await ipc.SetPropertyAsync("mute", muted, ct).ConfigureAwait(false);
     }
 
     public async Task PlayAsync(CancellationToken ct = default) =>
@@ -209,7 +222,7 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
         psi.ArgumentList.Add($"--input-ipc-server={ipcArg}");
         if (graph is not null)
             psi.ArgumentList.Add($"--lavfi-complex={graph}");
-        psi.ArgumentList.Add("--keep-open=no");
+        psi.ArgumentList.Add(KeepOpen ? "--keep-open=yes" : "--keep-open=no");
         psi.ArgumentList.Add("--osd-level=0");
         psi.ArgumentList.Add(startPaused ? "--pause" : "--no-pause");
         if (EmbedWindowHandle != 0)
@@ -239,7 +252,17 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
         }
 
         _process = process;
-        _ipc.EventReceived += OnMpvEvent;
+        var ipc = _ipc ?? throw new InvalidOperationException("mpv IPC did not connect.");
+        ipc.TrafficLog = LogIpcTraffic;
+        ipc.EventReceived += OnMpvEvent;
+
+        // Event-driven position tracking (mpv-recommended): mpv pushes the
+        // current value immediately, then updates on change. Polling remains
+        // as a fallback in PollState.
+        await ipc.CommandAsync(["observe_property", 1, "time-pos"], ct).ConfigureAwait(false);
+        await ipc.CommandAsync(["observe_property", 2, "pause"], ct).ConfigureAwait(false);
+        if (_take is null && _singleFile is not null)
+            await ipc.CommandAsync(["observe_property", 3, "duration"], ct).ConfigureAwait(false);
 
         if (positionSec > 0.5)
             await _ipc.CommandAsync(["seek", positionSec, "absolute"], ct).ConfigureAwait(false);
@@ -261,9 +284,54 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine
 
     private void OnMpvEvent(System.Text.Json.JsonElement ev)
     {
-        if (ev.TryGetProperty("event", out var name) && name.GetString() == "end-file")
+        if (!ev.TryGetProperty("event", out var nameProp)) return;
+        var name = nameProp.GetString();
+        if (name == "end-file")
+        {
             PlaybackEnded?.Invoke();
+            return;
+        }
+        if (name == "property-change" &&
+            ev.TryGetProperty("id", out var idProp) &&
+            idProp.ValueKind == System.Text.Json.JsonValueKind.Number)
+        {
+            var hasData = ev.TryGetProperty("data", out var data) &&
+                          data.ValueKind != System.Text.Json.JsonValueKind.Null;
+            switch (idProp.GetInt32())
+            {
+                case 1 when hasData: // time-pos
+                    _positionSec = data.GetDouble();
+                    break;
+                case 2 when hasData: // pause
+                    _paused = data.GetBoolean();
+                    break;
+                case 3 when hasData: // duration (single file)
+                    _singleFileDurationSec = data.GetDouble();
+                    break;
+            }
+        }
     }
+
+    private static readonly object IpcLogLock = new();
+    private static string? _ipcLogPath;
+
+    private static void LogIpcTraffic(string line)
+    {
+        try
+        {
+            lock (IpcLogLock)
+            {
+                _ipcLogPath ??= Path.Combine(Path.GetTempPath(),
+                    $"capturespike-mpv-ipc-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+                File.AppendAllText(_ipcLogPath,
+                    $"[{DateTime.Now:HH:mm:ss.fff}] {line}{Environment.NewLine}");
+            }
+        }
+        catch { /* diagnostics must never break playback */ }
+    }
+
+    /// <summary>Path of the current session's mpv IPC traffic log (for diagnostics).</summary>
+    public static string? IpcLogPath => _ipcLogPath;
 
     private async void PollState(object? _)
     {

@@ -171,6 +171,10 @@
                   <TextBlock Text="{Binding Badge}" />
                 </Border>
                 <TextBlock Text="{Binding Label}" VerticalAlignment="Center" FontSize="15" />
+                <Button Classes="plain" Content="{Binding IncludeIcon}"
+                        Command="{Binding ToggleIncludeCommand}"
+                        ToolTip.Tip="{Binding IncludeTip}" FontSize="17"
+                        IsVisible="{Binding $parent[ItemsControl].DataContext.IsMultiWindow}" />
                 <Button Classes="plain" Content="{Binding MuteIcon}"
                         Command="{Binding ToggleMuteCommand}"
                         ToolTip.Tip="{Binding MuteTip}" FontSize="17" />
@@ -215,6 +219,9 @@
             <DataTemplate>
               <StackPanel>
                 <DockPanel>
+                  <Button DockPanel.Dock="Left" Classes="plain" Content="▶"
+                          Command="{Binding PlayTakeCommand}" FontSize="15"
+                          ToolTip.Tip="Play each source in its own window" />
                   <Button DockPanel.Dock="Left" Classes="plain" Content="{Binding ExpandGlyph}"
                           Command="{Binding ToggleExpandedCommand}" FontSize="13"
                           ToolTip.Tip="Show take files" />
@@ -249,10 +256,6 @@
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
                       <DockPanel>
-                        <Button DockPanel.Dock="Left" Classes="plain" Content="▶"
-                                Command="{Binding PlayCommand}" FontSize="13"
-                                ToolTip.Tip="Play this file" Margin="0,0,4,0"
-                                IsVisible="{Binding IsPlayable}" />
                         <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" Opacity="0.6"
                                    FontSize="14" FontFamily="Monospace"
                                    VerticalAlignment="Center" />

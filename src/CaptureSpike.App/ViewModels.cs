@@ -329,30 +329,44 @@ public sealed class PlayerTrackRow(TakeSource source, string label, string badge
         : (IsMuted ? "🔇" : "🔊");
     public string MuteTip => (IsMuted ? "Show " : "Hide ") + label;
 
+    private bool _isIncluded = true;
+    /// <summary>Whether this source is included in multi-window playback.</summary>
+    public bool IsIncluded
+    {
+        get => _isIncluded;
+        set
+        {
+            if (SetField(ref _isIncluded, value))
+            {
+                Raise(nameof(IncludeIcon));
+                Raise(nameof(IncludeTip));
+            }
+        }
+    }
+
+    public string IncludeIcon => IsIncluded ? "👁" : "🚫";
+    public string IncludeTip => (IsIncluded ? "Exclude " : "Include ") + label + " from playback";
+
     /// <summary>Assigned by MainViewModel after construction.</summary>
     public ICommand ToggleMuteCommand { get; set; } = null!;
+    /// <summary>Assigned by MainViewModel after construction (multi-window only).</summary>
+    public ICommand ToggleIncludeCommand { get; set; } = null!;
 }
 
 public sealed class TakeFileRow
 {
-    public TakeFileRow(string fullPath, long bytes, string? sourceLabel, Action<TakeFileRow> play)
+    public TakeFileRow(string fullPath, long bytes, string? sourceLabel)
     {
         FullPath = fullPath;
         Bytes = bytes;
         FileName = Path.GetFileName(fullPath)!;
         SourceLabel = sourceLabel;
-        PlayCommand = new RelayCommand(() => play(this));
-        var ext = Path.GetExtension(fullPath).ToLowerInvariant();
-        IsPlayable = ext is ".mp4" or ".wav";
     }
 
     public string FullPath { get; }
     public string FileName { get; }
     /// <summary>Palette label of the source that produced this file (null for take.json).</summary>
     public string? SourceLabel { get; }
-    /// <summary>Only media files can be previewed.</summary>
-    public bool IsPlayable { get; }
-    public ICommand PlayCommand { get; }
     public string DisplayName =>
         SourceLabel is not null ? $"{SourceLabel} — {FileName}" : FileName;
     public string SizeText => Bytes switch
@@ -369,7 +383,7 @@ public sealed class TakeRow : ObservableObject
     public TakeRow(Take take, int number, bool isFavorite, string folderPath,
         Action<TakeRow> toggleFavorite, Action<TakeRow> delete, Action<TakeRow> openFolder,
         Func<string, string?> sourceLabel, Func<string, string?> sourceBadge,
-        Action<TakeRow, TakeFileRow> playFile)
+        Action<TakeRow> playTake)
     {
         Take = take;
         Number = number;
@@ -379,9 +393,9 @@ public sealed class TakeRow : ObservableObject
         DeleteCommand = new RelayCommand(() => delete(this));
         OpenFolderCommand = new RelayCommand(() => openFolder(this));
         ToggleExpandedCommand = new RelayCommand(() => IsExpanded = !IsExpanded);
+        PlayTakeCommand = new RelayCommand(() => playTake(this));
         _sourceLabel = sourceLabel;
         _sourceBadge = sourceBadge;
-        _playFile = playFile;
     }
 
     public Take Take { get; }
@@ -400,6 +414,7 @@ public sealed class TakeRow : ObservableObject
     public ICommand DeleteCommand { get; }
     public ICommand OpenFolderCommand { get; }
     public ICommand ToggleExpandedCommand { get; }
+    public ICommand PlayTakeCommand { get; }
 
     /// <summary>Take folder on disk; listed when the row is expanded.</summary>
     public string FolderPath { get; }
@@ -407,7 +422,6 @@ public sealed class TakeRow : ObservableObject
 
     private readonly Func<string, string?> _sourceLabel;
     private readonly Func<string, string?> _sourceBadge;
-    private readonly Action<TakeRow, TakeFileRow> _playFile;
 
     private bool _isExpanded;
     public bool IsExpanded
@@ -435,8 +449,7 @@ public sealed class TakeRow : ObservableObject
                 var ts = Take.Sources.FirstOrDefault(s =>
                     s.File.Equals(name, StringComparison.OrdinalIgnoreCase));
                 var label = ts is null ? null : _sourceLabel(ts.Id);
-                Files.Add(new TakeFileRow(f, new FileInfo(f).Length, label,
-                    row => _playFile(this, row)));
+                Files.Add(new TakeFileRow(f, new FileInfo(f).Length, label));
             }
         }
         catch
@@ -775,7 +788,7 @@ public sealed class MainViewModel : ObservableObject
                 ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
-                PlayTakeFileRow));
+                PlayTakeMultiWindow));
         }
         SelectedScene.TakeCount = all.Count;
         SelectedTake = Takes.FirstOrDefault(t => t.Take.Id == selectedId);
@@ -1144,7 +1157,7 @@ public sealed class MainViewModel : ObservableObject
 
     // ----- player -----
 
-    private MpvPlaybackEngine? _player;
+    private IPlayer? _player;
     private Take? _playerTake;
     private string? _playerSceneId;
     private string? _playerError;
@@ -1179,6 +1192,8 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public bool HasPlayerTake => _playerTake is not null;
+    /// <summary>True when the take is playing in per-source windows.</summary>
+    public bool IsMultiWindow => _player is MultiWindowPlayer;
     public string PlayerPlaceholderText =>
         _playerError ?? "Select a take to preview";
 
@@ -1290,6 +1305,7 @@ public sealed class MainViewModel : ObservableObject
             engine.PlaybackEnded += OnPlayerEnded;
             await engine.LoadAsync(_store!.Project, scene, takeDir, take).ConfigureAwait(false);
             _player = engine;
+            Raise(nameof(IsMultiWindow));
         }
         catch
         {
@@ -1299,7 +1315,10 @@ public sealed class MainViewModel : ObservableObject
     }
 
     /// <summary>Plays one source file from a take (no filter graph, no track toggles).</summary>
-    private async void PlayTakeFileRow(TakeRow row, TakeFileRow file)
+    /// <summary>
+    /// Plays a take with each source in its own synchronized window.
+    /// </summary>
+    private async void PlayTakeMultiWindow(TakeRow row)
     {
         if (_store is null || IsRecording) return;
 
@@ -1307,48 +1326,63 @@ public sealed class MainViewModel : ObservableObject
         var sceneId = SelectedScene?.Scene.Id;
         if (sceneId is null) return;
 
-        _playerTake = row.Take;
+        var take = row.Take;
+        var takeDir = _store.TakeDir(sceneId, take.Id);
+        _playerTake = take;
         _playerSceneId = sceneId;
-        _playerDisplayName = $"{row.DisplayName} · {file.FileName}";
+        _playerDisplayName = $"{row.DisplayName} · multi-window";
         _playerError = null;
-        NowPlayingText = $"▶ {_playerDisplayName}";
-        PlayerCaptionText = "Playing a single source file.";
+        NowPlayingText = $"▶ {_playerDisplayName} ({take.Sources.Count} sources)";
+        PlayerCaptionText = "Each source plays in its own window, in sync. Toggle sources below.";
         Raise(nameof(HasPlayerTake));
         Raise(nameof(PlayerPlaceholderText));
 
+        var multi = new MultiWindowPlayer(take.DurationSeconds);
+        multi.SourceExcluded += sourceId =>
+        {
+            // Window was closed by the user; reflect it on the UI thread.
+            Dispatcher.UIThread.Post(() =>
+            {
+                var track = PlayerTracks.FirstOrDefault(t => t.SourceId == sourceId);
+                if (track is not null) track.IsIncluded = false;
+            });
+        };
         try
         {
-            var engine = new MpvPlaybackEngine { EmbedWindowHandle = _videoHandle };
-            try
+            // No ConfigureAwait(false): the code below touches UI-bound state.
+            foreach (var ts in take.Sources)
             {
-                engine.PlaybackEnded += OnPlayerEnded;
-                try
-                {
-                    // No ConfigureAwait(false): the code below touches UI-bound state.
-                    await engine.LoadSingleFileAsync(file.FullPath);
-                }
-                catch when (_videoHandle != nint.Zero)
-                {
-                    // Embedding failed: fall back to mpv's own window.
-                    engine.EmbedWindowHandle = nint.Zero;
-                    await engine.LoadSingleFileAsync(file.FullPath);
-                    Status = "Video embedding isn't working on this machine — mpv opened its own window.";
-                }
-                _player = engine;
+                var filePath = Path.Combine(takeDir, ts.File);
+                if (!File.Exists(filePath)) continue;
+                var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
+                    ?? ts.Kind.DefaultLabel();
+                // Window creation must run on the UI thread.
+                await multi.AddSourceAsync(ts, label, filePath, (src, lbl) =>
+                    new SourcePlaybackWindow($"{row.DisplayName} · {lbl}"));
             }
-            catch
-            {
-                await engine.DisposeAsync().ConfigureAwait(false);
-                throw;
-            }
+            _player = multi;
+            Raise(nameof(IsMultiWindow));
 
             PlayerTracks.Clear();
+            foreach (var ts in take.Sources)
+            {
+                var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
+                    ?? ts.Kind.DefaultLabel();
+                var badge = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
+                    ?? ts.Kind.Badge();
+                var trackRow = new PlayerTrackRow(ts, label, badge);
+                trackRow.ToggleMuteCommand = new RelayCommand(() => ToggleTrackMuteAsync(trackRow));
+                trackRow.ToggleIncludeCommand = new RelayCommand(() => ToggleTrackIncludeAsync(trackRow));
+                PlayerTracks.Add(trackRow);
+            }
             _playerTimer.Start();
             ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
+            await multi.PlayAsync();
         }
         catch (Exception ex)
         {
             _playerError = ex.Message;
+            await multi.DisposeAsync();
             await UnloadPlayerAsync();
             Raise(nameof(PlayerPlaceholderText));
         }
@@ -1375,6 +1409,7 @@ public sealed class MainViewModel : ObservableObject
         PlayerTracks.Clear();
         var player = _player;
         _player = null;
+        Raise(nameof(IsMultiWindow));
         _playerTake = null;
         _playerSceneId = null;
         _playerDisplayName = null;
@@ -1438,10 +1473,25 @@ public sealed class MainViewModel : ObservableObject
         }
         try
         {
-            await _player.SetTrackMutedAsync(row.SourceId, muting);
+            if (_player is MultiWindowPlayer multi)
+                await multi.SetSourceMutedAsync(row.SourceId, muting);
+            else if (_player is MpvPlaybackEngine engine)
+                await engine.SetTrackMutedAsync(row.SourceId, muting);
             row.IsMuted = muting;
         }
         catch (Exception ex) { Status = $"Mute: {ex.Message}"; }
+    }
+
+    private async void ToggleTrackIncludeAsync(PlayerTrackRow row)
+    {
+        if (_player is not MultiWindowPlayer multi) return;
+        var including = !row.IsIncluded;
+        try
+        {
+            await multi.SetSourceIncludedAsync(row.SourceId, including);
+            row.IsIncluded = including;
+        }
+        catch (Exception ex) { Status = $"Include: {ex.Message}"; }
     }
 
 }

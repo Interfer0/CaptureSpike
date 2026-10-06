@@ -23,6 +23,12 @@ public sealed class MpvIpcClient : IAsyncDisposable
 
     public event Action<JsonElement>? EventReceived;
 
+    /// <summary>
+    /// Optional hook for diagnostics: receives raw IPC traffic (sent commands
+    /// and received lines). Set before connecting.
+    /// </summary>
+    public Action<string>? TrafficLog { get; set; }
+
     private MpvIpcClient(Stream stream)
     {
         _stream = stream;
@@ -66,6 +72,7 @@ public sealed class MpvIpcClient : IAsyncDisposable
         try
         {
             var msg = JsonSerializer.Serialize(new { command, request_id = id }) + "\n";
+            TrafficLog?.Invoke("> " + msg.Trim());
             await _writer.WriteAsync(msg.AsMemory(), ct).ConfigureAwait(false);
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -99,6 +106,9 @@ public sealed class MpvIpcClient : IAsyncDisposable
             while ((line = await _reader.ReadLineAsync(_readCts.Token).ConfigureAwait(false)) is not null)
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
+                // Log raw traffic for diagnostics (truncated: time-pos events are chatty).
+                var logLine = line.Length > 220 ? line[..220] + "…" : line;
+                TrafficLog?.Invoke("< " + logLine);
                 JsonDocument doc;
                 try { doc = JsonDocument.Parse(line); }
                 catch (JsonException) { continue; }
