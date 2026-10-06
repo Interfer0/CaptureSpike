@@ -1302,13 +1302,14 @@ public sealed class MainViewModel : ObservableObject
                 engine.PlaybackEnded += OnPlayerEnded;
                 try
                 {
-                    await engine.LoadSingleFileAsync(file.FullPath).ConfigureAwait(false);
+                    // No ConfigureAwait(false): the code below touches UI-bound state.
+                    await engine.LoadSingleFileAsync(file.FullPath);
                 }
                 catch when (_videoHandle != nint.Zero)
                 {
                     // Embedding failed: fall back to mpv's own window.
                     engine.EmbedWindowHandle = nint.Zero;
-                    await engine.LoadSingleFileAsync(file.FullPath).ConfigureAwait(false);
+                    await engine.LoadSingleFileAsync(file.FullPath);
                     Status = "Video embedding isn't working on this machine — mpv opened its own window.";
                 }
                 _player = engine;
@@ -1358,7 +1359,8 @@ public sealed class MainViewModel : ObservableObject
         NowPlayingText = "";
         PlayerCaptionText = "";
         if (player is not null)
-            await player.DisposeAsync().ConfigureAwait(false);
+            // No ConfigureAwait(false): everything below touches UI-bound state.
+            await player.DisposeAsync();
         PlayerPositionSeconds = 0;
         PlayerDurationSeconds = 0;
         IsPlayerPlaying = false;
