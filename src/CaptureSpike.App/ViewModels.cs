@@ -599,6 +599,13 @@ public sealed class MainViewModel : ObservableObject
         get => _status;
         set
         {
+            // Thread-safe: Status is set from worker threads (e.g., after
+            // ConfigureAwait(false)); marshal to the UI thread.
+            if (!Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
+            {
+                Avalonia.Threading.Dispatcher.UIThread.Post(() => Status = value);
+                return;
+            }
             if (SetField(ref _status, value))
                 Log(value);
         }
@@ -608,10 +615,18 @@ public sealed class MainViewModel : ObservableObject
 
     public ObservableCollection<string> LogLines { get; } = new();
 
-    /// <summary>Appends a timestamped line to the log panel (capped at 500).</summary>
+    /// <summary>
+    /// Appends a timestamped line to the log panel (capped at 500).
+    /// Thread-safe: marshals to the UI thread if called from a worker.
+    /// </summary>
     public void Log(string message)
     {
         if (string.IsNullOrWhiteSpace(message)) return;
+        if (!Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => Log(message));
+            return;
+        }
         LogLines.Add($"{DateTime.Now:HH:mm:ss} {message}");
         while (LogLines.Count > 500) LogLines.RemoveAt(0);
     }

@@ -35,8 +35,11 @@ public static class CaptureFactory
     private static List<string> VideoOutArgs(Project project, string outputFile) =>
         new()
         {
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-            "-pix_fmt", "yuv420p", "-r", project.Fps.ToString(),
+            // -tune zerolatency: no lookahead buffer, so the first encoded
+            // frame comes out ~immediately instead of ~1s later (matters for
+            // the measured capture offset).
+            "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+            "-crf", "18", "-pix_fmt", "yuv420p", "-r", project.Fps.ToString(),
             "-y", outputFile,
         };
 
