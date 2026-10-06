@@ -8,10 +8,10 @@ namespace CaptureSpike.App;
 /// (handles provided by the caller), audio sources play headless.
 /// One shared transport (play/pause/seek) drives every source.
 ///
-/// Offset model: each source's take.json offsetMs says how late it started
-/// relative to t0. To align them, we seek each source to
-/// (itsOffset - minOffset) at playback start, so the earliest source starts
-/// at file 0 and the others skip ahead. Take-time 0 = the aligned start.
+/// Offset model: each source's take.json offsetMs is a per-source delay.
+/// Playback seeks each source directly to its offset, so the number shown
+/// in the UI is exactly how far into that file playback starts. Editing a
+/// source's offset visibly moves that source.
 /// </summary>
 public sealed class TiledTakePlayer : IPlayer
 {
@@ -64,20 +64,15 @@ public sealed class TiledTakePlayer : IPlayer
         });
     }
 
-    private double MinOffsetSec => _players.Count == 0 ? 0 : _players.Min(p => p.OffsetSec);
-
-    /// <summary>Offset relative to the earliest source (0 for the earliest).</summary>
-    private double RelativeOffsetSec(SourcePlayer p) => Math.Max(0, p.OffsetSec - MinOffsetSec);
-
     public TimeSpan Position
     {
         get
         {
-            // Take-time = file-time minus relative offset (all aligned sources agree).
+            // Take-time = file-time minus the source's offset.
             var p = _players.FirstOrDefault(x => x.Included);
             if (p is null) return TimeSpan.Zero;
             return TimeSpan.FromSeconds(
-                Math.Max(0, p.Engine.Position.TotalSeconds - RelativeOffsetSec(p)));
+                Math.Max(0, p.Engine.Position.TotalSeconds - p.OffsetSec));
         }
     }
 
@@ -92,13 +87,13 @@ public sealed class TiledTakePlayer : IPlayer
     }
 
     /// <summary>
-    /// Seeks each source to its offset-aligned start position, then plays.
-    /// This is what makes the manual offsets actually shift the videos.
+    /// Seeks each source directly to its offset, then plays.
+    /// The offset you see in the UI is exactly where that video starts.
     /// </summary>
     public async Task PlayAlignedAsync(CancellationToken ct = default)
     {
         var tasks = _players.Where(p => p.Included).Select(p =>
-            p.Engine.SeekAsync(TimeSpan.FromSeconds(RelativeOffsetSec(p)), ct));
+            p.Engine.SeekAsync(TimeSpan.FromSeconds(p.OffsetSec), ct));
         await Task.WhenAll(tasks).ConfigureAwait(false);
         await PlayAsync(ct).ConfigureAwait(false);
     }
@@ -109,12 +104,12 @@ public sealed class TiledTakePlayer : IPlayer
         await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    /// <summary>Seeks every included source to take-time + its relative offset.</summary>
+    /// <summary>Seeks every included source to take-time + its offset.</summary>
     public async Task SeekAsync(TimeSpan position, CancellationToken ct = default)
     {
         var tasks = _players.Where(p => p.Included).Select(p =>
             p.Engine.SeekAsync(
-                TimeSpan.FromSeconds(Math.Max(0, position.TotalSeconds + RelativeOffsetSec(p))), ct));
+                TimeSpan.FromSeconds(Math.Max(0, position.TotalSeconds + p.OffsetSec)), ct));
         await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
@@ -133,7 +128,7 @@ public sealed class TiledTakePlayer : IPlayer
             // Rejoin at the current take-time; resume if the group is playing.
             var wasPlaying = IsPlaying;
             await p.Engine.SeekAsync(
-                TimeSpan.FromSeconds(Math.Max(0, Position.TotalSeconds + RelativeOffsetSec(p))), ct)
+                TimeSpan.FromSeconds(Math.Max(0, Position.TotalSeconds + p.OffsetSec)), ct)
                 .ConfigureAwait(false);
             if (wasPlaying) await p.Engine.PlayAsync(ct).ConfigureAwait(false);
         }
