@@ -12,6 +12,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CaptureSpike.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- NAudio 2.2.1: classic, stable WASAPI API (WasapiCapture/WasapiLoopbackCapture).
          3.x replaced these with an unverifiable-from-here builder API; revisit when
          the Windows path can be tested. Windows TFM only. -->

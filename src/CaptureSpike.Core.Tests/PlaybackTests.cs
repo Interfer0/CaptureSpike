@@ -178,4 +178,32 @@ public sealed class MpvIpcClientTests
         Assert.Equal("end-file", name);
         await server.WaitAsync(TimeSpan.FromSeconds(5));
     }
+
+    /// <summary>Mimics PipeStream: Flush throws once the stream is closed.</summary>
+    private sealed class PipeLikeStream : MemoryStream
+    {
+        private bool _open = true;
+
+        public override void Flush()
+        {
+            if (!_open) throw new ObjectDisposedException("Cannot access a closed pipe.");
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            _open = false;
+            base.Dispose(disposing);
+        }
+    }
+
+    [Fact]
+    public async Task DisposeNeverThrowsAndIsIdempotent()
+    {
+        // Regression test: on Windows, DisposeAsync disposed the StreamReader first,
+        // closing the shared named pipe, so the StreamWriter's flush threw
+        // ObjectDisposedException and took the app down when switching playback.
+        await using var client = MpvIpcClient.CreateForTest(new PipeLikeStream());
+        await client.DisposeAsync();
+        await client.DisposeAsync(); // second dispose must be a no-op
+    }
 }

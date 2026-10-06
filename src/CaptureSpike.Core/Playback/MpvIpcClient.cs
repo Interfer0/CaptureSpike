@@ -31,6 +31,9 @@ public sealed class MpvIpcClient : IAsyncDisposable
         _readLoop = Task.Run(ReadLoopAsync);
     }
 
+    /// <summary>Test seam: build a client over an arbitrary stream.</summary>
+    internal static MpvIpcClient CreateForTest(Stream stream) => new(stream);
+
     public static async Task<MpvIpcClient> ConnectUnixAsync(string socketPath, CancellationToken ct = default)
     {
         var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
@@ -123,13 +126,23 @@ public sealed class MpvIpcClient : IAsyncDisposable
         }
     }
 
+    private bool _disposed;
+
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
         _readCts.Cancel();
         try { await _readLoop.ConfigureAwait(false); } catch { }
-        _reader.Dispose();
-        _writer.Dispose();
-        _stream.Dispose();
+        // The reader and writer share one stream: dispose the writer first, since
+        // disposing the reader closes the stream and makes the writer's flush throw
+        // ("Cannot access a closed pipe"). mpv may also have died already, leaving
+        // the transport broken — disposal must never throw.
+        foreach (var disposable in new IDisposable[] { _writer, _reader, _stream })
+        {
+            try { disposable.Dispose(); }
+            catch { /* already closed or broken */ }
+        }
         _readCts.Dispose();
     }
 }
