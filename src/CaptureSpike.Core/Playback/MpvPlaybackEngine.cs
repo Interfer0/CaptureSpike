@@ -21,6 +21,7 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
 
     private Process? _process;
     private MpvIpcClient? _ipc;
+    private TaskCompletionSource? _fileLoadedTcs;
     private StringBuilder? _stderr;
 
     private Project? _project;
@@ -254,15 +255,40 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         _process = process;
         var ipc = _ipc ?? throw new InvalidOperationException("mpv IPC did not connect.");
         ipc.TrafficLog = LogIpcTraffic;
+        _fileLoadedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         ipc.EventReceived += OnMpvEvent;
+
+        // Wait for mpv to finish loading the file before sending commands.
+        // (Sending observe_property too early can hang if mpv isn't ready.)
+        try
+        {
+            using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            loadCts.CancelAfter(TimeSpan.FromSeconds(10));
+            await _fileLoadedTcs.Task.WaitAsync(loadCts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
+        {
+            // Continue anyway; the file may have loaded without the event,
+            // or polling will cover us.
+        }
 
         // Event-driven position tracking (mpv-recommended): mpv pushes the
         // current value immediately, then updates on change. Polling remains
-        // as a fallback in PollState.
-        await ipc.CommandAsync(["observe_property", 1, "time-pos"], ct).ConfigureAwait(false);
-        await ipc.CommandAsync(["observe_property", 2, "pause"], ct).ConfigureAwait(false);
-        if (_take is null && _singleFile is not null)
-            await ipc.CommandAsync(["observe_property", 3, "duration"], ct).ConfigureAwait(false);
+        // as a fallback in PollState. Best-effort: don't fail startup if
+        // mpv doesn't respond.
+        try
+        {
+            using var obsCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            obsCts.CancelAfter(TimeSpan.FromSeconds(3));
+            await ipc.CommandAsync(["observe_property", 1, "time-pos"], obsCts.Token).ConfigureAwait(false);
+            await ipc.CommandAsync(["observe_property", 2, "pause"], obsCts.Token).ConfigureAwait(false);
+            if (_take is null && _singleFile is not null)
+                await ipc.CommandAsync(["observe_property", 3, "duration"], obsCts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
+        {
+            // Startup continues; PollState is the fallback.
+        }
 
         if (positionSec > 0.5)
             await _ipc.CommandAsync(["seek", positionSec, "absolute"], ct).ConfigureAwait(false);
@@ -286,6 +312,11 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
     {
         if (!ev.TryGetProperty("event", out var nameProp)) return;
         var name = nameProp.GetString();
+        if (name == "file-loaded")
+        {
+            _fileLoadedTcs?.TrySetResult();
+            return;
+        }
         if (name == "end-file")
         {
             PlaybackEnded?.Invoke();
