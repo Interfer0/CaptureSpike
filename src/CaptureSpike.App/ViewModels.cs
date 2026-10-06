@@ -1422,7 +1422,8 @@ public sealed class MainViewModel : ObservableObject
             _playerTimer.Start();
             ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
             ((RelayCommand)PlayerStopCommand).RaiseCanExecuteChanged();
-            await player.PlayAsync();
+            // Seek each source to its offset-aligned start, then play.
+            await player.PlayAlignedAsync();
             // All sources are up; hide the loading overlay in the tiled window.
             tiledWindow?.SetLoadingComplete();
         }

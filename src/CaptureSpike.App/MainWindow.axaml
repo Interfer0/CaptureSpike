@@ -144,6 +144,8 @@
           <Slider Minimum="0" Maximum="{Binding PlayerDurationSeconds}"
                   Value="{Binding PlayerPositionSeconds, Mode=OneWay}"
                   VerticalAlignment="Center"
+                  PointerPressed="OnSeekPointerPressed"
+                  PointerReleased="OnSeekPointerReleased"
                   GotFocus="OnSeekGotFocus"
                   LostFocus="OnSeekLostFocus" />
         </DockPanel>
