@@ -20,4 +20,18 @@
     <ProjectReference Include="..\CaptureSpike.Core\CaptureSpike.Core.csproj" />
   </ItemGroup>
 
+  <!-- Bundled external tools (ffmpeg, mpv): fetched by scripts/fetch-tools.*
+       into tools/<rid>/. They ship next to the app so ToolPaths finds them
+       without any user install. Only the current RID's folder is published. -->
+  <ItemGroup>
+    <Content Include="..\..\tools\$(RuntimeIdentifier)\**"
+             Link="tools\$(RuntimeIdentifier)\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToPublishDirectory="PreserveNewest"
+             Visible="false" />
+    <Content Include="..\..\tools\THIRD-PARTY-LICENSES.md"
+             Link="tools\THIRD-PARTY-LICENSES.md"
+             CopyToPublishDirectory="PreserveNewest"
+             Visible="false" />
+  </ItemGroup>
+
 </Project>
