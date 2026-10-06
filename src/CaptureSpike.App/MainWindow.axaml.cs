@@ -9,6 +9,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         AvaloniaXamlLoader.Load(this);
+        WindowState = WindowState.Maximized;
 
         Opened += (_, _) =>
         {

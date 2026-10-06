@@ -57,7 +57,7 @@ public sealed class TiledTakePlayer : IPlayer
         {
             SourceId = source.Id,
             Engine = engine,
-            OffsetSec = source.OffsetMs / 1000.0,
+            OffsetSec = source.EffectiveOffsetMs / 1000.0,
         });
     }
 

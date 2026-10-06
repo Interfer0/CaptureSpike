@@ -353,20 +353,28 @@ public sealed class PlayerTrackRow(TakeSource source, string label, string badge
     public ICommand ToggleIncludeCommand { get; set; } = null!;
 }
 
-public sealed class TakeFileRow
+public sealed class TakeFileRow : ObservableObject
 {
-    public TakeFileRow(string fullPath, long bytes, string? sourceLabel)
+    private readonly Action _onOffsetChanged;
+
+    public TakeFileRow(string fullPath, long bytes, string? sourceLabel,
+        TakeSource? source, Action onOffsetChanged)
     {
         FullPath = fullPath;
         Bytes = bytes;
         FileName = Path.GetFileName(fullPath)!;
         SourceLabel = sourceLabel;
+        Source = source;
+        _onOffsetChanged = onOffsetChanged;
+        ResetOffsetCommand = new RelayCommand(ResetOffset, () => Source?.ManualOffsetMs is not null);
     }
 
     public string FullPath { get; }
     public string FileName { get; }
     /// <summary>Palette label of the source that produced this file (null for take.json).</summary>
     public string? SourceLabel { get; }
+    /// <summary>The take.json source entry for this file (null if not matched).</summary>
+    public TakeSource? Source { get; }
     public string DisplayName =>
         SourceLabel is not null ? $"{SourceLabel} — {FileName}" : FileName;
     public string SizeText => Bytes switch
@@ -376,6 +384,47 @@ public sealed class TakeFileRow
         _ => $"{Bytes / (1024.0 * 1024):F1} MB",
     };
     private long Bytes { get; }
+
+    /// <summary>Recorded offset (ms) — never edited, for reference.</summary>
+    public string RecordedOffsetText =>
+        Source is null ? "" : $"recorded: {Source.OffsetMs:F0}ms";
+
+    /// <summary>Manual offset in ms. Null = use recorded. Setting saves take.json.</summary>
+    public double? ManualOffsetMs
+    {
+        get => Source?.ManualOffsetMs;
+        set
+        {
+            if (Source is null || Source.ManualOffsetMs == value) return;
+            Source.ManualOffsetMs = value;
+            _onOffsetChanged();
+            Raise(nameof(ManualOffsetMs));
+            Raise(nameof(OffsetSummaryText));
+            ((RelayCommand)ResetOffsetCommand).RaiseCanExecuteChanged();
+        }
+    }
+
+    /// <summary>Shows effective offset, flagging manual overrides.</summary>
+    public string OffsetSummaryText =>
+        Source is null ? "" :
+        Source.ManualOffsetMs is not null
+            ? $"offset: {Source.ManualOffsetMs:F0}ms (manual)"
+            : $"offset: {Source.OffsetMs:F0}ms";
+
+    public System.Windows.Input.ICommand ResetOffsetCommand { get; }
+
+    private void ResetOffset()
+    {
+        if (Source is null) return;
+        Source.ManualOffsetMs = null;
+        _onOffsetChanged();
+        Raise(nameof(ManualOffsetMs));
+        Raise(nameof(OffsetSummaryText));
+        ((RelayCommand)ResetOffsetCommand).RaiseCanExecuteChanged();
+    }
+
+    /// <summary>Whether offset controls are shown (only for matched source files).</summary>
+    public bool HasOffset => Source is not null;
 }
 
 public sealed class TakeRow : ObservableObject
@@ -383,7 +432,7 @@ public sealed class TakeRow : ObservableObject
     public TakeRow(Take take, int number, bool isFavorite, string folderPath,
         Action<TakeRow> toggleFavorite, Action<TakeRow> delete, Action<TakeRow> openFolder,
         Func<string, string?> sourceLabel, Func<string, string?> sourceBadge,
-        Action<TakeRow> playTake)
+        Action<TakeRow> playTake, Action<TakeRow> saveTake)
     {
         Take = take;
         Number = number;
@@ -396,6 +445,7 @@ public sealed class TakeRow : ObservableObject
         PlayTakeCommand = new RelayCommand(() => playTake(this));
         _sourceLabel = sourceLabel;
         _sourceBadge = sourceBadge;
+        _saveTake = saveTake;
     }
 
     public Take Take { get; }
@@ -422,6 +472,7 @@ public sealed class TakeRow : ObservableObject
 
     private readonly Func<string, string?> _sourceLabel;
     private readonly Func<string, string?> _sourceBadge;
+    private readonly Action<TakeRow> _saveTake;
 
     private bool _isExpanded;
     public bool IsExpanded
@@ -451,7 +502,8 @@ public sealed class TakeRow : ObservableObject
                 var ts = Take.Sources.FirstOrDefault(s =>
                     s.File.Equals(name, StringComparison.OrdinalIgnoreCase));
                 var label = ts is null ? null : _sourceLabel(ts.Id);
-                Files.Add(new TakeFileRow(f, new FileInfo(f).Length, label));
+                Files.Add(new TakeFileRow(f, new FileInfo(f).Length, label, ts,
+                    () => _saveTake(this)));
             }
         }
         catch
@@ -584,17 +636,32 @@ public sealed class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Called by MainWindow once it is shown. Opens the last project, then the
-    /// project browser; falls back to a starter project if nothing is open.
+    /// Called by MainWindow once it is shown. Opens the last project if there
+    /// is one; otherwise creates a starter project. The project browser is
+    /// only shown when the user clicks Projects.
+    /// Installs the global F9 hotkey (stops recording or take playback).
     /// </summary>
     public async void StartupAsync()
     {
         var last = AppSettings.LastProjectDir;
         if (last is not null && Directory.Exists(last))
             OpenProject(last);
-        await ShowProjectBrowser();
         if (_store is null)
             NewProject(); // first run: create a starter project so the UI isn't empty
+
+        // F9 works globally: stops recording, cancels countdown, or stops
+        // take playback. Installed once; left installed for the app lifetime.
+        try
+        {
+            if (OperatingSystem.IsWindows())
+                StopHotkey.Install(OnStopHotkey);
+            else
+                await Task.Run(() => StopHotkey.Install(OnStopHotkey));
+        }
+        catch (Exception ex)
+        {
+            Status = $"F9 hotkey: {ex.Message}";
+        }
     }
 
     public async Task ShowProjectBrowser()
@@ -790,7 +857,8 @@ public sealed class MainViewModel : ObservableObject
                 ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
-                PlayTakeMultiWindow));
+                PlayTakeMultiWindow,
+                row => _store.SaveTake(_store.TakeDir(row.Take.SceneId, row.Take.Id), row.Take)));
         }
         SelectedScene.TakeCount = all.Count;
         SelectedTake = Takes.FirstOrDefault(t => t.Take.Id == selectedId);
@@ -1029,8 +1097,6 @@ public sealed class MainViewModel : ObservableObject
         if (_store is null || SelectedScene is null || _session is not null || _starting) return;
         _starting = true;
         RaiseRecordingState();
-        var hotkeyInstalled = false;
-        string? hotkeyError = null;
         try
         {
             // The window minimizes during the countdown so it never ends up in
@@ -1040,22 +1106,8 @@ public sealed class MainViewModel : ObservableObject
                 window.WindowState = Avalonia.Controls.WindowState.Minimized;
             RecordingElapsed = "starting…";
 
-            // Install first so F9 already works during the countdown (cancels).
-            try
-            {
-                if (OperatingSystem.IsWindows())
-                    // Must run on the UI thread: WH_KEYBOARD_LL dispatches
-                    // through the installing thread's message loop.
-                    StopHotkey.Install(OnStopHotkey);
-                else
-                    await Task.Run(() => StopHotkey.Install(OnStopHotkey));
-                hotkeyInstalled = true;
-            }
-            catch (Exception ex)
-            {
-                hotkeyError = ex.Message;
-            }
-
+            // F9 is already installed globally (StartupAsync); it cancels the
+            // countdown via _cancelStarting.
             await Task.Delay(TimeSpan.FromSeconds(3));
             if (_cancelStarting)
             {
@@ -1075,9 +1127,7 @@ public sealed class MainViewModel : ObservableObject
                     var takeDir = _store.BeginTake(scene);
                     var progress = new Progress<TimeSpan>(t => RecordingElapsed = t.ToString(@"m\:ss"));
                     _session = await RecorderFactory(_store).StartAsync(_store.Project, scene, takeDir, progress);
-                    Status = hotkeyInstalled
-                        ? $"Recording '{scene.Title}' — press F9 to stop"
-                        : $"Recording '{scene.Title}' — F9 unavailable ({hotkeyError}); restore the window and click ■ Stop.";
+                    Status = $"Recording '{scene.Title}' — press F9 to stop";
                 }
                 catch (Exception ex)
                 {
@@ -1088,10 +1138,6 @@ public sealed class MainViewModel : ObservableObject
 
             if (_session is null)
             {
-                if (hotkeyInstalled)
-                {
-                    try { StopHotkey.Uninstall(); } catch { }
-                }
                 if (window is not null)
                 {
                     window.WindowState = Avalonia.Controls.WindowState.Normal;
@@ -1114,7 +1160,16 @@ public sealed class MainViewModel : ObservableObject
             _cancelStarting = true;
             return;
         }
-        Avalonia.Threading.Dispatcher.UIThread.Post(async () => await StopRecordingAsync());
+        if (_session is not null)
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(async () => await StopRecordingAsync());
+            return;
+        }
+        // Not recording: F9 stops take playback if it's running.
+        if (_player is not null)
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(async () => await UnloadPlayerAsync());
+        }
     }
 
     private async Task StopRecordingAsync()
@@ -1122,7 +1177,7 @@ public sealed class MainViewModel : ObservableObject
         var session = _session;
         if (session is null) return;
         _session = null;
-        try { StopHotkey.Uninstall(); } catch { }
+        // F9 hotkey stays installed (used for playback too).
         RaiseRecordingState();
         try
         {

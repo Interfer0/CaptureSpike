@@ -192,9 +192,20 @@ public sealed class TakeSource
     public string File { get; set; } = string.Empty;
     /// <summary>
     /// Milliseconds after the shared t0 when this source's first data arrived.
-    /// Playback and export align tracks by these offsets — never assume zero.
+    /// This is the recorder's calculated value — never overwritten by the UI.
+    /// Playback and export align tracks by <see cref="EffectiveOffsetMs"/>.
     /// </summary>
     public double OffsetMs { get; set; }
+
+    /// <summary>
+    /// User-adjusted offset in milliseconds. When set, playback uses this
+    /// instead of <see cref="OffsetMs"/>. Null means "use the recorded value".
+    /// </summary>
+    public double? ManualOffsetMs { get; set; }
+
+    /// <summary>The offset actually used for playback: manual if set, else recorded.</summary>
+    public double EffectiveOffsetMs => ManualOffsetMs ?? OffsetMs;
+
     public int? Width { get; set; }
     public int? Height { get; set; }
 }

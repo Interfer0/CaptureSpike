@@ -243,13 +243,29 @@
                               Margin="30,2,0,4">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                      <DockPanel>
-                        <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" Opacity="0.6"
-                                   FontSize="14" FontFamily="Monospace"
-                                   VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding DisplayName}" FontSize="14" Opacity="0.85"
-                                   FontFamily="Monospace" VerticalAlignment="Center" />
-                      </DockPanel>
+                      <StackPanel Margin="0,2">
+                        <DockPanel>
+                          <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}" Opacity="0.6"
+                                     FontSize="14" FontFamily="Monospace"
+                                     VerticalAlignment="Center" />
+                          <TextBlock Text="{Binding DisplayName}" FontSize="14" Opacity="0.85"
+                                     FontFamily="Monospace" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <!-- Offset adjustment (only for matched source files) -->
+                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,2,0,0"
+                                    IsVisible="{Binding HasOffset}">
+                          <TextBlock Text="{Binding OffsetSummaryText}" FontSize="12" Opacity="0.7"
+                                     VerticalAlignment="Center" FontFamily="Monospace" />
+                          <TextBlock Text="manual ms:" FontSize="12" Opacity="0.7"
+                                     VerticalAlignment="Center" />
+                          <NumericUpDown Value="{Binding ManualOffsetMs}" FontSize="12"
+                                         Width="100" Increment="10" Minimum="0" Maximum="60000"
+                                         VerticalAlignment="Center" />
+                          <Button Content="Reset" Command="{Binding ResetOffsetCommand}"
+                                  FontSize="12" Padding="8,2" VerticalAlignment="Center"
+                                  ToolTip.Tip="Clear manual offset, use recorded value" />
+                        </StackPanel>
+                      </StackPanel>
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
