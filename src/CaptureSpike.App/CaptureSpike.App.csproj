@@ -20,6 +20,16 @@
     <AvaloniaResource Include="Assets\capturespike-icon.png" Condition="Exists('Assets\capturespike-icon.png')" />
   </ItemGroup>
 
+  <!-- Decode the base64-encoded icon (checked in as text since the push tool
+       is text-only). Runs once; the PNG is gitignored after decoding. -->
+  <Target Name="DecodeAppIcon" BeforeTargets="PrepareForBuild"
+          Condition="!Exists('Assets/capturespike-icon.png') And Exists('Assets/capturespike-icon.png.b64')">
+    <Exec Command="powershell -NoProfile -Command &quot;[IO.File]::WriteAllBytes('Assets/capturespike-icon.png', [Convert]::FromBase64String([IO.File]::ReadAllText('Assets/capturespike-icon.png.b64')))&quot;"
+          Condition="'$(OS)' == 'Windows_NT'" WorkingDirectory="$(ProjectDir)" />
+    <Exec Command="python3 -c &quot;import base64; open('Assets/capturespike-icon.png','wb').write(base64.b64decode(open('Assets/capturespike-icon.png.b64').read()))&quot;"
+          Condition="'$(OS)' != 'Windows_NT'" WorkingDirectory="$(ProjectDir)" />
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.1.3" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.3" />

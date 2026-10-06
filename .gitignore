@@ -3,3 +3,6 @@ obj/
 tools/*/
 *.user
 .vs/
+# Decoded app icon (generated from .b64 at build time)
+src/CaptureSpike.App/Assets/capturespike-icon.png
+src/CaptureSpike.App/Assets/capturespike-icon.ico
