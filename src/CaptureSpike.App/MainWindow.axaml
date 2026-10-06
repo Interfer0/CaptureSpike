@@ -209,7 +209,7 @@
                 <DockPanel>
                   <Button DockPanel.Dock="Left" Classes="plain" Content="▶"
                           Command="{Binding PlayTakeCommand}" FontSize="15"
-                          ToolTip.Tip="Play each source in its own window" />
+                          ToolTip.Tip="Play all sources tiled in one window, in sync" />
                   <Button DockPanel.Dock="Left" Classes="plain" Content="{Binding ExpandGlyph}"
                           Command="{Binding ToggleExpandedCommand}" FontSize="13"
                           ToolTip.Tip="Show take files" />

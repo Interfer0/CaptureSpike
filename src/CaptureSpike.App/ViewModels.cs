@@ -1160,6 +1160,7 @@ public sealed class MainViewModel : ObservableObject
     // ----- player -----
 
     private IPlayer? _player;
+    private TiledPlaybackWindow? _tiledWindow;
     private Take? _playerTake;
     private string? _playerSceneId;
     private string? _playerError;
@@ -1179,7 +1180,7 @@ public sealed class MainViewModel : ObservableObject
 
     public bool HasPlayerTake => _playerTake is not null;
     /// <summary>True when the take is playing in per-source windows.</summary>
-    public bool IsMultiWindow => _player is MultiWindowPlayer;
+    public bool IsMultiWindow => _player is TiledTakePlayer;
     public string PlayerPlaceholderText =>
         _playerError ?? "Select a take to preview";
 
@@ -1224,7 +1225,7 @@ public sealed class MainViewModel : ObservableObject
 
 
     /// <summary>
-    /// Plays a take with each source in its own synchronized window.
+    /// Plays a take with all video sources tiled in one window, in sync.
     /// </summary>
     private async void PlayTakeMultiWindow(TakeRow row)
     {
@@ -1238,68 +1239,82 @@ public sealed class MainViewModel : ObservableObject
         var takeDir = _store.TakeDir(sceneId, take.Id);
         _playerTake = take;
         _playerSceneId = sceneId;
-        _playerDisplayName = $"{row.DisplayName} · multi-window";
+        _playerDisplayName = $"{row.DisplayName} · tiled";
         _playerError = null;
-        NowPlayingText = $"▶ {_playerDisplayName} ({take.Sources.Count} sources: {string.Join(", ", take.Sources.Select(s => $"{s.Kind}:{s.File}"))})";
-        PlayerCaptionText = "Each source plays in its own window, in sync. Toggle sources below.";
+        NowPlayingText = $"▶ {_playerDisplayName} ({take.Sources.Count} sources)";
+        PlayerCaptionText = "All sources play in sync in one tiled window. Toggle sources below.";
         Raise(nameof(HasPlayerTake));
         Raise(nameof(PlayerPlaceholderText));
 
-        var multi = new MultiWindowPlayer(take.DurationSeconds);
-        multi.SourceExcluded += sourceId =>
-        {
-            // Window was closed by the user; reflect it on the UI thread.
-            Dispatcher.UIThread.Post(() =>
-            {
-                var track = PlayerTracks.FirstOrDefault(t => t.SourceId == sourceId);
-                if (track is not null) track.IsIncluded = false;
-            });
-        };
+        // No ConfigureAwait(false): the code below touches UI-bound state.
         try
         {
-            // No ConfigureAwait(false): the code below touches UI-bound state.
+            // Collect sources with existing files.
+            var items = new List<(TakeSource Source, string Label, string Badge, string FilePath, bool IsVideo)>();
             var missing = new List<string>();
             foreach (var ts in take.Sources)
             {
                 var filePath = Path.Combine(takeDir, ts.File);
-                if (!File.Exists(filePath))
-                {
-                    var missingLabel = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
-                        ?? ts.Kind.DefaultLabel();
-                    missing.Add($"{missingLabel} ({ts.File})");
-                    continue;
-                }
                 var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
                     ?? ts.Kind.DefaultLabel();
-                // Window creation must run on the UI thread.
-                await multi.AddSourceAsync(ts, label, filePath, (src, lbl) =>
-                    new SourcePlaybackWindow($"{row.DisplayName} · {lbl}"));
+                if (!File.Exists(filePath))
+                {
+                    missing.Add($"{label} ({ts.File})");
+                    continue;
+                }
+                var badge = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
+                    ?? ts.Kind.Badge();
+                var isVideo = !Path.GetExtension(filePath).Equals(".wav", StringComparison.OrdinalIgnoreCase);
+                items.Add((ts, label, badge, filePath, isVideo));
             }
             if (missing.Count > 0)
                 Status = $"Take {row.DisplayName}: missing files for {string.Join(", ", missing)}.";
-            _player = multi;
+            if (items.Count == 0)
+            {
+                _playerError = "No playable source files in this take.";
+                Raise(nameof(PlayerPlaceholderText));
+                return;
+            }
+
+            // One tiled window for all video sources.
+            var videoItems = items.Where(i => i.IsVideo).ToList();
+            TiledPlaybackWindow? tiledWindow = null;
+            Dictionary<string, nint> handles = new();
+            if (videoItems.Count > 0)
+            {
+                tiledWindow = new TiledPlaybackWindow(
+                    $"{row.DisplayName} · {videoItems.Count} video source{(videoItems.Count == 1 ? "" : "s")}",
+                    videoItems.Select(i => (i.Source.Id, i.Label, i.Badge)).ToList());
+                tiledWindow.Closed += (_, _) => _ = UnloadPlayerAsync();
+                tiledWindow.Show();
+                handles = await tiledWindow.WaitForHandlesAsync(TimeSpan.FromSeconds(5));
+            }
+
+            var player = new TiledTakePlayer(take.DurationSeconds);
+            foreach (var (source, _, _, filePath, isVideo) in items)
+            {
+                var handle = isVideo && handles.TryGetValue(source.Id, out var h) ? h : nint.Zero;
+                await player.AddSourceAsync(source, filePath, handle);
+            }
+            _player = player;
+            _tiledWindow = tiledWindow;
             Raise(nameof(IsMultiWindow));
 
             PlayerTracks.Clear();
-            foreach (var ts in take.Sources)
+            foreach (var (source, label, badge, _, isVideo) in items)
             {
-                var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
-                    ?? ts.Kind.DefaultLabel();
-                var badge = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
-                    ?? ts.Kind.Badge();
-                var trackRow = new PlayerTrackRow(ts, label, badge);
+                var trackRow = new PlayerTrackRow(source, label, badge);
                 trackRow.ToggleMuteCommand = new RelayCommand(() => ToggleTrackMuteAsync(trackRow));
                 trackRow.ToggleIncludeCommand = new RelayCommand(() => ToggleTrackIncludeAsync(trackRow));
                 PlayerTracks.Add(trackRow);
             }
             _playerTimer.Start();
             ((RelayCommand)PlayerPlayPauseCommand).RaiseCanExecuteChanged();
-            await multi.PlayAsync();
+            await player.PlayAsync();
         }
         catch (Exception ex)
         {
             _playerError = ex.Message;
-            await multi.DisposeAsync();
             await UnloadPlayerAsync();
             Raise(nameof(PlayerPlaceholderText));
         }
@@ -1312,6 +1327,8 @@ public sealed class MainViewModel : ObservableObject
         var player = _player;
         _player = null;
         Raise(nameof(IsMultiWindow));
+        var tiledWindow = _tiledWindow;
+        _tiledWindow = null;
         _playerTake = null;
         _playerSceneId = null;
         _playerDisplayName = null;
@@ -1320,6 +1337,8 @@ public sealed class MainViewModel : ObservableObject
         if (player is not null)
             // No ConfigureAwait(false): everything below touches UI-bound state.
             await player.DisposeAsync();
+        // Close the tiled window (if the user closed it first, this is a no-op).
+        try { tiledWindow?.Close(); } catch { }
         PlayerPositionSeconds = 0;
         PlayerDurationSeconds = 0;
         IsPlayerPlaying = false;
@@ -1366,7 +1385,7 @@ public sealed class MainViewModel : ObservableObject
 
     private async void ToggleTrackMuteAsync(PlayerTrackRow row)
     {
-        if (_player is not MultiWindowPlayer multi) return;
+        if (_player is not TiledTakePlayer player) return;
         var muting = !row.IsMuted;
         if (muting && PlayerTracks.All(t => t == row || t.IsMuted))
         {
@@ -1375,7 +1394,7 @@ public sealed class MainViewModel : ObservableObject
         }
         try
         {
-            await multi.SetSourceMutedAsync(row.SourceId, muting);
+            await player.SetSourceMutedAsync(row.SourceId, muting);
             row.IsMuted = muting;
         }
         catch (Exception ex) { Status = $"Mute: {ex.Message}"; }
@@ -1383,12 +1402,13 @@ public sealed class MainViewModel : ObservableObject
 
     private async void ToggleTrackIncludeAsync(PlayerTrackRow row)
     {
-        if (_player is not MultiWindowPlayer multi) return;
+        if (_player is not TiledTakePlayer player) return;
         var including = !row.IsIncluded;
         try
         {
-            await multi.SetSourceIncludedAsync(row.SourceId, including);
+            await player.SetSourceIncludedAsync(row.SourceId, including);
             row.IsIncluded = including;
+            _tiledWindow?.SetTileVisible(row.SourceId, including);
         }
         catch (Exception ex) { Status = $"Include: {ex.Message}"; }
     }
