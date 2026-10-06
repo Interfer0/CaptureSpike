@@ -1321,28 +1321,43 @@ public sealed class MainViewModel : ObservableObject
                 _store.Project, scene, takeDir, progress, cts.Token);
 
             // Countdown overlaps warmup: poll for F9 every 100ms.
+            // (No ConfigureAwait(false): the code below touches UI-bound state.)
             for (var i = 0; i < 30 && !_cancelStarting; i++)
-                await Task.Delay(100).ConfigureAwait(false);
+                await Task.Delay(100);
 
             if (_cancelStarting)
             {
                 _cancelStarting = false;
                 cts.Cancel();
-                try { await startTask.ConfigureAwait(false); } catch { }
-                Status = "Recording cancelled.";
+                IRecordingSession? leaked = null;
+                Exception? startError = null;
+                try { leaked = await startTask; }
+                catch (Exception ex) { startError = ex; }
+                // Race: sources finished starting just as we cancelled.
+                // Dispose the session instead of leaking it (halt without
+                // writing a take).
+                if (leaked is not null)
+                {
+                    try { await leaked.DisposeAsync(); } catch { }
+                }
+                // Don't swallow a real device failure as "cancelled".
+                if (startError is not null && startError is not OperationCanceledException)
+                    Status = $"Record failed: {startError.Message}";
+                else
+                    Status = "Recording cancelled.";
             }
             else
             {
                 try
                 {
-                    _session = await startTask.ConfigureAwait(false);
+                    _session = await startTask;
                     // F9 pressed while the last sources were starting: the user
                     // meant stop, so stop immediately instead of poisoning the
                     // next countdown with a stale flag.
                     if (_cancelStarting)
                     {
                         _cancelStarting = false;
-                        await StopRecordingAsync().ConfigureAwait(false);
+                        await StopRecordingAsync();
                     }
                     else
                     {
