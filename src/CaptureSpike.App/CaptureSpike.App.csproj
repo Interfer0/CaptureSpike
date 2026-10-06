@@ -22,14 +22,24 @@
 
   <!-- Bundled external tools (ffmpeg, mpv): fetched by scripts/fetch-tools.*
        into tools/<rid>/. They ship next to the app so ToolPaths finds them
-       without any user install. Only the current RID's folder is published. -->
+       without any user install. The TFM determines the OS in this project
+       (windows TFM -> win-x64 tools, plain TFM -> linux-x64 tools). -->
   <ItemGroup>
-    <Content Include="..\..\tools\$(RuntimeIdentifier)\**"
-             Link="tools\$(RuntimeIdentifier)\%(RecursiveDir)%(Filename)%(Extension)"
+    <Content Include="..\..\tools\win-x64\**"
+             Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041'"
+             Link="tools\win-x64\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest"
+             Visible="false" />
+    <Content Include="..\..\tools\linux-x64\**"
+             Condition="'$(TargetFramework)' == 'net10.0'"
+             Link="tools\linux-x64\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest"
              Visible="false" />
     <Content Include="..\..\tools\THIRD-PARTY-LICENSES.md"
              Link="tools\THIRD-PARTY-LICENSES.md"
+             CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest"
              Visible="false" />
   </ItemGroup>
