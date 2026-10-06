@@ -1350,16 +1350,25 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             // No ConfigureAwait(false): the code below touches UI-bound state.
+            var missing = new List<string>();
             foreach (var ts in take.Sources)
             {
                 var filePath = Path.Combine(takeDir, ts.File);
-                if (!File.Exists(filePath)) continue;
+                if (!File.Exists(filePath))
+                {
+                    var missingLabel = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
+                        ?? ts.Kind.DefaultLabel();
+                    missing.Add($"{missingLabel} ({ts.File})");
+                    continue;
+                }
                 var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
                     ?? ts.Kind.DefaultLabel();
                 // Window creation must run on the UI thread.
                 await multi.AddSourceAsync(ts, label, filePath, (src, lbl) =>
                     new SourcePlaybackWindow($"{row.DisplayName} · {lbl}"));
             }
+            if (missing.Count > 0)
+                Status = $"Take {row.DisplayName}: missing files for {string.Join(", ", missing)}.";
             _player = multi;
             Raise(nameof(IsMultiWindow));
 

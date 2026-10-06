@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using CaptureSpike.Core;
 using CaptureSpike.Core.Playback;
@@ -48,6 +49,7 @@ public sealed class MultiWindowPlayer : IPlayer
     private readonly List<SourcePlayer> _players = new();
     private readonly double _takeDurationSec;
     private bool _disposed;
+    private int _windowCount;
 
     /// <summary>Raised when a source is excluded (e.g. its window was closed).</summary>
     public event Action<string>? SourceExcluded;
@@ -73,6 +75,9 @@ public sealed class MultiWindowPlayer : IPlayer
         if (isVideo)
         {
             window = createWindow(source, label);
+            // Cascade windows so they don't stack exactly on top of each other.
+            window.Position = new PixelPoint(120 + _windowCount * 48, 120 + _windowCount * 48);
+            _windowCount++;
             window.Show();
             try
             {
