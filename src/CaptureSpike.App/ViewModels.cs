@@ -974,7 +974,12 @@ public sealed class MainViewModel : ObservableObject
             // Install first so F9 already works during the countdown (cancels).
             try
             {
-                await Task.Run(() => StopHotkey.Install(OnStopHotkey));
+                if (OperatingSystem.IsWindows())
+                    // Must run on the UI thread: WH_KEYBOARD_LL dispatches
+                    // through the installing thread's message loop.
+                    StopHotkey.Install(OnStopHotkey);
+                else
+                    await Task.Run(() => StopHotkey.Install(OnStopHotkey));
                 hotkeyInstalled = true;
             }
             catch (Exception ex)
