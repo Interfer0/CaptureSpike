@@ -163,7 +163,21 @@ public sealed class PaletteSourceViewModel : ObservableObject
     }
 
     public ProjectSource Source { get; }
-    public string Badge => Source.Kind.Badge();
+    public string Badge
+    {
+        get => Source.EffectiveBadge();
+        set
+        {
+            var b = (value ?? "").Trim();
+            if (Source.Badge == b) return;
+            Source.Badge = b;
+            _save();
+            Raise(nameof(Badge));
+            OnBadgeChanged();
+        }
+    }
+    /// <summary>Assigned by MainViewModel after construction.</summary>
+    public Action OnBadgeChanged { get; set; } = () => { };
     public string Label => Source.Label;
     /// <summary>Assigned by MainViewModel after construction.</summary>
     public ICommand DeleteCommand { get; set; } = null!;
@@ -247,7 +261,7 @@ public sealed class SceneSourceViewModel(SceneSource sceneSource, ProjectSource 
     : ObservableObject
 {
     public SceneSource SceneSource { get; } = sceneSource;
-    public string Badge => palette.Kind.Badge();
+    public string Badge => palette.EffectiveBadge();
     public string Label => palette.Label;
     public bool IsEnabled => SceneSource.Enabled;
     public string Dot => SceneSource.Enabled ? "🟢" : "⚪";
@@ -288,11 +302,11 @@ public sealed class TakeFilterChip(SourceKind kind) : ObservableObject
     public ICommand ToggleCommand { get; set; } = null!;
 }
 
-public sealed class PlayerTrackRow(TakeSource source, string label) : ObservableObject
+public sealed class PlayerTrackRow(TakeSource source, string label, string badge) : ObservableObject
 {
     public TakeSource Source { get; } = source;
     public string SourceId => Source.Id;
-    public string Badge => Source.Kind.Badge();
+    public string Badge => badge;
     public string Label => label;
     public bool IsVideo => Source.Kind.IsVideo();
 
@@ -354,7 +368,8 @@ public sealed class TakeRow : ObservableObject
 {
     public TakeRow(Take take, int number, bool isFavorite, string folderPath,
         Action<TakeRow> toggleFavorite, Action<TakeRow> delete, Action<TakeRow> openFolder,
-        Func<string, string?> sourceLabel, Action<TakeRow, TakeFileRow> playFile)
+        Func<string, string?> sourceLabel, Func<string, string?> sourceBadge,
+        Action<TakeRow, TakeFileRow> playFile)
     {
         Take = take;
         Number = number;
@@ -365,6 +380,7 @@ public sealed class TakeRow : ObservableObject
         OpenFolderCommand = new RelayCommand(() => openFolder(this));
         ToggleExpandedCommand = new RelayCommand(() => IsExpanded = !IsExpanded);
         _sourceLabel = sourceLabel;
+        _sourceBadge = sourceBadge;
         _playFile = playFile;
     }
 
@@ -376,7 +392,8 @@ public sealed class TakeRow : ObservableObject
     public int DisplayNumber => Take.Number > 0 ? Take.Number : Number;
     public string DisplayName => $"Take {DisplayNumber:D2}";
     public string StarText => IsFavorite ? "★" : "☆";
-    public IReadOnlyList<string> Badges => Take.Sources.Select(s => s.Kind.Badge()).ToList();
+    public IReadOnlyList<string> Badges => Take.Sources
+        .Select(s => _sourceBadge(s.Id) ?? s.Kind.Badge()).ToList();
     public string Duration => TimeSpan.FromSeconds(Take.DurationSeconds).ToString(@"m\:ss");
 
     public ICommand ToggleFavoriteCommand { get; }
@@ -389,6 +406,7 @@ public sealed class TakeRow : ObservableObject
     public ObservableCollection<TakeFileRow> Files { get; } = new();
 
     private readonly Func<string, string?> _sourceLabel;
+    private readonly Func<string, string?> _sourceBadge;
     private readonly Action<TakeRow, TakeFileRow> _playFile;
 
     private bool _isExpanded;
@@ -680,6 +698,7 @@ public sealed class MainViewModel : ObservableObject
                 () => _store.SaveProject(),
                 RefreshSceneDeviceLabels);
             vm.DeleteCommand = new RelayCommand(() => Mutate(() => DeletePaletteSource(vm)));
+            vm.OnBadgeChanged = () => { RefreshSceneSources(); RefreshTakes(); };
             PaletteSources.Add(vm);
             _ = vm.RefreshDevicesAsync(); // fire-and-forget background detection
         }
@@ -755,6 +774,7 @@ public sealed class MainViewModel : ObservableObject
             Takes.Add(new TakeRow(t, n++, t.Id == fav, _store.TakeDir(t.SceneId, t.Id),
                 ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label,
+                id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
                 PlayTakeFileRow));
         }
         SelectedScene.TakeCount = all.Count;
@@ -1245,7 +1265,9 @@ public sealed class MainViewModel : ObservableObject
             {
                 var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
                     ?? ts.Kind.DefaultLabel();
-                var row = new PlayerTrackRow(ts, label);
+                var badge = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
+                    ?? ts.Kind.Badge();
+                var row = new PlayerTrackRow(ts, label, badge);
                 row.ToggleMuteCommand = new RelayCommand(() => ToggleTrackMuteAsync(row));
                 PlayerTracks.Add(row);
             }

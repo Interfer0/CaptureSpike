@@ -76,6 +76,15 @@ public sealed class ProjectSource
     public string Label { get; set; } = "Screen";
     /// <summary>Device selector, e.g. window title, camera name. Null = default.</summary>
     public string? Device { get; set; }
+    /// <summary>
+    /// Custom short badge shown on chips (e.g. "M1", "MK"). Empty = the kind's
+    /// default badge. Lets two sources of the same kind tell apart.
+    /// </summary>
+    public string Badge { get; set; } = "";
+
+    /// <summary>Custom badge if set, otherwise the kind's default badge.</summary>
+    public string EffectiveBadge() =>
+        string.IsNullOrWhiteSpace(Badge) ? Kind.Badge() : Badge.Trim().ToUpperInvariant();
 }
 
 /// <summary>
