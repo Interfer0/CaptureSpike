@@ -11,7 +11,14 @@
     <RootNamespace>CaptureSpike.App</RootNamespace>
     <!-- .axaml files are compiled by Avalonia -->
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <!-- App icon: .ico for the Windows exe, .png for the Avalonia window.
+         Files are optional: if Assets/capturespike-icon.* is missing (e.g.,
+         binaries not yet synced), the build falls back to the default icon. -->
   </PropertyGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\capturespike-icon.png" Condition="Exists('Assets\capturespike-icon.png')" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.1.3" />

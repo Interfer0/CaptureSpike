@@ -10,6 +10,13 @@ public partial class MainWindow : Window
     {
         AvaloniaXamlLoader.Load(this);
         WindowState = WindowState.Maximized;
+        // App icon (optional: only if the asset was synced).
+        try
+        {
+            Icon = new WindowIcon(
+                Avalonia.Platform.AssetLoader.Open(new Uri("avares://CaptureSpike.App/Assets/capturespike-icon.png")));
+        }
+        catch { /* default icon */ }
 
         Opened += (_, _) =>
         {

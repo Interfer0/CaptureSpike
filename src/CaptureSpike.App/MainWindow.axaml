@@ -260,9 +260,9 @@
                                      VerticalAlignment="Center" FontFamily="Monospace" />
                           <TextBlock Text="offset ms:" FontSize="12" Opacity="0.7"
                                      VerticalAlignment="Center" />
-                          <TextBox Text="{Binding EditableOffsetMs, UpdateSourceTrigger=LostFocus}" FontSize="12"
+                          <TextBox Text="{Binding EditableOffsetText, UpdateSourceTrigger=PropertyChanged}" FontSize="12"
                                    Width="80" VerticalAlignment="Center"
-                                   ToolTip.Tip="Type an offset in milliseconds, Enter to apply" />
+                                   ToolTip.Tip="Type an offset in milliseconds" />
                           <Button Content="Reset" Command="{Binding ResetOffsetCommand}"
                                   FontSize="12" Padding="8,2" VerticalAlignment="Center"
                                   ToolTip.Tip="Clear manual offset, use recorded value" />
