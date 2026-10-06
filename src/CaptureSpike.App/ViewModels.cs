@@ -1252,6 +1252,7 @@ public sealed class MainViewModel : ObservableObject
             // Collect sources with existing files.
             var items = new List<(TakeSource Source, string Label, string Badge, string FilePath, bool IsVideo)>();
             var missing = new List<string>();
+            var suspicious = new List<string>();
             foreach (var ts in take.Sources)
             {
                 var filePath = Path.Combine(takeDir, ts.File);
@@ -1262,6 +1263,10 @@ public sealed class MainViewModel : ObservableObject
                     missing.Add($"{label} ({ts.File})");
                     continue;
                 }
+                // Flag suspiciously small files (likely a failed recording).
+                var fileBytes = new FileInfo(filePath).Length;
+                if (fileBytes < 1024)
+                    suspicious.Add($"{label} ({ts.File} is only {fileBytes} bytes)");
                 var badge = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
                     ?? ts.Kind.Badge();
                 var isVideo = !Path.GetExtension(filePath).Equals(".wav", StringComparison.OrdinalIgnoreCase);
@@ -1269,6 +1274,8 @@ public sealed class MainViewModel : ObservableObject
             }
             if (missing.Count > 0)
                 Status = $"Take {row.DisplayName}: missing files for {string.Join(", ", missing)}.";
+            else if (suspicious.Count > 0)
+                Status = $"Take {row.DisplayName}: suspiciously small files: {string.Join(", ", suspicious)}.";
             if (items.Count == 0)
             {
                 _playerError = "No playable source files in this take.";
@@ -1276,15 +1283,22 @@ public sealed class MainViewModel : ObservableObject
                 return;
             }
 
-            // One tiled window for all video sources.
-            var videoItems = items.Where(i => i.IsVideo).ToList();
+            // One tiled window for all sources (video tiles + audio tiles).
             TiledPlaybackWindow? tiledWindow = null;
             Dictionary<string, nint> handles = new();
-            if (videoItems.Count > 0)
+            if (items.Count > 0)
             {
                 tiledWindow = new TiledPlaybackWindow(
-                    $"{row.DisplayName} · {videoItems.Count} video source{(videoItems.Count == 1 ? "" : "s")}",
-                    videoItems.Select(i => (i.Source.Id, i.Label, i.Badge)).ToList());
+                    $"{row.DisplayName} · {items.Count} source{(items.Count == 1 ? "" : "s")}",
+                    items.Select(i => new TileSourceInfo(
+                        i.Source.Id, i.Label, i.Badge,
+                        Path.GetFileName(i.FilePath), i.IsVideo)).ToList(),
+                    sourceId =>
+                    {
+                        // Audio tile clicked: toggle mute for that source.
+                        var track = PlayerTracks.FirstOrDefault(t => t.SourceId == sourceId);
+                        if (track is not null) ToggleTrackMuteAsync(track);
+                    });
                 tiledWindow.Closed += (_, _) => _ = UnloadPlayerAsync();
                 tiledWindow.Show();
                 handles = await tiledWindow.WaitForHandlesAsync(TimeSpan.FromSeconds(5));
@@ -1301,7 +1315,7 @@ public sealed class MainViewModel : ObservableObject
             Raise(nameof(IsMultiWindow));
 
             PlayerTracks.Clear();
-            foreach (var (source, label, badge, _, isVideo) in items)
+            foreach (var (source, label, badge, _, _) in items)
             {
                 var trackRow = new PlayerTrackRow(source, label, badge);
                 trackRow.ToggleMuteCommand = new RelayCommand(() => ToggleTrackMuteAsync(trackRow));
@@ -1396,6 +1410,7 @@ public sealed class MainViewModel : ObservableObject
         {
             await player.SetSourceMutedAsync(row.SourceId, muting);
             row.IsMuted = muting;
+            _tiledWindow?.SetTileMuted(row.SourceId, muting);
         }
         catch (Exception ex) { Status = $"Mute: {ex.Message}"; }
     }
