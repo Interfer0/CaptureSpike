@@ -17,18 +17,20 @@ namespace CaptureSpike.Core.Capture;
 /// </summary>
 public sealed class NAudioCapturer : ISourceCapturer
 {
-    /// <summary>Endless silence; keeps a WASAPI render stream alive.</summary>
-    private sealed class SilenceProvider : WaveProvider32
+    /// <summary>
+    /// Endless silence in the device's exact format; keeps a WASAPI render
+    /// stream alive so loopback capture never stalls.
+    /// </summary>
+    private sealed class SilenceProvider : IWaveProvider
     {
-        public SilenceProvider(WaveFormat format)
-        {
-            SetWaveFormat(format.SampleRate, format.Channels);
-        }
+        public WaveFormat WaveFormat { get; }
 
-        public override int Read(float[] buffer, int offset, int sampleCount)
+        public SilenceProvider(WaveFormat format) => WaveFormat = format;
+
+        public int Read(byte[] buffer, int offset, int count)
         {
-            Array.Clear(buffer, offset, sampleCount);
-            return sampleCount;
+            Array.Clear(buffer, offset, count);
+            return count;
         }
     }
 
@@ -94,10 +96,19 @@ public sealed class NAudioCapturer : ISourceCapturer
         // delivers continuous data even when nothing is playing.
         if (_loopback)
         {
-            var keepAlive = new WasapiOut(_mmDevice, AudioClientShareMode.Shared, false, 100);
-            keepAlive.Init(new SilenceProvider(capture.WaveFormat));
-            keepAlive.Play();
-            _keepAlive = keepAlive;
+            WasapiOut? keepAlive = null;
+            try
+            {
+                keepAlive = new WasapiOut(_mmDevice, AudioClientShareMode.Shared, false, 100);
+                keepAlive.Init(new SilenceProvider(capture.WaveFormat));
+                keepAlive.Play();
+                _keepAlive = keepAlive;
+            }
+            catch
+            {
+                try { keepAlive?.Dispose(); } catch { }
+                throw;
+            }
         }
 
         capture.DataAvailable += (_, e) =>

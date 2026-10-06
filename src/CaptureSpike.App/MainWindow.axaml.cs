@@ -45,8 +45,9 @@ public partial class MainWindow : Window
             if (DataContext is MainViewModel vm && vm.IsRecording)
             {
                 e.Cancel = true;
-                await vm.StopRecordingAsync();
-                Close();
+                try { await vm.StopRecordingAsync(); }
+                catch { /* Status already reports the failure */ }
+                finally { Close(); }
             }
         };
     }

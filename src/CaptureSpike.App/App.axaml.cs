@@ -48,6 +48,9 @@ public partial class App : Application
                     as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
                 if (window is not null)
                 {
+                    // Also land in the in-app log panel.
+                    if (window.DataContext is MainViewModel vm)
+                        vm.Log($"CRASH: {message}");
                     // Best-effort: show what happened without taking the app down.
                     var dialog = new Window
                     {

@@ -65,7 +65,18 @@ public sealed class TiledTakePlayer : IPlayer
         });
     }
 
-    private double MinOffsetSec => _players.Count == 0 ? 0 : _players.Min(p => p.OffsetSec);
+    /// <summary>
+    /// Smallest offset among included sources. Excluded sources don't anchor
+    /// the timeline.
+    /// </summary>
+    private double MinOffsetSec
+    {
+        get
+        {
+            var included = _players.Where(p => p.Included).ToList();
+            return included.Count == 0 ? 0 : included.Min(p => p.OffsetSec);
+        }
+    }
 
     /// <summary>Offset normalized like FilterGraphBuilder (smallest = 0).</summary>
     private double RelativeOffsetSec(SourcePlayer p) =>

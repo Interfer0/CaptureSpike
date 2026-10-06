@@ -47,7 +47,19 @@ public sealed class Recorder : IRecorder
         try
         {
             // Parallel start: every source warms up at once.
-            await Task.WhenAll(capturers.Select(c => c.StartAsync(t0, ct))).ConfigureAwait(false);
+            var startTasks = capturers.Select(c => c.StartAsync(t0, ct)).ToList();
+            try
+            {
+                await Task.WhenAll(startTasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Observe the losers' exceptions so they don't go unobserved.
+                foreach (var t in startTasks.Where(t => !t.IsCompletedSuccessfully))
+                    t.ContinueWith(failed => _ = failed.Exception,
+                        TaskContinuationOptions.OnlyOnFaulted);
+                throw;
+            }
         }
         catch
         {

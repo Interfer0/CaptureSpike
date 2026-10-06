@@ -836,7 +836,8 @@ public sealed class MainViewModel : ObservableObject
         panel.Children.Add(buttons);
         dialog.Content = panel;
         dialog.Closed += (_, _) => tcs.TrySetResult(false);
-        _ = dialog.ShowDialog(desktop.MainWindow);
+        try { await dialog.ShowDialog(desktop.MainWindow).ConfigureAwait(false); }
+        catch { tcs.TrySetResult(false); }
         return await tcs.Task.ConfigureAwait(false);
     }
 
@@ -1018,7 +1019,13 @@ public sealed class MainViewModel : ObservableObject
                         var takeTime = tiled.Position;
                         foreach (var s in row.Take.Sources)
                             tiled.UpdateSourceOffset(s.Id, s.EffectiveOffsetMs);
-                        _ = tiled.SeekAsync(takeTime);
+                        // Observe failures; overlapping seeks are harmless
+                        // (idempotent — last one wins).
+                        _ = tiled.SeekAsync(takeTime).ContinueWith(t =>
+                        {
+                            if (t.IsFaulted)
+                                Status = $"Offset live-seek: {t.Exception?.GetBaseException().Message}";
+                        }, TaskContinuationOptions.OnlyOnFaulted);
                     }
                 }));
         }
