@@ -884,7 +884,16 @@ public sealed class MainViewModel : ObservableObject
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
                 PlayTakeMultiWindow,
-                row => _store.SaveTake(_store.TakeDir(row.Take.SceneId, row.Take.Id), row.Take)));
+                row =>
+                {
+                    _store.SaveTake(_store.TakeDir(row.Take.SceneId, row.Take.Id), row.Take);
+                    // If this take is currently playing, push offset updates live.
+                    if (_player is TiledTakePlayer tiled && _playerTake?.Id == row.Take.Id)
+                    {
+                        foreach (var s in row.Take.Sources)
+                            tiled.UpdateSourceOffset(s.Id, s.EffectiveOffsetMs);
+                    }
+                }));
         }
         SelectedScene.TakeCount = all.Count;
         SelectedTake = Takes.FirstOrDefault(t => t.Take.Id == selectedId);
@@ -1482,8 +1491,10 @@ public sealed class MainViewModel : ObservableObject
         if (_player is null) return;
         try
         {
+            Status = $"Seeking to {seconds:F1}s...";
             await _player.SeekAsync(TimeSpan.FromSeconds(seconds));
             PlayerPositionSeconds = seconds;
+            Status = $"Seeked to {seconds:F1}s";
         }
         catch (Exception ex) { Status = $"Seek: {ex.Message}"; }
     }

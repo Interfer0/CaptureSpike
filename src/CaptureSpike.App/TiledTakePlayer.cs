@@ -119,6 +119,13 @@ public sealed class TiledTakePlayer : IPlayer
         }
     }
 
+    /// <summary>Updates a source's offset live (e.g., after a manual offset edit).</summary>
+    public void UpdateSourceOffset(string sourceId, double offsetMs)
+    {
+        var p = _players.FirstOrDefault(x => x.SourceId == sourceId);
+        if (p is not null) p.OffsetSec = offsetMs / 1000.0;
+    }
+
     public async Task SetSourceMutedAsync(string sourceId, bool muted, CancellationToken ct = default)
     {
         var p = _players.FirstOrDefault(x => x.SourceId == sourceId);
