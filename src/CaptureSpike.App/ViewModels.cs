@@ -446,6 +446,8 @@ public sealed class TakeRow : ObservableObject
             foreach (var f in Directory.GetFiles(FolderPath).OrderBy(Path.GetFileName))
             {
                 var name = Path.GetFileName(f)!;
+                // take.json is metadata, not a playable source file.
+                if (name.Equals("take.json", StringComparison.OrdinalIgnoreCase)) continue;
                 var ts = Take.Sources.FirstOrDefault(s =>
                     s.File.Equals(name, StringComparison.OrdinalIgnoreCase));
                 var label = ts is null ? null : _sourceLabel(ts.Id);
@@ -1238,7 +1240,7 @@ public sealed class MainViewModel : ObservableObject
         _playerSceneId = sceneId;
         _playerDisplayName = $"{row.DisplayName} · multi-window";
         _playerError = null;
-        NowPlayingText = $"▶ {_playerDisplayName} ({take.Sources.Count} sources)";
+        NowPlayingText = $"▶ {_playerDisplayName} ({take.Sources.Count} sources: {string.Join(", ", take.Sources.Select(s => $"{s.Kind}:{s.File}"))})";
         PlayerCaptionText = "Each source plays in its own window, in sync. Toggle sources below.";
         Raise(nameof(HasPlayerTake));
         Raise(nameof(PlayerPlaceholderText));
