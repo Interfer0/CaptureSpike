@@ -20,6 +20,13 @@ public partial class MainWindow : Window
         }
         catch { /* default icon */ }
 
+        // Live-update the markdown preview as the user edits. We use
+        // TextChanged (not a binding) so we can re-parse the source
+        // and assign the resulting block list to the preview without
+        // round-tripping through the binding system.
+        NotesBox.TextChanged += (_, _) => UpdateNotesPreview();
+        UpdateNotesPreview();
+
         Opened += (_, _) =>
         {
             EnsureOnScreen();
@@ -144,6 +151,18 @@ public partial class MainWindow : Window
         PrefixEachLineInNotes("- ");
     private void OnNotesNumbered(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
         PrefixEachLineInNotes("1. ");
+
+    /// <summary>
+    /// Re-parse the editor's source string and assign the resulting
+    /// blocks to the markdown preview. Called on every keystroke so
+    /// the preview stays in sync with the source.
+    /// </summary>
+    private void UpdateNotesPreview()
+    {
+        var source = NotesBox.Text ?? string.Empty;
+        var blocks = CaptureSpike.Core.Markdown.MarkdownParser.Parse(source);
+        NotesPreview.Blocks = blocks;
+    }
 
     /// <summary>
     /// Inserts <paramref name="prefix"/> before and <paramref name="suffix"/>

@@ -365,12 +365,25 @@
                    HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,8"
                    Text="The window minimizes during the countdown. Stop from the tray icon." />
 
-        <!-- Script & notes: vertical markdown toolbar on the left, single
-             editing TextBox on the right. The toolbar buttons wrap the
-             current selection in markdown (B = **...**, I = *...*,
-             H1/H2/H3 = "# "/"## "/"### " at the start of selected lines,
-             bullet/numbered list = "- "/"1. " at line starts).
-             Storage stays Scene.Notes as a plain string. -->
+        <!-- Script & notes: vertical markdown toolbar on the left,
+             editor TextBox on the top right, live rendered preview
+             below it. Storage is Scene.Notes as a plain string; the
+             preview is computed from the source by MarkdownParser on
+             every change.
+
+             The user sees the raw markdown in the editor (so they can
+             see and select the ** and # characters while writing). The
+             preview pane renders the same string as the WYSIWYG reading
+             experience — bold, italic, headings, bullets. The two
+             panes are split by a GridSplitter so the user can size
+             them as they like.
+
+             Not "true WYSIWYG" — the editor shows raw markdown, the
+             preview shows formatted. To get true WYSIWYG (markup
+             hidden in the editor itself) we'd need AvaloniaEdit or
+             a custom text presenter. See the comment block at the
+             top of MainWindow.axaml.cs for the full reasoning.
+        -->
         <DockPanel DockPanel.Dock="Top" LastChildFill="True" Margin="0,0,0,4">
           <DockPanel DockPanel.Dock="Top">
             <TextBlock Text="Script and notes" FontSize="15" Opacity="0.7" />
@@ -380,7 +393,7 @@
           </DockPanel>
           <Grid Margin="0,4,0,0">
             <Grid.RowDefinitions>
-              <RowDefinition Height="*" MinHeight="180" />
+              <RowDefinition Height="*" MinHeight="120" />
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="Auto" />
@@ -410,11 +423,37 @@
                       FontWeight="Bold" Width="32" Height="32" Padding="0"
                       ToolTip.Tip="Numbered list (1. )" Click="OnNotesNumbered" />
             </StackPanel>
-            <TextBox Grid.Column="1" x:Name="NotesBox"
-                     Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
-                     AcceptsReturn="True" TextWrapping="Wrap"
-                     FontFamily="Consolas, Menlo, monospace"
-                     ScrollViewer.VerticalScrollBarVisibility="Auto" />
+            <!-- Right column: editor on top, preview below, GridSplitter
+                 between. NotesBox and NotesPreview share the same source
+                 string (Scene.Notes via the same binding); the preview
+                 re-parses on every change. -->
+            <Grid Grid.Column="1">
+              <Grid.RowDefinitions>
+                <RowDefinition Height="*" MinHeight="60" />
+                <RowDefinition Height="4" />
+                <RowDefinition Height="*" MinHeight="60" />
+              </Grid.RowDefinitions>
+              <TextBox Grid.Row="0" x:Name="NotesBox"
+                       Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
+                       AcceptsReturn="True" TextWrapping="Wrap"
+                       FontFamily="Consolas, Menlo, monospace"
+                       ScrollViewer.VerticalScrollBarVisibility="Auto" />
+              <GridSplitter Grid.Row="1" Height="4"
+                            HorizontalAlignment="Stretch"
+                            ResizeDirection="Rows" />
+              <Border Grid.Row="2"
+                      BorderThickness="1"
+                      BorderBrush="{DynamicResource DividerBrush}"
+                      Padding="8">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                  <app:MarkdownView x:Name="NotesPreview"
+                                     BodyFontSize="14"
+                                     Heading1FontSize="22"
+                                     Heading2FontSize="18"
+                                     Heading3FontSize="15" />
+                </ScrollViewer>
+              </Border>
+            </Grid>
           </Grid>
         </DockPanel>
 
