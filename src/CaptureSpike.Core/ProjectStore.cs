@@ -80,13 +80,17 @@ public sealed class ProjectStore
         var project = JsonSerializer.Deserialize<Project>(json, Json)
             ?? throw new InvalidDataException("project.json is empty or invalid.");
         var store = new ProjectStore(projectDir, project);
+        // Migrate legacy scene sources (embedded in scene.json) to palette
+        // references BEFORE renaming folders: MigrateToNamedFolders saves
+        // each scene.json, and a saved scene with empty sourceId would
+        // be mistaken for "already migrated" by MigrateLegacyScene.
+        store.EnsurePalette();
         if (project.NamingVersion < 1)
         {
             store.MigrateToNamedFolders();
             project.NamingVersion = 1;
             store.SaveProject();
         }
-        store.EnsurePalette();
         return store;
     }
 
@@ -317,7 +321,24 @@ public sealed class ProjectStore
             return false;
         var first = sources.EnumerateArray().FirstOrDefault();
         if (first.ValueKind != JsonValueKind.Object || first.TryGetProperty("sourceId", out _))
-            return false; // already in the new format (or no sources)
+        {
+            // Already migrated only if every source has a non-empty sourceId.
+            // A partially-migrated scene (e.g. one that MigrateToNamedFolders
+            // saved before MigrateLegacyScene ran) still needs finishing.
+            var hasEmptyId = false;
+            foreach (var s in sources.EnumerateArray())
+            {
+                if (s.ValueKind != JsonValueKind.Object ||
+                    !s.TryGetProperty("sourceId", out var sid) ||
+                    sid.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrEmpty(sid.GetString()))
+                {
+                    hasEmptyId = true;
+                    break;
+                }
+            }
+            if (!hasEmptyId) return false;
+        }
 
         var legacy = JsonSerializer.Deserialize<List<LegacySceneSource>>(sources.GetRawText(), Json);
         if (legacy is null) return false;

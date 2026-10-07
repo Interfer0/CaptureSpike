@@ -47,8 +47,10 @@ public sealed class NamingTests
             Assert.True(Directory.Exists(Path.Combine(dir, "scenes", "Demo Reel")));
 
             // Same sanitized name: title updates, folder stays.
-            Assert.True(store.RenameScene(scene, "Demo Reel!"));
-            Assert.Equal("Demo Reel!", scene.Title);
+            // "Demo Reel-" sanitizes to "Demo Reel" (trailing '-' is trimmed),
+            // so the folder name doesn't change but the title does.
+            Assert.True(store.RenameScene(scene, "Demo Reel-"));
+            Assert.Equal("Demo Reel-", scene.Title);
             Assert.Equal("Demo Reel", scene.FolderName);
         }
         finally { Directory.Delete(dir, recursive: true); }
