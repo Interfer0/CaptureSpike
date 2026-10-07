@@ -105,6 +105,9 @@ public partial class MainWindow : Window
 
     private void OnSeekPointerPressed(object? sender, PointerPressedEventArgs e)
     {
+        // Seek lives in the tiled playback window's PlayerTransportBar
+        // now; this handler stays here so the XAML compiles cleanly if
+        // someone re-adds a slider to the main window.
         if (DataContext is MainViewModel vm) vm.BeginScrub();
     }
 

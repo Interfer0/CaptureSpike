@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:app="clr-namespace:CaptureSpike.App"
+        xmlns:mv="using:MarkView.Avalonia"
         x:Class="CaptureSpike.App.MainWindow"
         Title="CaptureSpike" Width="1180" Height="720" MinWidth="960" MinHeight="600">
   <Window.Styles>
@@ -75,7 +76,7 @@
     <GridSplitter DockPanel.Dock="Bottom" Height="5" HorizontalAlignment="Stretch"
                   ResizeDirection="Rows" IsVisible="{Binding IsLogVisible}" />
 
-    <Grid ColumnDefinitions="260,*,340" Margin="8">
+    <Grid ColumnDefinitions="260,*,680" Margin="8">
       <!-- Scenes + source palette -->
       <Grid Grid.Column="0" Margin="0,0,8,0">
         <Grid.RowDefinitions>
@@ -148,9 +149,10 @@
         </DockPanel>
       </Grid>
 
-      <!-- Take workspace: transport + takes (video plays in popup windows) -->
+      <!-- Take workspace: transport lives in the tiled playback window.
+                 Per-track mute/include rows + take list stay here. -->
       <Grid Grid.Column="1" Margin="0,0,8,0"
-            RowDefinitions="Auto,Auto,Auto,Auto,Auto,2*">
+            RowDefinitions="Auto,Auto,Auto,Auto,2*">
         <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,4">
           <TextBlock Text="{Binding TakeHeaderText}" FontWeight="Bold" FontSize="17" />
           <TextBlock Text="{Binding TakeSceneHeader}" Opacity="0.6"
@@ -159,23 +161,7 @@
                      VerticalAlignment="Center" IsVisible="{Binding HasPlayerTake}" />
         </StackPanel>
 
-        <DockPanel Grid.Row="1" IsEnabled="{Binding HasPlayerTake}" Margin="0,8,0,0">
-          <Button DockPanel.Dock="Left" Content="{Binding PlayerPlayPauseText}"
-                  Command="{Binding PlayerPlayPauseCommand}" Margin="0,0,8,0" />
-          <Button DockPanel.Dock="Left" Content="■" ToolTip.Tip="Stop and close playback"
-                  Command="{Binding PlayerStopCommand}" Margin="0,0,8,0" />
-          <TextBlock DockPanel.Dock="Right" Text="{Binding PlayerTimeText}"
-                     VerticalAlignment="Center" FontFamily="Monospace" Margin="8,0,0,0" />
-          <Slider Minimum="0" Maximum="{Binding PlayerDurationSeconds}"
-                  Value="{Binding PlayerPositionSeconds, Mode=OneWay}"
-                  VerticalAlignment="Center"
-                  PointerPressed="OnSeekPointerPressed"
-                  PointerReleased="OnSeekPointerReleased"
-                  GotFocus="OnSeekGotFocus"
-                  LostFocus="OnSeekLostFocus" />
-        </DockPanel>
-
-        <ItemsControl Grid.Row="2" ItemsSource="{Binding PlayerTracks}"
+        <ItemsControl Grid.Row="1" ItemsSource="{Binding PlayerTracks}"
                       IsVisible="{Binding HasPlayerTake}">
           <ItemsControl.ItemsPanel>
             <ItemsPanelTemplate>
@@ -199,11 +185,11 @@
             </DataTemplate>
           </ItemsControl.ItemTemplate>
         </ItemsControl>
-        <TextBlock Grid.Row="3" Text="{Binding PlayerCaptionText}"
+        <TextBlock Grid.Row="2" Text="{Binding PlayerCaptionText}"
                    FontSize="14" Opacity="0.5" Margin="0,2,0,0"
                    IsVisible="{Binding HasPlayerTake}" />
 
-        <DockPanel Grid.Row="4" Margin="0,8,0,4">
+        <DockPanel Grid.Row="3" Margin="0,8,0,4">
           <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="6">
             <TextBlock Text="Takes" FontWeight="Bold" VerticalAlignment="Center" />
             <Border Classes="badge" VerticalAlignment="Center">
@@ -230,7 +216,7 @@
           </ItemsControl>
         </DockPanel>
 
-        <ListBox Grid.Row="5" ItemsSource="{Binding Takes}"
+        <ListBox Grid.Row="4" ItemsSource="{Binding Takes}"
                  SelectedItem="{Binding SelectedTake}">
           <ListBox.ItemTemplate>
             <DataTemplate>
@@ -304,7 +290,7 @@
         </ListBox>
       </Grid>
 
-      <!-- Scene setup + record -->
+      <!-- Scene setup + record + Script & notes split-view -->
       <DockPanel Grid.Column="2">
         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8"
                     Margin="0,0,0,4">
@@ -380,12 +366,41 @@
                    HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,8"
                    Text="The window minimizes during the countdown. Stop from the tray icon." />
 
-        <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
-          <TextBlock Text="Script and notes" FontSize="15" Opacity="0.7" />
-          <TextBox Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
-                   AcceptsReturn="True" Height="80" TextWrapping="Wrap" />
-          <TextBlock Text="{Binding SelectedScene.WordCountText}" FontSize="14" Opacity="0.6" />
-        </StackPanel>
+        <!-- Script & notes: split-view markdown editor.
+             Left = raw markdown (TextBox, two-way bound to Notes).
+             Right = rendered preview (MarkView MarkdownViewer).
+             Fills the remaining vertical space; the SplitView's
+             GridSplitter lets the user resize the panes. -->
+        <DockPanel DockPanel.Dock="Top" LastChildFill="True" Margin="0,0,0,4">
+          <DockPanel DockPanel.Dock="Top">
+            <TextBlock Text="Script and notes" FontSize="15" Opacity="0.7" />
+            <TextBlock DockPanel.Dock="Right"
+                       Text="{Binding SelectedScene.WordCountText}"
+                       FontSize="14" Opacity="0.6" />
+          </DockPanel>
+          <Grid Margin="0,4,0,0">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="*" MinHeight="180" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" MinWidth="120" />
+              <ColumnDefinition Width="5" />
+              <ColumnDefinition Width="*" MinWidth="120" />
+            </Grid.ColumnDefinitions>
+            <TextBox Grid.Column="0"
+                     Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
+                     AcceptsReturn="True" TextWrapping="Wrap"
+                     FontFamily="Consolas, Menlo, monospace"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ToolTip.Tip="Markdown. # heading, **bold**, *italic*, - list, ```code```" />
+            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" />
+            <Border Grid.Column="2" BorderThickness="1"
+                    BorderBrush="{DynamicResource DividerBrush}"
+                    Padding="8">
+              <mv:MarkdownViewer Markdown="{Binding SelectedScene.Notes}" />
+            </Border>
+          </Grid>
+        </DockPanel>
 
       </DockPanel>
     </Grid>

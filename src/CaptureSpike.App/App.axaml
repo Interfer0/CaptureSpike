@@ -17,6 +17,10 @@
       </FluentTheme.Palettes>
     </FluentTheme>
 
+    <!-- MarkView styles for the markdown preview in the Script & Notes
+         split-view. The included theme is theme-variant-aware. -->
+    <StyleInclude Source="avares://MarkView.Avalonia/Themes/MarkdownTheme.axaml" />
+
     <!-- Base font size bump: the UI was set too small to read comfortably.
          Explicit per-control sizes in the windows scale up from here. -->
     <Style Selector="TextBlock">

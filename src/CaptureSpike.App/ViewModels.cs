@@ -624,7 +624,7 @@ public sealed class TakeRow : ObservableObject
     }
 }
 
-public sealed class MainViewModel : ObservableObject
+public sealed class MainViewModel : ObservableObject, ITransportHost
 {
     private ProjectStore? _store;
 
@@ -1627,6 +1627,28 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public string PlayerPlayPauseText => IsPlayerPlaying ? "⏸ Pause" : "▶ Play";
+
+    // ----- ITransportHost -----
+    // Implemented so the popup's PlayerTransportBar can drive playback
+    // and read state without reaching into private fields.
+
+    TimeSpan ITransportHost.Position => TimeSpan.FromSeconds(_playerPositionSeconds);
+    TimeSpan ITransportHost.Duration => TimeSpan.FromSeconds(_playerDurationSeconds);
+    bool ITransportHost.IsPlaying => _isPlayerPlaying;
+    string ITransportHost.PlayPauseGlyph => IsPlayerPlaying ? "⏸ Pause" : "▶ Play";
+
+    void ITransportHost.PlayPause() => TogglePlayerPlayPauseAsync();
+    void ITransportHost.Stop() => _ = UnloadPlayerAsync();
+    void ITransportHost.SeekTo(double seconds)
+    {
+        // Same pause-seek-resume dance EndScrub does, but exposed via
+        // the transport interface so the popup's slider can drive it.
+        // EndScrub is async void (it owns its own try/catch for status
+        // reporting), so we just call it and let it run.
+        _playerScrubbing = false;
+        EndScrub(seconds);
+    }
+
     public ICommand PlayerPlayPauseCommand { get; }
     public ICommand PlayerStopCommand { get; }
 
@@ -1704,7 +1726,8 @@ public sealed class MainViewModel : ObservableObject
                         // Audio tile clicked: toggle mute for that source.
                         var track = PlayerTracks.FirstOrDefault(t => t.SourceId == sourceId);
                         if (track is not null) ToggleTrackMuteAsync(track);
-                    });
+                    },
+                    transport: this); // MainViewModel is the ITransportHost.
                 tiledWindow.Closed += (_, _) => _ = UnloadPlayerAsync();
                 tiledWindow.Show();
                 handles = await tiledWindow.WaitForHandlesAsync(TimeSpan.FromSeconds(5));

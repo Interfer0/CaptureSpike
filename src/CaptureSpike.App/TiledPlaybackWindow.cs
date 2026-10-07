@@ -51,11 +51,13 @@ public sealed class TiledPlaybackWindow : Window
     private readonly List<Tile> _tiles = new();
     private readonly Action<string> _onAudioTileClicked;
     private TextBlock? _loadingText;
+    private PlayerTransportBar? _transport;
 
     public TiledPlaybackWindow(
         string title,
         IReadOnlyList<TileSourceInfo> sources,
-        Action<string> onAudioTileClicked)
+        Action<string> onAudioTileClicked,
+        ITransportHost? transport = null)
     {
         _onAudioTileClicked = onAudioTileClicked;
         Title = title;
@@ -222,7 +224,23 @@ public sealed class TiledPlaybackWindow : Window
         var root = new Panel();
         root.Children.Add(grid);
         root.Children.Add(_loadingText);
-        Content = root;
+
+        if (transport is not null)
+        {
+            // Dock the transport at the bottom of the window; the tile
+            // grid stretches to fill the rest.
+            var dock = new DockPanel();
+            _transport = new PlayerTransportBar();
+            _transport.Attach(transport);
+            DockPanel.SetDock(_transport, Dock.Bottom);
+            dock.Children.Add(_transport);
+            dock.Children.Add(root);
+            Content = dock;
+        }
+        else
+        {
+            Content = root;
+        }
     }
 
     /// <summary>Handles for each tile's native child, in tile order. 0 = no video / embedding failed.</summary>
