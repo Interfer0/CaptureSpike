@@ -20,8 +20,9 @@ public enum MarkdownKind
 
 /// <summary>
 /// Heading level or list marker for line-prefixed blocks. Headings
-/// are line-prefixed (`#`, `##`, `###`); lists use `- ` and `1. ` and
-/// are emitted by the toolbar's line-prefix helper, not the parser.
+/// are line-prefixed (`#`, `##`, `###`); list items are `- ` (bullet)
+/// or `N. ` (numbered) — parsed by the parser, stripped from the
+/// span text, and rendered with a leading glyph.
 /// </summary>
 public enum MarkdownBlockKind
 {
@@ -29,6 +30,10 @@ public enum MarkdownBlockKind
     Heading1,
     Heading2,
     Heading3,
+    /// <summary>Bullet list item, prefixed with "- " in the source.</summary>
+    BulletListItem,
+    /// <summary>Numbered list item, prefixed with "N. " in the source.</summary>
+    NumberedListItem,
 }
 
 /// <summary>

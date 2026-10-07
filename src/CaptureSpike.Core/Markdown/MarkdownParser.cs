@@ -57,6 +57,26 @@ public static class MarkdownParser
                 continue;
             }
 
+            // Bullet list item: "- " at the start of the line.
+            if (line.StartsWith("- ") && IsAtStart(line, 2))
+            {
+                FlushParagraph();
+                var inline = ParseInline(line[2..]);
+                blocks.Add(new MarkdownBlock(MarkdownBlockKind.BulletListItem, inline));
+                continue;
+            }
+
+            // Numbered list item: "N. " at the start of the line, where
+            // N is one or more digits. The number itself isn't part of
+            // the visible text — the renderer draws the bullet.
+            if (TryParseNumberedList(line, out var numberedContent))
+            {
+                FlushParagraph();
+                var inline = ParseInline(numberedContent);
+                blocks.Add(new MarkdownBlock(MarkdownBlockKind.NumberedListItem, inline));
+                continue;
+            }
+
             // Mid-document line — accumulate into the current paragraph.
             // If we already have inline spans and this line is non-empty,
             // add a literal "\n" so a multi-line paragraph renders with
@@ -107,6 +127,22 @@ public static class MarkdownParser
         // already verified StartsWith; this exists to make the call
         // site explicit.
         prefixLen > 0 && prefixLen <= s.Length;
+
+    /// <summary>
+    /// Match "1. ", "2. ", etc. — one or more digits followed by ". "
+    /// at the start of the line. Returns the content after the prefix.
+    /// </summary>
+    private static bool TryParseNumberedList(string line, out string content)
+    {
+        content = "";
+        var i = 0;
+        while (i < line.Length && char.IsDigit(line[i])) i++;
+        if (i == 0) return false;       // no leading digits
+        if (i + 1 >= line.Length) return false; // need ". " after digits
+        if (line[i] != '.' || line[i + 1] != ' ') return false;
+        content = line[(i + 2)..];
+        return true;
+    }
 
     /// <summary>
     /// Parse inline formatting in a single line: **bold** and *italic*.

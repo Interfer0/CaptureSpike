@@ -39,6 +39,8 @@ public static class MarkdownSerializer
             case MarkdownBlockKind.Heading1: sb.Append("# "); break;
             case MarkdownBlockKind.Heading2: sb.Append("## "); break;
             case MarkdownBlockKind.Heading3: sb.Append("### "); break;
+            case MarkdownBlockKind.BulletListItem: sb.Append("- "); break;
+            case MarkdownBlockKind.NumberedListItem: sb.Append("1. "); break;
             case MarkdownBlockKind.Paragraph: break;
         }
         SerializeInline(sb, block.Spans);

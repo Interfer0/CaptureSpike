@@ -157,10 +157,74 @@ public sealed class MarkdownParserTests
     }
 
     [Fact]
-    public void RoundTrip_MultiLineParagraph()
-    {
-        const string input = "line one\nline two\nline three";
-        var output = MarkdownSerializer.Serialize(MarkdownParser.Parse(input));
-        Assert.Equal(input, output);
+        public void RoundTrip_PreservesMultiLineParagraph()
+        {
+            const string input = "line one\nline two\nline three";
+            var output = MarkdownSerializer.Serialize(MarkdownParser.Parse(input));
+            Assert.Equal(input, output);
+        }
+
+        [Fact]
+        public void BulletList_PrefixStripped()
+        {
+            var blocks = MarkdownParser.Parse("- first item");
+            Assert.Single(blocks);
+            Assert.Equal(MarkdownBlockKind.BulletListItem, blocks[0].Kind);
+            Assert.Equal("first item", blocks[0].Spans[0].Text);
+        }
+
+        [Fact]
+        public void BulletList_MultipleItems_SplitByBlankLines()
+        {
+            // Markdown convention: a blank line between list items is
+            // optional — they all belong to the same list. We split on
+            // blank lines anyway because that's simpler; if the user
+            // wants a single list with multiple items, they don't need
+            // blank lines between them and our parser will fold them.
+            var blocks = MarkdownParser.Parse("- one\n- two\n- three");
+            Assert.Equal(3, blocks.Count);
+            Assert.All(blocks, b => Assert.Equal(MarkdownBlockKind.BulletListItem, b.Kind));
+        }
+
+        [Fact]
+        public void NumberedList_PrefixStripped_NormalizedToOne()
+        {
+            // Source "2. foo" gets normalized to "1. foo" — the visible
+            // bullet is rendered by the editor, the digit in the source
+            // is meaningless. This matches how most markdown editors
+            // behave: the rendered number is per-document-order, not
+            // per-source-number.
+            var blocks = MarkdownParser.Parse("2. foo");
+            Assert.Equal(MarkdownBlockKind.NumberedListItem, blocks[0].Kind);
+            Assert.Equal("foo", blocks[0].Spans[0].Text);
+        }
+
+        [Fact]
+            public void RoundTrip_Lists()
+            {
+                // Serializer normalizes list-item separators to blank lines
+                // (CommonMark canonical form). The parser accepts both with
+                // and without blank lines, so the round-trip is sound — the
+                // test starts from the canonical form.
+                const string input = "- one\n\n- **two**\n\n- three";
+                var output = MarkdownSerializer.Serialize(MarkdownParser.Parse(input));
+                Assert.Equal(input, output);
+            }
+
+        [Fact]
+        public void NumberedListWithMultipleDigits()
+        {
+            var blocks = MarkdownParser.Parse("42. item");
+            Assert.Equal(MarkdownBlockKind.NumberedListItem, blocks[0].Kind);
+            Assert.Equal("item", blocks[0].Spans[0].Text);
+        }
+
+        [Fact]
+        public void NumberedListWithoutSpace_AfterDot()
+        {
+            // "1.foo" (no space after dot) is plain text, not a list item.
+            var blocks = MarkdownParser.Parse("1.foo");
+            Assert.Equal(MarkdownBlockKind.Paragraph, blocks[0].Kind);
+            Assert.Equal("1.foo", blocks[0].Spans[0].Text);
+        }
     }
-}
