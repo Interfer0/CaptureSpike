@@ -1338,6 +1338,9 @@ public sealed class MainViewModel : ObservableObject
 
     private bool _starting; // countdown in progress; recorder not yet running
     private volatile bool _cancelStarting;
+    /// <summary>Window state before recording minimized it; restored on stop.</summary>
+    private Avalonia.Controls.WindowState _preRecordWindowState =
+        Avalonia.Controls.WindowState.Normal;
 
     private async Task StartRecordingAsync()
     {
@@ -1350,10 +1353,15 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             // The window minimizes during the countdown so it never ends up in
-            // its own screen recording.
+            // its own screen recording. Remember the state to restore after.
             var window = MainWindow;
             if (window is not null)
+            {
+                _preRecordWindowState = window.WindowState == Avalonia.Controls.WindowState.Minimized
+                    ? Avalonia.Controls.WindowState.Normal
+                    : window.WindowState;
                 window.WindowState = Avalonia.Controls.WindowState.Minimized;
+            }
             RecordingElapsed = "starting…";
 
             // Don't let the preview's audio bleed into the new take's mic.
@@ -1432,11 +1440,7 @@ public sealed class MainViewModel : ObservableObject
             {
                 // Cancelled: also remove the reserved take folder.
                 try { if (takeDir is not null && Directory.Exists(takeDir)) Directory.Delete(takeDir, recursive: true); } catch { }
-                if (window is not null)
-                {
-                    window.WindowState = Avalonia.Controls.WindowState.Normal;
-                    window.Activate();
-                }
+                RestoreWindowAfterRecording();
                 RecordingElapsed = "";
             }
         }
@@ -1487,13 +1491,17 @@ public sealed class MainViewModel : ObservableObject
         }
         finally
         {
-            var window = MainWindow;
-            if (window is not null)
-            {
-                window.WindowState = Avalonia.Controls.WindowState.Normal;
-                window.Activate();
-            }
+            RestoreWindowAfterRecording();
         }
+    }
+
+    /// <summary>Brings the window back to its pre-recording state.</summary>
+    private void RestoreWindowAfterRecording()
+    {
+        var window = MainWindow;
+        if (window is null) return;
+        window.WindowState = _preRecordWindowState;
+        window.Activate();
     }
 
     private void RaiseRecordingState()
