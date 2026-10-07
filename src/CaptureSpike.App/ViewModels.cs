@@ -135,20 +135,28 @@ internal static class AppSettings
 
 #endregion
 
-public sealed class SceneViewModel(Scene scene, Action save) : ObservableObject
+public sealed class SceneViewModel(ProjectStore store, Scene scene) : ObservableObject
 {
     public Scene Scene { get; } = scene;
 
     public string Title
     {
         get => Scene.Title;
-        set { Scene.Title = value; save(); Raise(); }
+        set
+        {
+            if (Scene.Title == value) return;
+            // Renames the scene's folder on disk too; if that failed the
+            // title stays as it was.
+            store.RenameScene(Scene, value);
+            Raise();
+            Raise(nameof(DisplayName));
+        }
     }
 
     public string Notes
     {
         get => Scene.Notes;
-        set { Scene.Notes = value; save(); Raise(); Raise(nameof(WordCountText)); }
+        set { Scene.Notes = value; store.SaveScene(Scene); Raise(); Raise(nameof(WordCountText)); }
     }
 
     public string DisplayName => $"{Scene.Order + 1:D2} {Scene.Title}";
@@ -943,8 +951,8 @@ public sealed class MainViewModel : ObservableObject
         if (_store is null) return;
         foreach (var s in _store.LoadScenes())
         {
-            var vm = new SceneViewModel(s, () => _store.SaveScene(s));
-            vm.TakeCount = _store.LoadTakes(s.Id).Count;
+            var vm = new SceneViewModel(_store, s);
+            vm.TakeCount = _store.LoadTakes(s.FolderName).Count;
             Scenes.Add(vm);
         }
         SelectedScene = Scenes.FirstOrDefault();
@@ -984,7 +992,7 @@ public sealed class MainViewModel : ObservableObject
     {
         if (_store is null) return;
         var scene = _store.AddScene($"Scene {Scenes.Count + 1}");
-        var vm = new SceneViewModel(scene, () => _store.SaveScene(scene));
+        var vm = new SceneViewModel(_store, scene);
         Scenes.Add(vm);
         SelectedScene = vm;
         Status = $"Added scene \"{scene.Title}\"";
@@ -1039,7 +1047,8 @@ public sealed class MainViewModel : ObservableObject
         Raise(nameof(TakeHeaderText));
         if (_store is null || SelectedScene is null) return;
         var fav = SelectedScene.Scene.FavoriteTakeId;
-        var all = _store.LoadTakes(SelectedScene.Scene.Id);
+        var sceneFolder = SelectedScene.Scene.FolderName;
+        var all = _store.LoadTakes(sceneFolder);
         _nextTakeNumber = all.Select(t => t.Number).DefaultIfEmpty(0).Max() + 1;
         var activeKinds = TakeFilterChips.Where(c => c.IsActive).Select(c => c.Kind).ToHashSet();
         var n = 1;
@@ -1047,14 +1056,14 @@ public sealed class MainViewModel : ObservableObject
         {
             if (activeKinds.Count > 0 && !activeKinds.All(k => t.Sources.Any(s => s.Kind == k)))
                 continue;
-            Takes.Add(new TakeRow(t, n++, t.Id == fav, _store.TakeDir(t.SceneId, t.Id),
+            Takes.Add(new TakeRow(t, n++, t.Id == fav, _store.TakeDir(sceneFolder, t.Id),
                 ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
                 PlayTakeMultiWindow,
                 row =>
                 {
-                    _store.SaveTake(_store.TakeDir(row.Take.SceneId, row.Take.Id), row.Take);
+                    _store.SaveTake(_store.TakeDir(sceneFolder, row.Take.Id), row.Take);
                     // If this take is currently playing, push offset updates live
                     // and re-seek so the change is visible immediately.
                     // Capture the take-time BEFORE updating offsets.
@@ -1168,7 +1177,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (_playerTake?.Id == row.Take.Id)
                 await UnloadPlayerAsync();
-            _store.DeleteTake(SelectedScene.Scene.Id, row.Take);
+            _store.DeleteTake(SelectedScene.Scene.FolderName, row.Take);
             RefreshTakes();
             Status = $"Deleted {label}";
         }
@@ -1203,19 +1212,19 @@ public sealed class MainViewModel : ObservableObject
         {
             // Switching favorites: strip the suffix off the old one.
             var oldFav = scene.FavoriteTakeId;
-            var unmarked = _store.RenameTake(scene.Id, oldFav, FavoriteId(oldFav, false));
+            var unmarked = _store.RenameTake(scene.FolderName, oldFav, FavoriteId(oldFav, false));
             if (SelectedTake?.Take.Id == oldFav) selectId = unmarked;
         }
 
         string newId;
         if (wasFav)
         {
-            newId = _store.RenameTake(scene.Id, id, FavoriteId(id, false));
+            newId = _store.RenameTake(scene.FolderName, id, FavoriteId(id, false));
             scene.FavoriteTakeId = null;
         }
         else
         {
-            newId = _store.RenameTake(scene.Id, id, FavoriteId(id, true));
+            newId = _store.RenameTake(scene.FolderName, id, FavoriteId(id, true));
             scene.FavoriteTakeId = newId;
         }
         if (SelectedTake?.Take.Id == id) selectId = newId;
@@ -1227,8 +1236,8 @@ public sealed class MainViewModel : ObservableObject
 
     private void OpenTakeFolder(TakeRow row)
     {
-        if (_store is null) return;
-        var path = _store.TakeDir(row.Take.SceneId, row.Take.Id);
+        if (_store is null || SelectedScene is null) return;
+        var path = _store.TakeDir(SelectedScene.Scene.FolderName, row.Take.Id);
         try
         {
             if (!Directory.Exists(path))
@@ -1576,13 +1585,13 @@ public sealed class MainViewModel : ObservableObject
         if (_store is null || IsRecording) return;
 
         await UnloadPlayerAsync();
-        var sceneId = SelectedScene?.Scene.Id;
-        if (sceneId is null) return;
+        var scene = SelectedScene?.Scene;
+        if (scene is null) return;
 
         var take = row.Take;
-        var takeDir = _store.TakeDir(sceneId, take.Id);
+        var takeDir = _store.TakeDir(scene.FolderName, take.Id);
         _playerTake = take;
-        _playerSceneId = sceneId;
+        _playerSceneId = scene.Id;
         _playerDisplayName = $"{row.DisplayName} · tiled";
         _playerError = null;
         NowPlayingText = $"▶ {_playerDisplayName} ({take.Sources.Count} sources)";

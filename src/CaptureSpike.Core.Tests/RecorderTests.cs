@@ -36,7 +36,7 @@ public sealed class RecorderTests
                 }
 
                 // take.json round-trips through the store
-                var reloaded = store.LoadTakes(scene.Id);
+                var reloaded = store.LoadTakes(scene.FolderName);
                 var rt = Assert.Single(reloaded);
                 Assert.Equal(take.Id, rt.Id);
                 Assert.Equal(4, rt.Sources.Count);

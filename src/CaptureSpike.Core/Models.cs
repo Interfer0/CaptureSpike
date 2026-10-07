@@ -51,6 +51,12 @@ public sealed class Project
     public int OutputHeight { get; set; } = 1080;
     public int Fps { get; set; } = 30;
     /// <summary>
+    /// On-disk naming scheme version. 0 = legacy (GUID scene folders,
+    /// timestamp take folders, palette-id filenames); 1 = named folders
+    /// and Project-Scene-Take-Badge-Label filenames.
+    /// </summary>
+    public int NamingVersion { get; set; }
+    /// <summary>
     /// The project's reusable source palette. Scenes reference these by id;
     /// takes record which palette entries they captured.
     /// </summary>
@@ -95,6 +101,12 @@ public sealed class ProjectSource
 public sealed class Scene
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..12];
+    /// <summary>
+    /// On-disk folder name under scenes/, derived from <see cref="Title"/>
+    /// (sanitized, deduped). Updated when the scene is renamed; empty means
+    /// "legacy GUID folder, migrate on open".
+    /// </summary>
+    public string FolderName { get; set; } = "";
     public string Title { get; set; } = "New Scene";
     public int Order { get; set; }
     /// <summary>Teleprompter notes shown while recording this scene.</summary>
@@ -165,7 +177,7 @@ public sealed class SceneSource
 /// </summary>
 public sealed class Take
 {
-    /// <summary>Folder name, e.g. "20261004-223015". Unique within the scene.</summary>
+    /// <summary>Folder name, e.g. "Take 05" (or "Take 05-favorite"). Unique within the scene.</summary>
     public string Id { get; set; } = string.Empty;
     /// <summary>
     /// Stable per-scene sequence number ("Take 05"). Assigned as max+1 when the

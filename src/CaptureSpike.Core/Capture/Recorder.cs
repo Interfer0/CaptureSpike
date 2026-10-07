@@ -31,6 +31,7 @@ public sealed class Recorder : IRecorder
 
         // Create all capturers up front so a missing source fails before
         // any process is launched.
+        var takeBaseName = Path.GetFileName(takeDir); // "Take 05"
         var capturers = enabled.Select(sceneSource =>
         {
             var def = project.Sources.FirstOrDefault(p => p.Id == sceneSource.SourceId)
@@ -40,8 +41,19 @@ public sealed class Recorder : IRecorder
             // MKV, not MP4: a killed ffmpeg/crash/power cut still leaves a
             // playable file (no moov atom needed at the end).
             var ext = def.Kind.IsVideo() ? "mkv" : "wav";
-            return CaptureFactory.Create(
-                project, def, Path.Combine(takeDir, $"{def.Id}.{ext}"), ffmpeg);
+            // Resolve-friendly: Project-Scene-Take 05-Badge-Label.ext
+            var baseName = string.Join("-", new[]
+            {
+                Naming.SanitizeFileName(project.Name),
+                Naming.SanitizeFileName(scene.Title),
+                takeBaseName,
+                Naming.SanitizeFileName(def.EffectiveBadge()),
+                Naming.SanitizeFileName(def.Label),
+            });
+            var path = Path.Combine(takeDir, baseName + "." + ext);
+            for (var i = 2; File.Exists(path); i++)
+                path = Path.Combine(takeDir, $"{baseName} {i}.{ext}");
+            return CaptureFactory.Create(project, def, path, ffmpeg);
         }).ToList();
 
         try
@@ -117,7 +129,8 @@ public sealed class RecordingSession : IRecordingSession
         {
             Id = Path.GetFileName(_takeDir),
             SceneId = _scene.Id,
-            Number = _store.LoadTakes(_scene.Id).Select(t => t.Number).DefaultIfEmpty(0).Max() + 1,
+            Number = ProjectStore.TakeNumberFromFolder(Path.GetFileName(_takeDir))
+                ?? _store.LoadTakes(_scene.FolderName).Select(t => t.Number).DefaultIfEmpty(0).Max() + 1,
             StartedAt = _t0,
             DurationSeconds = (endedAt - _t0).TotalSeconds,
             Sources = _capturers

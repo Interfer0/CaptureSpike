@@ -4,10 +4,11 @@ using System.Text.Json.Serialization;
 namespace CaptureSpike.Core;
 
 /// <summary>
-/// On-disk layout:
+/// On-disk layout (all names Resolve-friendly, derived from UI names):
 ///   &lt;projectDir&gt;/project.json
-///   &lt;projectDir&gt;/scenes/&lt;sceneId&gt;/scene.json
-///   &lt;projectDir&gt;/scenes/&lt;sceneId&gt;/takes/&lt;takeId&gt;/take.json + media files
+///   &lt;projectDir&gt;/scenes/&lt;Scene Title&gt;/scene.json
+///   &lt;projectDir&gt;/scenes/&lt;Scene Title&gt;/takes/&lt;Take 05&gt;/take.json + media files
+/// Media files: &lt;Project&gt;-&lt;Scene&gt;-&lt;Take 05&gt;-&lt;Badge&gt;-&lt;Source Label&gt;.&lt;ext&gt;
 /// </summary>
 public sealed class ProjectStore
 {
@@ -68,7 +69,7 @@ public sealed class ProjectStore
         Directory.CreateDirectory(projectDir);
         Directory.CreateDirectory(Path.Combine(projectDir, "scenes"));
         var store = new ProjectStore(projectDir,
-            new Project { Name = name, Sources = Project.DefaultPalette() });
+            new Project { Name = name, Sources = Project.DefaultPalette(), NamingVersion = 1 });
         store.SaveProject();
         return store;
     }
@@ -79,6 +80,12 @@ public sealed class ProjectStore
         var project = JsonSerializer.Deserialize<Project>(json, Json)
             ?? throw new InvalidDataException("project.json is empty or invalid.");
         var store = new ProjectStore(projectDir, project);
+        if (project.NamingVersion < 1)
+        {
+            store.MigrateToNamedFolders();
+            project.NamingVersion = 1;
+            store.SaveProject();
+        }
         store.EnsurePalette();
         return store;
     }
@@ -108,6 +115,185 @@ public sealed class ProjectStore
         if (dirty) SaveProject();
     }
 
+    /// <summary>
+    /// One-way migration from the old on-disk layout to the named one:
+    /// GUID scene folders → title folders, timestamp take folders →
+    /// "Take NN", palette-id media files → Project-Scene-Take-Badge-Label
+    /// names. Idempotent: already-migrated items are skipped.
+    /// </summary>
+    private void MigrateToNamedFolders()
+    {
+        if (!Directory.Exists(ScenesDir)) return;
+        foreach (var dir in Directory.GetDirectories(ScenesDir))
+        {
+            var dirName = Path.GetFileName(dir);
+            Scene? scene;
+            try
+            {
+                var json = File.ReadAllText(Path.Combine(dir, "scene.json"));
+                scene = JsonSerializer.Deserialize<Scene>(json, Json);
+            }
+            catch { continue; }
+            if (scene is null) continue;
+
+            var folderName = dirName;
+            if (string.IsNullOrEmpty(scene.FolderName))
+            {
+                // Legacy GUID folder → title-based folder.
+                folderName = Naming.UniqueName(Naming.SanitizeFileName(scene.Title),
+                    n => Directory.Exists(Path.Combine(ScenesDir, n)));
+                if (!folderName.Equals(dirName, StringComparison.Ordinal))
+                {
+                    try { Directory.Move(dir, Path.Combine(ScenesDir, folderName)); }
+                    catch { continue; } // try again next open
+                }
+                scene.FolderName = folderName;
+            }
+            else
+            {
+                scene.FolderName = dirName;
+                folderName = dirName;
+            }
+
+            var remap = MigrateTakeFolders(folderName, scene);
+            if (scene.FavoriteTakeId is not null &&
+                remap.TryGetValue(scene.FavoriteTakeId, out var newFav))
+                scene.FavoriteTakeId = newFav;
+            SaveScene(scene);
+        }
+    }
+
+    /// <summary>
+    /// Renames timestamp take folders to "Take NN" (preserving "-favorite")
+    /// and media files to the Resolve-friendly pattern. Returns old→new
+    /// take-id mapping for FavoriteTakeId repair.
+    /// </summary>
+    private Dictionary<string, string> MigrateTakeFolders(string folderName, Scene scene)
+    {
+        var remap = new Dictionary<string, string>(StringComparer.Ordinal);
+        var takesDir = TakesDir(folderName);
+        if (!Directory.Exists(takesDir)) return remap;
+
+        // Assign numbers to takes that predate stable numbering.
+        var nextNum = 0;
+        foreach (var dir in Directory.GetDirectories(takesDir))
+        {
+            var take = LoadTakeFromDir(dir);
+            if (take is not null && take.Number > nextNum) nextNum = take.Number;
+        }
+
+        foreach (var dir in Directory.GetDirectories(takesDir))
+        {
+            var oldName = Path.GetFileName(dir);
+            Take? take;
+            try
+            {
+                var json = File.ReadAllText(Path.Combine(dir, "take.json"));
+                take = JsonSerializer.Deserialize<Take>(json, Json);
+            }
+            catch { continue; }
+            if (take is null) continue;
+            if (take.Number <= 0) take.Number = ++nextNum;
+
+            var newBase = $"Take {take.Number:D2}";
+            string newName;
+            string takeDir = dir;
+            if (oldName.StartsWith("Take ", StringComparison.Ordinal))
+            {
+                newName = oldName; // already migrated
+            }
+            else
+            {
+                var suffix = oldName.EndsWith("-favorite", StringComparison.Ordinal) ? "-favorite" : "";
+                newName = Naming.UniqueName(newBase + suffix,
+                    n => Directory.Exists(Path.Combine(takesDir, n)));
+                if (!newName.Equals(oldName, StringComparison.Ordinal))
+                {
+                    try { Directory.Move(dir, Path.Combine(takesDir, newName)); }
+                    catch { continue; } // try again next open
+                    takeDir = Path.Combine(takesDir, newName);
+                }
+                take.Id = newName;
+            }
+            remap[oldName] = newName;
+            MigrateTakeFiles(scene, take, takeDir, newBase);
+            SaveTake(takeDir, take);
+        }
+        return remap;
+    }
+
+    private Take? LoadTakeFromDir(string dir)
+    {
+        try
+        {
+            var json = File.ReadAllText(Path.Combine(dir, "take.json"));
+            return JsonSerializer.Deserialize<Take>(json, Json);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Renames a take's media files to Project-Scene-Take-Badge-Label.ext.
+    /// </summary>
+    private void MigrateTakeFiles(Scene scene, Take take, string takeDir, string takeBaseName)
+    {
+        var dirty = false;
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var ts in take.Sources)
+        {
+            var (baseName, ext) = MediaFileBase(scene.Title, takeBaseName, ts);
+            var newFile = baseName + ext;
+            for (var i = 2;
+                 used.Contains(newFile) ||
+                 (!newFile.Equals(ts.File, StringComparison.OrdinalIgnoreCase) &&
+                  File.Exists(Path.Combine(takeDir, newFile)));
+                 i++)
+                newFile = $"{baseName} {i}{ext}";
+            used.Add(newFile);
+            if (newFile.Equals(ts.File, StringComparison.OrdinalIgnoreCase)) continue;
+            var from = Path.Combine(takeDir, ts.File);
+            var to = Path.Combine(takeDir, newFile);
+            if (File.Exists(from) && !File.Exists(to))
+            {
+                try { File.Move(from, to); ts.File = newFile; dirty = true; }
+                catch { /* try again next open */ }
+            }
+            else if (!File.Exists(from) && File.Exists(to))
+            {
+                // Already renamed by an interrupted run: fix the reference.
+                ts.File = newFile; dirty = true;
+            }
+        }
+        if (dirty) SaveTake(takeDir, take);
+    }
+
+    /// <summary>
+    /// Resolve-friendly media name: Project-Scene-Take 05-Badge-Label.ext
+    /// </summary>
+    public string MediaFileName(string sceneTitle, string takeBaseName, TakeSource ts)
+    {
+        var (baseName, ext) = MediaFileBase(sceneTitle, takeBaseName, ts);
+        return baseName + ext;
+    }
+
+    private (string baseName, string ext) MediaFileBase(string sceneTitle, string takeBaseName, TakeSource ts)
+    {
+        var palette = Project.Sources.FirstOrDefault(p => p.Id == ts.Id);
+        var badge = palette?.EffectiveBadge() ?? ts.Kind.Badge();
+        var label = palette?.Label ?? ts.Kind.DefaultLabel();
+        var ext = Path.GetExtension(ts.File);
+        if (string.IsNullOrEmpty(ext)) ext = ts.Kind.IsVideo() ? ".mkv" : ".wav";
+        var baseName = string.Join("-", new[]
+        {
+            Naming.SanitizeFileName(Project.Name),
+            Naming.SanitizeFileName(sceneTitle),
+            takeBaseName,
+            Naming.SanitizeFileName(badge),
+            Naming.SanitizeFileName(label),
+        });
+        return (baseName, ext);
+    }
+
     /// <summary>Legacy scene.json shape, before SceneSource became a palette reference.</summary>
     private sealed class LegacySceneSource
     {
@@ -121,9 +307,9 @@ public sealed class ProjectStore
         public double Height { get; set; } = 1;
     }
 
-    private bool MigrateLegacyScene(string sceneId)
+    private bool MigrateLegacyScene(string folderName)
     {
-        var path = Path.Combine(SceneDir(sceneId), "scene.json");
+        var path = Path.Combine(SceneDir(folderName), "scene.json");
         if (!File.Exists(path)) return false;
         using var doc = JsonDocument.Parse(File.ReadAllText(path));
         if (!doc.RootElement.TryGetProperty("sources", out var sources) ||
@@ -137,6 +323,7 @@ public sealed class ProjectStore
         if (legacy is null) return false;
         var scene = JsonSerializer.Deserialize<Scene>(File.ReadAllText(path), Json);
         if (scene is null) return false;
+        if (string.IsNullOrEmpty(scene.FolderName)) scene.FolderName = folderName;
 
         scene.Sources.Clear();
         foreach (var ls in legacy)
@@ -167,8 +354,8 @@ public sealed class ProjectStore
             JsonSerializer.Serialize(Project, Json));
 
     private string ScenesDir => Path.Combine(ProjectDir, "scenes");
-    private string SceneDir(string sceneId) => Path.Combine(ScenesDir, sceneId);
-    private string TakesDir(string sceneId) => Path.Combine(SceneDir(sceneId), "takes");
+    private string SceneDir(string folderName) => Path.Combine(ScenesDir, folderName);
+    private string TakesDir(string folderName) => Path.Combine(SceneDir(folderName), "takes");
 
     // ----- scenes -----
 
@@ -184,29 +371,43 @@ public sealed class ProjectStore
             .ToList();
     }
 
-    private Scene? LoadScene(string sceneId)
+    private Scene? LoadScene(string folderName)
     {
-        var path = Path.Combine(SceneDir(sceneId), "scene.json");
+        var path = Path.Combine(SceneDir(folderName), "scene.json");
         if (!File.Exists(path)) return null;
-        return JsonSerializer.Deserialize<Scene>(File.ReadAllText(path), Json);
+        var scene = JsonSerializer.Deserialize<Scene>(File.ReadAllText(path), Json);
+        // The directory name is the source of truth; self-heals a manual
+        // rename outside the app.
+        if (scene is not null && scene.FolderName != folderName)
+        {
+            scene.FolderName = folderName;
+            try
+            {
+                WriteJsonAtomic(path, JsonSerializer.Serialize(scene, Json));
+            }
+            catch { /* best-effort */ }
+        }
+        return scene;
     }
 
     public Scene AddScene(string title)
     {
         var order = LoadScenes().Count;
         var scene = Scene.Create(title, order, Project);
-        Directory.CreateDirectory(TakesDir(scene.Id));
+        scene.FolderName = Naming.UniqueName(Naming.SanitizeFileName(title),
+            n => Directory.Exists(Path.Combine(ScenesDir, n)));
+        Directory.CreateDirectory(TakesDir(scene.FolderName));
         SaveScene(scene);
         return scene;
     }
 
     public void SaveScene(Scene scene) =>
-        WriteJsonAtomic(Path.Combine(SceneDir(scene.Id), "scene.json"),
+        WriteJsonAtomic(Path.Combine(SceneDir(scene.FolderName), "scene.json"),
             JsonSerializer.Serialize(scene, Json));
 
     public void DeleteScene(Scene scene)
     {
-        var dir = SceneDir(scene.Id);
+        var dir = SceneDir(scene.FolderName);
         if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         // Re-compact ordering.
         var i = 0;
@@ -223,71 +424,137 @@ public sealed class ProjectStore
         foreach (var s in scenes) { s.Order = i++; SaveScene(s); }
     }
 
+    /// <summary>
+    /// Renames a scene: the folder follows the new title (sanitized, deduped),
+    /// and media files in every take are renamed to match (their names embed
+    /// the scene title). Returns false and leaves everything untouched if the
+    /// folder rename failed.
+    /// </summary>
+    public bool RenameScene(Scene scene, string newTitle)
+    {
+        newTitle = (newTitle ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(newTitle)) newTitle = "New Scene";
+        if (newTitle == scene.Title) return true;
+        var want = Naming.UniqueName(Naming.SanitizeFileName(newTitle),
+            n => !n.Equals(scene.FolderName, StringComparison.OrdinalIgnoreCase)
+                 && Directory.Exists(Path.Combine(ScenesDir, n)));
+        if (!want.Equals(scene.FolderName, StringComparison.Ordinal))
+        {
+            try
+            {
+                var oldDir = SceneDir(scene.FolderName);
+                if (Directory.Exists(oldDir))
+                    Directory.Move(oldDir, Path.Combine(ScenesDir, want));
+                scene.FolderName = want;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        scene.Title = newTitle;
+        SaveScene(scene);
+        // Media filenames embed the scene title: rename them to match.
+        foreach (var take in LoadTakes(scene.FolderName))
+        {
+            var takeDir = TakeDir(scene.FolderName, take.Id);
+            var takeBase = TakeNumberFromFolder(take.Id) is int n ? $"Take {n:D2}" : take.Id;
+            MigrateTakeFiles(scene, take, takeDir, takeBase);
+        }
+        return true;
+    }
+
     // ----- takes -----
 
-    public IReadOnlyList<Take> LoadTakes(string sceneId)
+    public IReadOnlyList<Take> LoadTakes(string folderName)
     {
-        var dir = TakesDir(sceneId);
+        var dir = TakesDir(folderName);
         if (!Directory.Exists(dir)) return [];
         return Directory.GetDirectories(dir)
-            .Select(d => LoadTake(sceneId, Path.GetFileName(d)))
+            .Select(d => LoadTake(folderName, Path.GetFileName(d)))
             .Where(t => t is not null)
             .Cast<Take>()
             .OrderBy(t => t.StartedAt)
             .ToList();
     }
 
-    private Take? LoadTake(string sceneId, string takeId)
+    private Take? LoadTake(string folderName, string takeId)
     {
-        var path = Path.Combine(TakesDir(sceneId), takeId, "take.json");
+        var path = Path.Combine(TakesDir(folderName), takeId, "take.json");
         if (!File.Exists(path)) return null;
         return JsonSerializer.Deserialize<Take>(File.ReadAllText(path), Json);
     }
 
-    /// <summary>Reserves a new take folder and returns its path.</summary>
+    /// <summary>
+    /// Reserves a new take folder ("Take 05") and returns its path. The
+    /// number is max+1 so deleted takes leave gaps. An abandoned folder from
+    /// a cancelled/crashed recording (no take.json) is reused.
+    /// </summary>
     public string BeginTake(Scene scene)
     {
-        var id = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        var dir = Path.Combine(TakesDir(scene.Id), id);
-        for (var n = 2; Directory.Exists(dir); n++)
-            dir = Path.Combine(TakesDir(scene.Id), $"{id}-{n}");
+        var takesDir = TakesDir(scene.FolderName);
+        var n = LoadTakes(scene.FolderName).Select(t => t.Number).DefaultIfEmpty(0).Max() + 1;
+        string dir;
+        while (true)
+        {
+            dir = Path.Combine(takesDir, $"Take {n:D2}");
+            if (!Directory.Exists(dir)) break;
+            if (File.Exists(Path.Combine(dir, "take.json"))) { n++; continue; }
+            break; // abandoned: reuse
+        }
         Directory.CreateDirectory(dir);
+        // Clear partial files left by the abandoned recording, if any.
+        foreach (var f in Directory.GetFiles(dir))
+        {
+            try { File.Delete(f); } catch { }
+        }
         return dir;
+    }
+
+    /// <summary>Parses the take number out of a "Take 05" folder name.</summary>
+    public static int? TakeNumberFromFolder(string folderName)
+    {
+        var name = folderName.EndsWith("-favorite", StringComparison.Ordinal)
+            ? folderName[..^"-favorite".Length] : folderName;
+        if (name.StartsWith("Take ", StringComparison.Ordinal) &&
+            int.TryParse(name["Take ".Length..], out var n))
+            return n;
+        return null;
     }
 
     public void SaveTake(string takeDir, Take take) =>
         WriteJsonAtomic(Path.Combine(takeDir, "take.json"),
             JsonSerializer.Serialize(take, Json));
 
-    public void DeleteTake(string sceneId, Take take)
+    public void DeleteTake(string folderName, Take take)
     {
-        var dir = Path.Combine(TakesDir(sceneId), take.Id);
+        var dir = Path.Combine(TakesDir(folderName), take.Id);
         if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
-        foreach (var s in LoadScenes().Where(s => s.Id == sceneId && s.FavoriteTakeId == take.Id))
+        foreach (var s in LoadScenes().Where(s => s.FolderName == folderName && s.FavoriteTakeId == take.Id))
         {
             s.FavoriteTakeId = null;
             SaveScene(s);
         }
     }
 
-    public string TakeDir(string sceneId, string takeId) =>
-        Path.Combine(TakesDir(sceneId), takeId);
+    public string TakeDir(string folderName, string takeId) =>
+        Path.Combine(TakesDir(folderName), takeId);
 
     /// <summary>
     /// Renames a take's folder (used for the "-favorite" suffix). Returns the
     /// id actually in effect: if the move fails the old id is returned.
     /// </summary>
-    public string RenameTake(string sceneId, string takeId, string newId)
+    public string RenameTake(string folderName, string takeId, string newId)
     {
         if (takeId == newId) return takeId;
-        var from = TakeDir(sceneId, takeId);
-        var to = TakeDir(sceneId, newId);
+        var from = TakeDir(folderName, takeId);
+        var to = TakeDir(folderName, newId);
         try
         {
             if (!Directory.Exists(from) || Directory.Exists(to)) return takeId;
             Directory.Move(from, to);
             // Keep take.json's Id in sync with the folder name.
-            var take = LoadTake(sceneId, newId);
+            var take = LoadTake(folderName, newId);
             if (take is not null)
             {
                 take.Id = newId;

@@ -22,19 +22,19 @@ public sealed class RenameTakeTests
             };
             store.SaveTake(takeDir, take);
 
-            var newId = store.RenameTake(scene.Id, take.Id, take.Id + "-favorite");
+            var newId = store.RenameTake(scene.FolderName, take.Id, take.Id + "-favorite");
 
             Assert.Equal(take.Id + "-favorite", newId);
             Assert.False(Directory.Exists(takeDir));
-            Assert.True(Directory.Exists(store.TakeDir(scene.Id, newId)));
-            var reloaded = store.LoadTakes(scene.Id).Single();
+            Assert.True(Directory.Exists(store.TakeDir(scene.FolderName, newId)));
+            var reloaded = store.LoadTakes(scene.FolderName).Single();
             Assert.Equal(newId, reloaded.Id); // take.json Id matches the folder
             Assert.Equal(1, reloaded.Number);
 
             // Renaming back works too.
-            var backId = store.RenameTake(scene.Id, newId, take.Id);
+            var backId = store.RenameTake(scene.FolderName, newId, take.Id);
             Assert.Equal(take.Id, backId);
-            Assert.Equal(take.Id, store.LoadTakes(scene.Id).Single().Id);
+            Assert.Equal(take.Id, store.LoadTakes(scene.FolderName).Single().Id);
         }
         finally
         {
@@ -54,9 +54,9 @@ public sealed class RenameTakeTests
             var take = new Take { Id = Path.GetFileName(takeDir), SceneId = scene.Id };
             store.SaveTake(takeDir, take);
             // Occupy the target name first.
-            Directory.CreateDirectory(store.TakeDir(scene.Id, "taken"));
+            Directory.CreateDirectory(store.TakeDir(scene.FolderName, "taken"));
 
-            Assert.Equal(take.Id, store.RenameTake(scene.Id, take.Id, "taken"));
+            Assert.Equal(take.Id, store.RenameTake(scene.FolderName, take.Id, "taken"));
             Assert.True(Directory.Exists(takeDir));
         }
         finally
