@@ -4,14 +4,15 @@ namespace CaptureSpike.App;
 
 /// <summary>
 /// Global F9 hotkey that stops the recording while the app window is minimized.
-/// Windows uses a low-level keyboard hook (no window handle needed);
+/// Windows uses RegisterHotKey with a message-only window on a dedicated
+/// thread (no DLL hook, no message-loop thread requirement);
 /// Linux/X11 grabs F9 on the root window from a background event thread.
 /// </summary>
 public static class StopHotkey
 {
-    public static void Install(Action onF9)
+    public static void Install(Action onF9, Action<string>? log = null)
     {
-        if (OperatingSystem.IsWindows()) WinHook.Install(onF9);
+        if (OperatingSystem.IsWindows()) WinHotkey.Install(onF9, log);
         else if (OperatingSystem.IsLinux()) X11Grab.Install(onF9);
         else throw new PlatformNotSupportedException(
             "The global stop hotkey is supported on Windows and Linux/X11.");
@@ -19,74 +20,154 @@ public static class StopHotkey
 
     public static void Uninstall()
     {
-        if (OperatingSystem.IsWindows()) WinHook.Uninstall();
+        if (OperatingSystem.IsWindows()) WinHotkey.Uninstall();
         else if (OperatingSystem.IsLinux()) X11Grab.Uninstall();
     }
 
-    // ----- Windows: WH_KEYBOARD_LL -----
+    // ----- Windows: RegisterHotKey + message-only window -----
 
-    private static class WinHook
+    private static class WinHotkey
     {
-        private const int WH_KEYBOARD_LL = 13;
-        private const int WM_KEYDOWN = 0x0100;
-        private const int VK_F9 = 0x79;
+        private const int WM_HOTKEY = 0x0312;
+        private const int WM_QUIT = 0x0012;
+        private const uint MOD_NOREPEAT = 0x4000;
+        private const uint VK_F9 = 0x79;
+        private const int HOTKEY_ID = 1;
+        private static readonly IntPtr HWND_MESSAGE = new(-3);
+        private const int ERROR_HOTKEY_ALREADY_REGISTERED = 1409;
 
-        private delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT { public int x; public int y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MSG
+        {
+            public IntPtr hwnd;
+            public uint message;
+            public IntPtr wParam;
+            public IntPtr lParam;
+            public uint time;
+            public POINT pt;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CreateWindowExW(
+            uint dwExStyle, string lpClassName, string? lpWindowName, uint dwStyle,
+            int x, int y, int nWidth, int nHeight,
+            IntPtr hWndParent, IntPtr hMenu, IntPtr hInstance, IntPtr lpParam);
 
         [DllImport("user32.dll", SetLastError = true)]
-        private static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn,
-            IntPtr hMod, uint dwThreadId);
+        private static extern bool DestroyWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
         [DllImport("user32.dll")]
-        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+        private static extern bool GetMessageW(out MSG lpMsg, IntPtr hWnd,
+            uint wMsgFilterMin, uint wMsgFilterMax);
 
         [DllImport("user32.dll")]
-        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode,
-            IntPtr wParam, IntPtr lParam);
+        private static extern bool TranslateMessage(ref MSG lpMsg);
 
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-        private static extern IntPtr GetModuleHandle(string? lpModuleName);
+        [DllImport("user32.dll")]
+        private static extern IntPtr DispatchMessageW(ref MSG lpMsg);
 
-        private static IntPtr _hook;
-        private static HookProc? _proc; // kept alive while installed
+        [DllImport("user32.dll")]
+        private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        private static readonly object Gate = new();
+        private static Thread? _thread;
+        private static IntPtr _hwnd;
         private static Action? _onF9;
 
-        public static void Install(Action onF9)
+        public static void Install(Action onF9, Action<string>? log)
         {
-            if (_hook != IntPtr.Zero) throw new InvalidOperationException(
-                "The stop hotkey is already installed.");
-            _onF9 = onF9;
-            _proc = HookCallback;
-            _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
-            if (_hook == IntPtr.Zero)
+            lock (Gate)
             {
-                _proc = null;
-                _onF9 = null;
-                throw new InvalidOperationException(
-                    "Could not install the F9 stop hotkey.");
+                if (_thread is not null) throw new InvalidOperationException(
+                    "The stop hotkey is already installed.");
+                var ready = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _onF9 = onF9;
+                _thread = new Thread(() => MessageLoop(ready, log))
+                {
+                    IsBackground = true,
+                    Name = "F9 stop hotkey",
+                };
+                _thread.Start();
+                if (!ready.Task.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("Timed out installing the F9 stop hotkey.");
+                ready.Task.GetAwaiter().GetResult(); // rethrows install failures
             }
         }
 
         public static void Uninstall()
         {
-            if (_hook != IntPtr.Zero)
+            IntPtr hwnd;
+            Thread? thread;
+            lock (Gate)
             {
-                UnhookWindowsHookEx(_hook);
-                _hook = IntPtr.Zero;
+                hwnd = _hwnd;
+                _hwnd = IntPtr.Zero;
+                thread = _thread;
+                _thread = null;
+                _onF9 = null;
             }
-            _proc = null;
-            _onF9 = null;
+            if (hwnd != IntPtr.Zero)
+                PostMessageW(hwnd, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+            thread?.Join(TimeSpan.FromSeconds(2));
         }
 
-        private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        private static void MessageLoop(TaskCompletionSource<bool> ready, Action<string>? log)
         {
-            if (nCode >= 0 && wParam == (IntPtr)WM_KEYDOWN &&
-                Marshal.ReadInt32(lParam) == VK_F9)
+            var hwnd = IntPtr.Zero;
+            try
             {
-                // Keep this fast: the VM marshals the real work to the UI thread.
-                _onF9?.Invoke();
+                // Message-only window: exists solely to receive WM_HOTKEY.
+                hwnd = CreateWindowExW(0, "STATIC", null, 0, 0, 0, 0, 0,
+                    HWND_MESSAGE, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+                if (hwnd == IntPtr.Zero)
+                    throw new InvalidOperationException(
+                        $"Could not create the hotkey window (error {Marshal.GetLastWin32Error()}).");
+                lock (Gate) { _hwnd = hwnd; }
+                if (!RegisterHotKey(hwnd, HOTKEY_ID, MOD_NOREPEAT, VK_F9))
+                {
+                    var err = Marshal.GetLastWin32Error();
+                    throw new InvalidOperationException(
+                        err == ERROR_HOTKEY_ALREADY_REGISTERED
+                            ? "F9 is already registered as a global hotkey by another app."
+                            : $"Could not register the F9 hotkey (error {err}).");
+                }
+                log?.Invoke("F9 stop hotkey installed.");
+                ready.TrySetResult(true);
+
+                while (GetMessageW(out var msg, IntPtr.Zero, 0, 0))
+                {
+                    if (msg.message == WM_HOTKEY && msg.wParam == (IntPtr)HOTKEY_ID)
+                    {
+                        log?.Invoke("F9 pressed.");
+                        _onF9?.Invoke();
+                    }
+                    TranslateMessage(ref msg);
+                    DispatchMessageW(ref msg);
+                }
             }
-            return CallNextHookEx(_hook, nCode, wParam, lParam);
+            catch (Exception ex)
+            {
+                ready.TrySetException(ex);
+            }
+            finally
+            {
+                if (hwnd != IntPtr.Zero)
+                {
+                    UnregisterHotKey(hwnd, HOTKEY_ID);
+                    DestroyWindow(hwnd);
+                }
+                lock (Gate) { if (_hwnd == hwnd) _hwnd = IntPtr.Zero; }
+            }
         }
     }
 

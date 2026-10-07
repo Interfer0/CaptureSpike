@@ -790,7 +790,7 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             if (OperatingSystem.IsWindows())
-                StopHotkey.Install(OnStopHotkey);
+                StopHotkey.Install(OnStopHotkey, msg => Log(msg));
             else
                 await Task.Run(() => StopHotkey.Install(OnStopHotkey));
         }
