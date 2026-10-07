@@ -63,6 +63,10 @@ public sealed class PlayerTransportBar : ContentControl
         };
         _slider.PointerPressed += OnSliderPressed;
         _slider.PointerReleased += OnSliderReleased;
+        // If the pointer leaves the slider mid-drag (e.g., focus stolen,
+        // drag off the thumb) PointerReleased may never fire — release
+        // the scrub flag so the slider doesn't get stuck.
+        _slider.PointerCaptureLost += (_, _) => ClearScrubSoon();
 
         // Layout: a DockPanel so the buttons sit on the left, slider
         // stretches, time label pins to the right.
@@ -135,9 +139,26 @@ public sealed class PlayerTransportBar : ContentControl
 
     private void OnSliderReleased(object? sender, PointerReleasedEventArgs e)
     {
+        // Issue the seek, but keep _scrubbing = true so the next
+        // RefreshFromHost tick doesn't snap the slider back to the
+        // stale player position (which lags behind the seek).
+        // ClearScrubSoon() releases the flag after the seek has had
+        // time to propagate through _player.Position.
         if (_host is not null && _slider.Value >= 0)
-            _host.SeekTo(_slider.Value);
-        _scrubbing = false;
+        {
+            var target = _slider.Value;
+            _host.SeekTo(target);
+        }
+        ClearScrubSoon();
+    }
+
+    /// <summary>Defers releasing the scrub flag by ~350ms so the in-flight
+    /// seek completes and the player's position updates before the
+    /// next timer tick reasserts the slider value.</summary>
+    private void ClearScrubSoon()
+    {
+        Avalonia.Threading.Dispatcher.UIThread.Post(() => _scrubbing = false,
+            Avalonia.Threading.DispatcherPriority.Background);
     }
 
     private static IBrush Brush(string key) =>
