@@ -33,12 +33,40 @@ public abstract class ObservableObject : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
-public sealed class RelayCommand(Action execute, Func<bool>? canExecute = null) : ICommand
+public sealed class RelayCommand : ICommand
 {
+    private readonly Func<Task> _execute;
+    private readonly Func<bool>? _canExecute;
+
     public event EventHandler? CanExecuteChanged;
-    public bool CanExecute(object? _) => canExecute?.Invoke() ?? true;
-    public void Execute(object? _) => execute();
+
+    public RelayCommand(Action execute, Func<bool>? canExecute = null)
+        : this(Wrap(execute), canExecute) { }
+
+    public RelayCommand(Func<Task> execute, Func<bool>? canExecute = null)
+    {
+        _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+        _canExecute = canExecute;
+    }
+
+    public bool CanExecute(object? _) => _canExecute?.Invoke() ?? true;
+    public void Execute(object? _) => _ = RunAsync();
     public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+
+    private async Task RunAsync()
+    {
+        try { await _execute().ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            App.ReportCrash(ex);
+        }
+    }
+
+    private static Func<Task> Wrap(Action execute)
+    {
+        ArgumentNullException.ThrowIfNull(execute);
+        return () => { execute(); return Task.CompletedTask; };
+    }
 }
 
 internal static class AppSettings
@@ -79,13 +107,7 @@ internal static class AppSettings
 
     private static void Save(SettingsData data)
     {
-        try
-        {
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path_)!);
-            var tmp = Path_ + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(data));
-            File.Move(tmp, Path_, overwrite: true);
-        }
+        try { AtomicFile.WriteAllText(Path_, JsonSerializer.Serialize(data)); }
         catch { /* settings are best-effort */ }
     }
 
@@ -742,7 +764,7 @@ public sealed class MainViewModel : ObservableObject
     {
         NewProjectCommand = new RelayCommand(() => NewProject(), () => !IsRecording);
         OpenProjectCommand = new RelayCommand(OpenProjectAsync, () => !IsRecording);
-        ProjectsCommand = new RelayCommand(() => ShowProjectBrowser(), () => !IsRecording);
+        ProjectsCommand = new RelayCommand(ShowProjectBrowser, () => !IsRecording);
         SettingsCommand = new RelayCommand(ShowSettings);
         AddSceneCommand = new RelayCommand(() => Mutate(AddScene), () => HasProject);
         DeleteSceneCommand = new RelayCommand(() => Mutate(DeleteScene), () => HasProject && SelectedScene is not null && !IsRecording);

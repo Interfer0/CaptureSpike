@@ -10,9 +10,10 @@ public sealed record ProjectEntry(string Name, string Dir, string Info);
 
 public partial class ProjectBrowserWindow : Window
 {
-    private readonly Action<string> _openProject;
-    private readonly Action<string> _createProject;
+    private readonly Action<string>? _openProject;
+    private readonly Action<string>? _createProject;
 
+    /// <summary>Parameterless ctor used by the Avalonia XAML loader.</summary>
     public ProjectBrowserWindow()
     {
         InitializeComponent();
@@ -41,7 +42,7 @@ public partial class ProjectBrowserWindow : Window
                 {
                     var store = ProjectStore.Open(dir);
                     var scenes = store.LoadScenes();
-                    var takes = scenes.Sum(s => store.LoadTakes(s.Id).Count);
+                    var takes = scenes.Sum(s => store.LoadTakes(s.FolderName).Count);
                     var modified = Directory.GetLastWriteTime(dir);
                     entries.Add(new ProjectEntry(
                         store.Project.Name,
@@ -60,18 +61,22 @@ public partial class ProjectBrowserWindow : Window
 
     private void OpenSelected()
     {
-        if (ProjectList.SelectedItem is ProjectEntry entry)
+        if (ProjectList.SelectedItem is ProjectEntry entry && _openProject is not null)
         {
             _openProject(entry.Dir);
             Close();
         }
     }
 
-    private void OnOpen(object? sender, RoutedEventArgs e) => OpenSelected();
+    private void OnOpen(object? sender, RoutedEventArgs e)
+    {
+        if (_openProject is not null) OpenSelected();
+        else Close();
+    }
 
     private void OnCreate(object? sender, RoutedEventArgs e)
     {
-        _createProject(NameBox.Text?.Trim() ?? "");
+        _createProject?.Invoke(NameBox.Text?.Trim() ?? "");
         Close();
     }
 

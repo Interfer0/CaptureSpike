@@ -20,40 +20,12 @@ public sealed class ProjectStore
     };
 
     /// <summary>
-    /// Writes JSON atomically: temp file + rename, so a crash mid-write
-    /// can't leave an empty or partial file behind.
+    /// Writes JSON atomically: temp file + rename with retry on transient
+    /// locks (Windows AV, OneDrive / Dropbox). See <see cref="AtomicFile"/>
+    /// for the shared implementation.
     /// </summary>
-    private static void WriteJsonAtomic(string path, string content)
-    {
-        // Unique temp name so concurrent writers (or a stale temp from a
-        // crashed run) can never collide on the same path.
-        var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        File.WriteAllText(tmp, content);
-        try
-        {
-            // Retry the rename: on Windows, antivirus and cloud sync
-            // (OneDrive/Dropbox, common on the Documents folder) can
-            // briefly lock the destination file.
-            const int attempts = 6;
-            for (var i = 0; ; i++)
-            {
-                try
-                {
-                    File.Move(tmp, path, overwrite: true);
-                    return;
-                }
-                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
-                {
-                    if (i == attempts - 1) throw;
-                    Thread.Sleep(100 * (i + 1));
-                }
-            }
-        }
-        finally
-        {
-            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-        }
-    }
+    private static void WriteJsonAtomic(string path, string content) =>
+        AtomicFile.WriteAllText(path, content);
 
     public string ProjectDir { get; }
     public Project Project { get; private set; }

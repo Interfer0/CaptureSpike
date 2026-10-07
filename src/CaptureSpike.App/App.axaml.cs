@@ -95,7 +95,7 @@ public partial class App : Application
         Refresh();
     }
 
-    private static void ReportCrash(Exception? ex)
+    internal static void ReportCrash(Exception? ex)
     {
         var message = ex?.Message ?? "Unknown error";
         try

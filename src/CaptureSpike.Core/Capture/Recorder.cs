@@ -68,7 +68,7 @@ public sealed class Recorder : IRecorder
             {
                 // Observe the losers' exceptions so they don't go unobserved.
                 foreach (var t in startTasks.Where(t => !t.IsCompletedSuccessfully))
-                    t.ContinueWith(failed => _ = failed.Exception,
+                    _ = t.ContinueWith(failed => _ = failed.Exception,
                         TaskContinuationOptions.OnlyOnFaulted);
                 throw;
             }
