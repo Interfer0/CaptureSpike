@@ -75,12 +75,22 @@ internal static class AppSettings
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "CaptureSpike", "settings.json");
 
+    /// <summary>Where the settings JSON lives. Exposed so the App startup
+    /// can detect first-run (file does not exist yet) without depending
+    /// on internal helpers.</summary>
+    public static string SettingsFilePath => Path_;
+
     private sealed class SettingsData
     {
         [JsonPropertyName("lastProjectDir")]
         public string? LastProjectDir { get; set; }
         [JsonPropertyName("projectsDir")]
         public string? ProjectsDir { get; set; }
+        [JsonPropertyName("theme")]
+        /// <summary>"Dark" | "Light" | "Default" (follow OS). Defaults to "Dark"
+        /// for first-run users; existing settings.json files (no theme field)
+        /// continue to follow the OS until the user picks one.</summary>
+        public string? Theme { get; set; }
         [JsonPropertyName("windowX")]
         public double? WindowX { get; set; }
         [JsonPropertyName("windowY")]
@@ -143,6 +153,19 @@ internal static class AppSettings
     {
         get => Load().ProjectsDir ?? DefaultProjectsDir();
         set { var d = Load(); d.ProjectsDir = value; Save(d); }
+    }
+
+    /// <summary>
+    /// UI theme: "Dark", "Light", or "Default" (follow OS). Returns the
+    /// stored value, or "Dark" for first-run users who have never picked one.
+    /// Returns null only for pre-existing settings files where the theme
+    /// field is missing — those users keep the OS-driven default until they
+    /// open Settings and pick something.
+    /// </summary>
+    public static string? Theme
+    {
+        get => Load().Theme;
+        set { var d = Load(); d.Theme = value; Save(d); }
     }
 
     public static string DefaultProjectsDir()

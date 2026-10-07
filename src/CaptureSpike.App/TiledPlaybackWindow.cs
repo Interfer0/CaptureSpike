@@ -18,9 +18,26 @@ public sealed record TileSourceInfo(
 /// One window showing all of a take's sources in a tile grid.
 /// Video tiles host an embedded mpv; audio tiles show the filename and
 /// toggle mute on click.
+///
+/// Theme: all brushes come from the application theme dictionaries
+/// (see App.axaml ThemeKeys). The window reads them at construction
+/// and again whenever the theme changes, via RefreshThemeBrushes().
 /// </summary>
 public sealed class TiledPlaybackWindow : Window
 {
+    /// <summary>
+    /// Resolves a theme brush by key. Returns a sensible fallback if the
+    /// key is missing (e.g. running in the XAML designer without the
+    /// full resource tree). Falls back to a black brush since the tiles
+    /// are always over video content where black is rarely wrong.
+    /// </summary>
+    private static IBrush Brush(string key) =>
+        Avalonia.Application.Current?.FindResource(key) as IBrush
+        ?? new SolidColorBrush(Color.FromRgb(0, 0, 0));
+
+    private static ISolidColorBrush SolidBrush(string key, Color fallback) =>
+        Avalonia.Application.Current?.FindResource(key) as ISolidColorBrush
+        ?? new SolidColorBrush(fallback);
     private sealed class Tile
     {
         public required string SourceId;
@@ -71,8 +88,8 @@ public sealed class TiledPlaybackWindow : Window
             var border = new Border
             {
                 BorderThickness = new Thickness(1),
-                BorderBrush = Brushes.Gray,
-                Background = Brushes.Black,
+                BorderBrush = Brush(ThemeKeys.TileBorder),
+                Background = Brush(ThemeKeys.MutedTile),
             };
 
             var tcs = new TaskCompletionSource<nint>();
@@ -89,6 +106,9 @@ public sealed class TiledPlaybackWindow : Window
                     Text = $"{src.Badge} · {src.Label}",
                     FontSize = 13,
                     Padding = new Thickness(6, 2),
+                    // Caption sits on top of arbitrary video frames, so it
+                    // keeps a fixed semi-transparent dark scrim and white
+                    // text regardless of theme.
                     Background = new SolidColorBrush(Color.FromArgb(160, 0, 0, 0)),
                     Foreground = Brushes.White,
                     HorizontalAlignment = HorizontalAlignment.Left,
@@ -121,7 +141,7 @@ public sealed class TiledPlaybackWindow : Window
                     Text = $"{src.Badge} · {src.Label}",
                     FontSize = 16,
                     FontWeight = FontWeight.Bold,
-                    Foreground = Brushes.White,
+                    Foreground = SolidBrush(ThemeKeys.BadgeForeground, Color.FromRgb(240, 240, 240)),
                     HorizontalAlignment = HorizontalAlignment.Center,
                 };
                 var fileBlock = new TextBlock
@@ -129,7 +149,9 @@ public sealed class TiledPlaybackWindow : Window
                     Text = src.FileName,
                     FontSize = 13,
                     FontFamily = new FontFamily("Monospace"),
-                    Foreground = Brushes.Gray,
+                    // Same as labels, slightly faded via Opacity rather than alpha.
+                    Foreground = SolidBrush(ThemeKeys.BadgeForeground, Color.FromRgb(160, 160, 160)),
+                    Opacity = 0.7,
                     HorizontalAlignment = HorizontalAlignment.Center,
                 };
                 var muteLabel = new TextBlock
@@ -144,7 +166,8 @@ public sealed class TiledPlaybackWindow : Window
                 {
                     Text = "click to mute",
                     FontSize = 11,
-                    Foreground = Brushes.Gray,
+                    Foreground = SolidBrush(ThemeKeys.BadgeForeground, Color.FromRgb(160, 160, 160)),
+                    Opacity = 0.7,
                     HorizontalAlignment = HorizontalAlignment.Center,
                 };
                 var stack = new StackPanel
@@ -158,7 +181,7 @@ public sealed class TiledPlaybackWindow : Window
                 stack.Children.Add(fileBlock);
                 stack.Children.Add(muteLabel);
                 stack.Children.Add(hint);
-                var audioPanel = new Panel { Background = Brushes.Black };
+                var audioPanel = new Panel { Background = Brush(ThemeKeys.MutedTile) };
                 audioPanel.Children.Add(stack);
                 border.Child = audioPanel;
                 border.Cursor = new Cursor(StandardCursorType.Hand);
@@ -183,7 +206,9 @@ public sealed class TiledPlaybackWindow : Window
             grid.Children.Add(border);
         }
 
-        // Loading overlay (hidden when SetLoadingComplete is called).
+        // Loading overlay (hidden when SetLoadingComplete is called). Fixed dark
+        // scrim with white text — same rationale as the video-tile caption
+        // (always visible, regardless of theme).
         _loadingText = new TextBlock
         {
             Text = "⏳ Loading sources...",
@@ -235,9 +260,11 @@ public sealed class TiledPlaybackWindow : Window
             tile.MuteLabel.Text = muted ? "MUTED" : "";
         if (tile.AudioPanel is not null)
             tile.AudioPanel.Background = muted
-                ? new SolidColorBrush(Color.FromArgb(255, 60, 10, 10))
-                : Brushes.Black;
-        tile.Border.BorderBrush = muted ? Brushes.Red : Brushes.Gray;
+                ? Brush(ThemeKeys.MutedTileMuted)
+                : Brush(ThemeKeys.MutedTile);
+        tile.Border.BorderBrush = muted
+            ? Brush(ThemeKeys.TileBorderMuted)
+            : Brush(ThemeKeys.TileBorder);
     }
 
     /// <summary>Hides the loading overlay once all sources are playing.</summary>

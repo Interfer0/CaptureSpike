@@ -12,6 +12,17 @@ public partial class App : Application
 
     public override void OnFrameworkInitializationCompleted()
     {
+        // Apply the saved theme before any windows are constructed so
+        // brushes/colors are correct from the first frame. New users
+        // (no settings.json yet) get the app's default of Dark.
+        var saved = AppSettings.Theme;
+        if (saved is null && !File.Exists(AppSettings.SettingsFilePath))
+        {
+            saved = "Dark";
+            AppSettings.Theme = saved;
+        }
+        RequestedThemeVariant = ThemeKeys.ToVariant(saved);
+
         // Global safety net: log and show instead of crashing outright.
         // Individual operations should still try/catch and report via Status;
         // this catches what slips through (e.g., async void event handlers).

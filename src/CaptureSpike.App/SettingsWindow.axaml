@@ -1,16 +1,35 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:CaptureSpike.App"
         x:Class="CaptureSpike.App.SettingsWindow"
         Title="Settings" Width="460" SizeToContent="Height"
         WindowStartupLocation="CenterOwner" CanResize="False">
+  <Window.DataContext>
+    <app:SettingsViewModel />
+  </Window.DataContext>
+
   <StackPanel Margin="16" Spacing="8">
     <TextBlock Text="Projects folder" FontSize="15" Opacity="0.7" />
     <DockPanel>
       <Button DockPanel.Dock="Right" Content="Browse…" Click="OnBrowse" Margin="8,0,0,0" />
-      <TextBox x:Name="FolderBox" />
+      <TextBox Text="{Binding ProjectsFolder, Mode=TwoWay}" />
     </DockPanel>
     <TextBlock Text="New projects are created here. Existing projects stay where they are."
                FontSize="14" Opacity="0.5" TextWrapping="Wrap" />
+
+    <TextBlock Text="Theme" FontSize="15" Opacity="0.7" Margin="0,8,0,0" />
+    <ComboBox ItemsSource="{Binding ThemeOptions}"
+              SelectedItem="{Binding Theme, Mode=TwoWay}"
+              HorizontalAlignment="Stretch">
+      <ComboBox.ItemTemplate>
+        <DataTemplate>
+          <TextBlock Text="{Binding Display}" />
+        </DataTemplate>
+      </ComboBox.ItemTemplate>
+    </ComboBox>
+    <TextBlock Text="System default follows whatever your OS UI is set to (Light or Dark)."
+               FontSize="14" Opacity="0.5" TextWrapping="Wrap" />
+
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                 Spacing="8" Margin="0,8,0,0">
       <Button Content="Cancel" Click="OnCancel" />

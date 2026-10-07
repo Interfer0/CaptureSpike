@@ -7,18 +7,18 @@
     <Style Selector="Border.badge">
       <Setter Property="CornerRadius" Value="3" />
       <Setter Property="Padding" Value="5,1" />
-      <Setter Property="Background" Value="#3d3d3d" />
+      <Setter Property="Background" Value="{DynamicResource BadgeBackgroundBrush}" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
     <Style Selector="Border.badge > TextBlock">
       <Setter Property="FontSize" Value="11" />
       <Setter Property="FontFamily" Value="Monospace" />
-      <Setter Property="Foreground" Value="White" />
+      <Setter Property="Foreground" Value="{DynamicResource BadgeForegroundBrush}" />
     </Style>
     <Style Selector="Border.badge > TextBox">
       <Setter Property="FontSize" Value="11" />
       <Setter Property="FontFamily" Value="Monospace" />
-      <Setter Property="Foreground" Value="White" />
+      <Setter Property="Foreground" Value="{DynamicResource BadgeForegroundBrush}" />
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="Padding" Value="0" />
@@ -57,7 +57,7 @@
       </Menu>
     </DockPanel>
 
-    <Border DockPanel.Dock="Bottom" BorderThickness="0,1,0,0" BorderBrush="Gray" Padding="8,4">
+    <Border DockPanel.Dock="Bottom" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource DividerBrush}" Padding="8,4">
       <TextBlock Text="{Binding Status}" FontSize="15" Opacity="0.8" />
     </Border>
 
