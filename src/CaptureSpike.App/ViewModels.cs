@@ -562,6 +562,7 @@ public sealed class MainViewModel : ObservableObject
                 Raise(nameof(NextTakeText));
                 Raise(nameof(SceneNumberText));
                 Raise(nameof(TakeSceneHeader));
+                RaiseCommandStates();
                 if (_playerTake is not null && _playerSceneId != value?.Scene.Id)
                     _ = UnloadPlayerAsync();
             }
@@ -789,6 +790,18 @@ public sealed class MainViewModel : ObservableObject
     private void Mutate(Action action)
     {
         action();
+        RaiseCommandStates();
+        Raise(nameof(HasProject));
+    }
+
+    /// <summary>
+    /// Re-evaluates every command's CanExecute. Needed whenever HasProject,
+    /// SelectedScene, or recording state changes outside of Mutate —
+    /// notably after OpenProject, which is why the Record button used to
+    /// stay dead until a source was toggled.
+    /// </summary>
+    private void RaiseCommandStates()
+    {
         foreach (var c in new[] { AddSceneCommand, DeleteSceneCommand, MoveSceneUpCommand,
                                   MoveSceneDownCommand, DeleteTakeCommand, ToggleFavoriteCommand,
                                   ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
@@ -796,7 +809,6 @@ public sealed class MainViewModel : ObservableObject
                                   PlayerPlayPauseCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
-        Raise(nameof(HasProject));
     }
 
     /// <summary>Shows a Yes/No confirmation dialog. Returns false if the window is gone.</summary>
@@ -886,6 +898,7 @@ public sealed class MainViewModel : ObservableObject
         Status = $"Project: {dir}";
         Raise(nameof(HasProject));
         Raise(nameof(ProjectFolderText));
+        RaiseCommandStates();
     }
 
     public string ProjectFolderText =>
