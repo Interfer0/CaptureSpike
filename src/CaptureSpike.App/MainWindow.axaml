@@ -378,7 +378,7 @@
                    Opacity="0.6" HorizontalAlignment="Center" Margin="0,0,0,4" />
         <TextBlock DockPanel.Dock="Top" FontSize="14" Opacity="0.5" TextWrapping="Wrap"
                    HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,8"
-                   Text="The window minimizes during the countdown. Stop with F9." />
+                   Text="The window minimizes during the countdown. Stop from the tray icon." />
 
         <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
           <TextBlock Text="Script and notes" FontSize="15" Opacity="0.7" />

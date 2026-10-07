@@ -20,9 +20,79 @@ public partial class App : Application
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.MainWindow = new MainWindow { DataContext = new MainViewModel() };
+            var vm = new MainViewModel();
+            desktop.MainWindow = new MainWindow { DataContext = vm };
+            SetupTrayIcon(desktop, (Window)desktop.MainWindow, vm);
         }
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private TrayIcons? _trayIcons;
+
+    /// <summary>
+    /// System tray icon: the reliable way to stop a recording while the
+    /// window is minimized (replaces the old F9 hotkey).
+    /// </summary>
+    private void SetupTrayIcon(IClassicDesktopStyleApplicationLifetime desktop,
+        Window window, MainViewModel vm)
+    {
+        WindowIcon? icon = null;
+        try
+        {
+            icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(
+                new Uri("avares://CaptureSpike.App/Assets/capturespike-icon.png")));
+        }
+        catch { /* tray without icon */ }
+
+        var stopItem = new NativeMenuItem("Stop Recording");
+        stopItem.Click += (_, _) => vm.StopRecordingFromTray();
+        var showItem = new NativeMenuItem("Show Window");
+        showItem.Click += (_, _) => vm.ShowMainWindow();
+        var exitItem = new NativeMenuItem("Exit");
+        exitItem.Click += (_, _) => desktop.Shutdown();
+
+        var menu = new NativeMenu();
+        menu.Add(stopItem);
+        menu.Add(showItem);
+        menu.Add(new NativeMenuItemSeparator());
+        menu.Add(exitItem);
+
+        var tray = new TrayIcon
+        {
+            Icon = icon,
+            ToolTipText = "CaptureSpike",
+            Menu = menu,
+        };
+        // Left-click toggles the window.
+        tray.Clicked += (_, _) =>
+        {
+            if (window.IsVisible && window.WindowState != WindowState.Minimized)
+                window.Hide();
+            else
+                vm.ShowMainWindow();
+        };
+
+        _trayIcons = new TrayIcons { tray };
+        TrayIcon.SetIcons(this, _trayIcons);
+
+        // Keep the menu and tooltip in sync with recording state.
+        void Refresh()
+        {
+            var active = vm.IsRecording || vm.IsStarting;
+            stopItem.IsEnabled = active;
+            stopItem.Header = vm.IsStarting ? "Cancel Recording" : "Stop Recording";
+            tray.ToolTipText = vm.IsRecording
+                ? $"● CaptureSpike — recording {vm.RecordingElapsed}"
+                : "CaptureSpike";
+        }
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(MainViewModel.IsRecording)
+                or nameof(MainViewModel.IsStarting)
+                or nameof(MainViewModel.RecordingElapsed))
+                Dispatcher.UIThread.Post(Refresh);
+        };
+        Refresh();
     }
 
     private static void ReportCrash(Exception? ex)

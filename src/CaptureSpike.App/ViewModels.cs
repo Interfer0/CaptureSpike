@@ -727,6 +727,8 @@ public sealed class MainViewModel : ObservableObject
 
     private IRecordingSession? _session;
     public bool IsRecording => _session is not null;
+    /// <summary>Countdown in progress; the tray icon offers Cancel.</summary>
+    public bool IsStarting => _starting;
     public string RecordButtonText => IsRecording ? "■ Stop" : "● Record";
 
     private string _recordingElapsed = "";
@@ -775,7 +777,6 @@ public sealed class MainViewModel : ObservableObject
     /// Called by MainWindow once it is shown. Opens the last project if there
     /// is one; otherwise creates a starter project. The project browser is
     /// only shown when the user clicks Projects.
-    /// Installs the global F9 hotkey (stops recording or take playback).
     /// </summary>
     public async void StartupAsync()
     {
@@ -784,20 +785,7 @@ public sealed class MainViewModel : ObservableObject
             OpenProject(last);
         if (_store is null)
             NewProject(); // first run: create a starter project so the UI isn't empty
-
-        // F9 works globally: stops recording, cancels countdown, or stops
-        // take playback. Installed once; left installed for the app lifetime.
-        try
-        {
-            if (OperatingSystem.IsWindows())
-                StopHotkey.Install(OnStopHotkey, msg => Log(msg));
-            else
-                await Task.Run(() => StopHotkey.Install(OnStopHotkey));
-        }
-        catch (Exception ex)
-        {
-            Status = $"F9 hotkey: {ex.Message}";
-        }
+        await Task.CompletedTask;
     }
 
     public async Task ShowProjectBrowser()
@@ -1346,7 +1334,7 @@ public sealed class MainViewModel : ObservableObject
     {
         if (_store is null || SelectedScene is null || _session is not null || _starting) return;
         _starting = true;
-        // A stale flag from a previous F9 must not cancel this countdown.
+        // A stale flag from a previous cancel must not cancel this countdown.
         _cancelStarting = false;
         RaiseRecordingState();
         string? takeDir = null;
@@ -1376,12 +1364,12 @@ public sealed class MainViewModel : ObservableObject
 
             // Scheduled start: t0 is now; sources warm up IN PARALLEL during
             // the 3s countdown (instead of starting one-by-one after it).
-            // F9 cancels via _cancelStarting, which aborts the startup.
+            // The tray Cancel menu sets _cancelStarting, which aborts the startup.
             using var cts = new CancellationTokenSource();
             var startTask = RecorderFactory(_store).StartAsync(
                 _store.Project, scene, takeDir, progress, cts.Token);
 
-            // Countdown overlaps warmup: poll for F9 every 100ms.
+            // Countdown overlaps warmup: poll for cancel every 100ms.
             // (No ConfigureAwait(false): the code below touches UI-bound state.)
             for (var i = 0; i < 30 && !_cancelStarting; i++)
                 await Task.Delay(100);
@@ -1412,7 +1400,7 @@ public sealed class MainViewModel : ObservableObject
                 try
                 {
                     _session = await startTask;
-                    // F9 pressed while the last sources were starting: the user
+                    // Cancel pressed while the last sources were starting: the user
                     // meant stop, so stop immediately instead of poisoning the
                     // next countdown with a stale flag.
                     if (_cancelStarting)
@@ -1422,7 +1410,7 @@ public sealed class MainViewModel : ObservableObject
                     }
                     else
                     {
-                        Status = $"Recording '{scene.Title}' — press F9 to stop";
+                        Status = $"Recording '{scene.Title}' — stop from the tray icon";
                         Log($"Recording started: '{scene.Title}' ({_session.ActiveSourceIds.Count} sources)");
                     }
                 }
@@ -1451,7 +1439,11 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void OnStopHotkey()
+    /// <summary>
+    /// Stops the recording, or cancels the countdown. Wired to the tray
+    /// icon's Stop menu (the reliable replacement for the old F9 hotkey).
+    /// </summary>
+    public async void StopRecordingFromTray()
     {
         if (_starting)
         {
@@ -1459,15 +1451,23 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
         if (_session is not null)
-        {
-            Avalonia.Threading.Dispatcher.UIThread.Post(async () => await StopRecordingAsync());
-            return;
-        }
-        // Not recording: F9 stops take playback if it's running.
-        if (_player is not null)
-        {
-            Avalonia.Threading.Dispatcher.UIThread.Post(async () => await UnloadPlayerAsync());
-        }
+            await StopRecordingAsync();
+    }
+
+    /// <summary>
+    /// Shows the main window, restoring the pre-recording state when it was
+    /// minimized for a recording. Wired to the tray icon.
+    /// </summary>
+    public void ShowMainWindow()
+    {
+        var window = MainWindow;
+        if (window is null) return;
+        window.Show();
+        if (window.WindowState == Avalonia.Controls.WindowState.Minimized)
+            window.WindowState = (IsRecording || _starting)
+                ? _preRecordWindowState
+                : Avalonia.Controls.WindowState.Normal;
+        window.Activate();
     }
 
     /// <summary>Stops recording and saves the take. Safe to call when not recording.</summary>
@@ -1476,7 +1476,6 @@ public sealed class MainViewModel : ObservableObject
         var session = _session;
         if (session is null) return;
         _session = null;
-        // F9 hotkey stays installed (used for playback too).
         RaiseRecordingState();
         try
         {
@@ -1507,6 +1506,7 @@ public sealed class MainViewModel : ObservableObject
     private void RaiseRecordingState()
     {
         Raise(nameof(IsRecording));
+        Raise(nameof(IsStarting));
         Raise(nameof(RecordButtonText));
         if (!IsRecording) RecordingElapsed = "";
         foreach (var c in new[] { ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
