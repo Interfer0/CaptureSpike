@@ -1,7 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:app="clr-namespace:CaptureSpike.App"
-        xmlns:mv="using:MarkView.Avalonia"
         x:Class="CaptureSpike.App.MainWindow"
         Title="CaptureSpike" Width="1180" Height="720" MinWidth="960" MinHeight="600">
   <Window.Styles>
@@ -366,11 +365,12 @@
                    HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,8"
                    Text="The window minimizes during the countdown. Stop from the tray icon." />
 
-        <!-- Script & notes: split-view markdown editor.
-             Left = raw markdown (TextBox, two-way bound to Notes).
-             Right = rendered preview (MarkView MarkdownViewer).
-             Fills the remaining vertical space; the SplitView's
-             GridSplitter lets the user resize the panes. -->
+        <!-- Script & notes: vertical markdown toolbar on the left, single
+             editing TextBox on the right. The toolbar buttons wrap the
+             current selection in markdown (B = **...**, I = *...*,
+             H1/H2/H3 = "# "/"## "/"### " at the start of selected lines,
+             bullet/numbered list = "- "/"1. " at line starts).
+             Storage stays Scene.Notes as a plain string. -->
         <DockPanel DockPanel.Dock="Top" LastChildFill="True" Margin="0,0,0,4">
           <DockPanel DockPanel.Dock="Top">
             <TextBlock Text="Script and notes" FontSize="15" Opacity="0.7" />
@@ -383,22 +383,38 @@
               <RowDefinition Height="*" MinHeight="180" />
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*" MinWidth="120" />
-              <ColumnDefinition Width="5" />
+              <ColumnDefinition Width="Auto" />
               <ColumnDefinition Width="*" MinWidth="120" />
             </Grid.ColumnDefinitions>
-            <TextBox Grid.Column="0"
+            <!-- Toolbar: vertical column of buttons on the left. -->
+            <StackPanel Grid.Column="0" Spacing="2" Margin="0,0,6,0">
+              <Button x:Name="NotesBtnBold" Content="B"
+                      FontWeight="Bold" Width="32" Height="32" Padding="0"
+                      ToolTip.Tip="Bold (**selection**)" Click="OnNotesBold" />
+              <Button x:Name="NotesBtnItalic" Content="I"
+                      FontStyle="Italic" Width="32" Height="32" Padding="0"
+                      ToolTip.Tip="Italic (*selection*)" Click="OnNotesItalic" />
+              <Button x:Name="NotesBtnH1" Content="H1"
+                      FontWeight="Bold" Width="32" Height="32" Padding="0"
+                      ToolTip.Tip="Heading 1 (## )" Click="OnNotesH1" />
+              <Button x:Name="NotesBtnH2" Content="H2"
+                      Width="32" Height="32" Padding="0"
+                      ToolTip.Tip="Heading 2 (## )" Click="OnNotesH2" />
+              <Button x:Name="NotesBtnH3" Content="H3"
+                      Width="32" Height="32" Padding="0"
+                      ToolTip.Tip="Heading 3 (### )" Click="OnNotesH3" />
+              <Button x:Name="NotesBtnBullet" Content="•"
+                      FontWeight="Bold" Width="32" Height="32" Padding="0"
+                      ToolTip.Tip="Bullet list (- )" Click="OnNotesBullet" />
+              <Button x:Name="NotesBtnNumbered" Content="1."
+                      FontWeight="Bold" Width="32" Height="32" Padding="0"
+                      ToolTip.Tip="Numbered list (1. )" Click="OnNotesNumbered" />
+            </StackPanel>
+            <TextBox Grid.Column="1" x:Name="NotesBox"
                      Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
                      AcceptsReturn="True" TextWrapping="Wrap"
                      FontFamily="Consolas, Menlo, monospace"
-                     ScrollViewer.VerticalScrollBarVisibility="Auto"
-                     ToolTip.Tip="Markdown. # heading, **bold**, *italic*, - list, ```code```" />
-            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" />
-            <Border Grid.Column="2" BorderThickness="1"
-                    BorderBrush="{DynamicResource DividerBrush}"
-                    Padding="8">
-              <mv:MarkdownViewer Markdown="{Binding SelectedScene.Notes}" />
-            </Border>
+                     ScrollViewer.VerticalScrollBarVisibility="Auto" />
           </Grid>
         </DockPanel>
 

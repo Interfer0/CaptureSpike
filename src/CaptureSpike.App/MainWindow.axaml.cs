@@ -127,4 +127,83 @@ public partial class MainWindow : Window
         if (DataContext is MainViewModel vm && sender is Slider slider)
             vm.EndScrub(slider.Value);
     }
+
+    // ----- Markdown toolbar for Script & notes -----
+
+    private void OnNotesBold(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
+        WrapSelectionInNotes("**", "**");
+    private void OnNotesItalic(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
+        WrapSelectionInNotes("*", "*");
+    private void OnNotesH1(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
+        PrefixEachLineInNotes("# ");
+    private void OnNotesH2(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
+        PrefixEachLineInNotes("## ");
+    private void OnNotesH3(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
+        PrefixEachLineInNotes("### ");
+    private void OnNotesBullet(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
+        PrefixEachLineInNotes("- ");
+    private void OnNotesNumbered(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
+        PrefixEachLineInNotes("1. ");
+
+    /// <summary>
+    /// Inserts <paramref name="prefix"/> before and <paramref name="suffix"/>
+    /// after the current selection in the notes editor. With no selection,
+    /// inserts just the markers and leaves the caret between them so the
+    /// user can type the wrapped text. After the change, the entire wrapped
+    /// run is selected so the user can keep applying formatting or type to
+    /// replace it.
+    /// </summary>
+    private void WrapSelectionInNotes(string prefix, string suffix)
+    {
+        var text = NotesBox.Text ?? string.Empty;
+        var start = Math.Clamp(NotesBox.SelectionStart, 0, text.Length);
+        var end = Math.Clamp(NotesBox.SelectionEnd, 0, text.Length);
+        if (end < start) (start, end) = (end, start);
+        var selected = text.Substring(start, end - start);
+        var inserted = prefix + selected + suffix;
+        var newText = text.Remove(start, end - start).Insert(start, inserted);
+        NotesBox.Text = newText;
+        // Selection covers the inserted run; caret lands at the end of it.
+        NotesBox.SelectionStart = start;
+        NotesBox.SelectionEnd = start + inserted.Length;
+        NotesBox.CaretIndex = start + inserted.Length;
+        NotesBox.Focus();
+    }
+
+    /// <summary>
+    /// Prepends <paramref name="prefix"/> at the start of every line in the
+    /// current selection (or at the cursor's line if nothing is selected).
+    /// Multi-line selections are common ("select three paragraphs, click
+    /// H2 — all three become headings"). If the start of the selection sits
+    /// mid-line, the prefix goes at the start of that line; if the end sits
+    /// mid-line, the prefix is added up to and including that line.
+    /// </summary>
+    private void PrefixEachLineInNotes(string prefix)
+    {
+        var text = NotesBox.Text ?? string.Empty;
+        var start = Math.Clamp(NotesBox.SelectionStart, 0, text.Length);
+        var end = Math.Clamp(NotesBox.SelectionEnd, 0, text.Length);
+        if (end < start) (start, end) = (end, start);
+
+        // Expand to whole lines. Walk back from start to the previous \n
+        // (exclusive) and forward from end to the next \n (inclusive).
+        var lineStart = start;
+        while (lineStart > 0 && text[lineStart - 1] != '\n') lineStart--;
+        var lineEnd = end;
+        while (lineEnd < text.Length && text[lineEnd] != '\n') lineEnd++;
+
+        var block = text.Substring(lineStart, lineEnd - lineStart);
+        var prefixedLines = block.Split('\n')
+            .Select(line => line.Length == 0 ? line : prefix + line);
+        var newBlock = string.Join('\n', prefixedLines);
+        var newText = text.Remove(lineStart, lineEnd - lineStart).Insert(lineStart, newBlock);
+
+        NotesBox.Text = newText;
+        // Restore the selection over the prefixed block so the user can see
+        // what changed and chain more edits.
+        NotesBox.SelectionStart = lineStart;
+        NotesBox.SelectionEnd = lineStart + newBlock.Length;
+        NotesBox.CaretIndex = lineStart + newBlock.Length;
+        NotesBox.Focus();
+    }
 }
