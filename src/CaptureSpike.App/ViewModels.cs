@@ -53,6 +53,16 @@ internal static class AppSettings
         public string? LastProjectDir { get; set; }
         [JsonPropertyName("projectsDir")]
         public string? ProjectsDir { get; set; }
+        [JsonPropertyName("windowX")]
+        public double? WindowX { get; set; }
+        [JsonPropertyName("windowY")]
+        public double? WindowY { get; set; }
+        [JsonPropertyName("windowWidth")]
+        public double? WindowWidth { get; set; }
+        [JsonPropertyName("windowHeight")]
+        public double? WindowHeight { get; set; }
+        [JsonPropertyName("windowMaximized")]
+        public bool WindowMaximized { get; set; }
     }
 
     private static SettingsData Load()
@@ -83,6 +93,27 @@ internal static class AppSettings
     {
         get => Load().LastProjectDir;
         set { var d = Load(); d.LastProjectDir = value; Save(d); }
+    }
+
+    public sealed record WindowBounds(double X, double Y, double Width, double Height, bool Maximized);
+
+    public static WindowBounds? LoadWindowBounds()
+    {
+        var d = Load();
+        if (d.WindowX is null || d.WindowY is null ||
+            d.WindowWidth is null || d.WindowHeight is null)
+            return null;
+        return new WindowBounds(d.WindowX.Value, d.WindowY.Value,
+            d.WindowWidth.Value, d.WindowHeight.Value, d.WindowMaximized);
+    }
+
+    public static void SaveWindowBounds(double x, double y, double width, double height, bool maximized)
+    {
+        var d = Load();
+        d.WindowX = x; d.WindowY = y;
+        d.WindowWidth = width; d.WindowHeight = height;
+        d.WindowMaximized = maximized;
+        Save(d);
     }
 
     /// <summary>Library folder containing one folder per project.</summary>

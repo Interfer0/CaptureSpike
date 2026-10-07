@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -10,7 +11,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         AvaloniaXamlLoader.Load(this);
-        WindowState = WindowState.Maximized;
+        RestoreWindowBounds();
         // App icon (optional: only if the asset was synced).
         try
         {
@@ -21,6 +22,7 @@ public partial class MainWindow : Window
 
         Opened += (_, _) =>
         {
+            EnsureOnScreen();
             if (DataContext is MainViewModel vm)
             {
                 vm.StartupAsync();
@@ -50,6 +52,55 @@ public partial class MainWindow : Window
                 finally { Close(); }
             }
         };
+
+        // Remember size, position, and maximized state for next launch.
+        Closing += (_, _) =>
+        {
+            AppSettings.SaveWindowBounds(Position.X, Position.Y, Width, Height,
+                WindowState == WindowState.Maximized);
+        };
+    }
+
+    /// <summary>
+    /// Restores the last window bounds. First run (nothing saved) starts
+    /// maximized, as before.
+    /// </summary>
+    private void RestoreWindowBounds()
+    {
+        var b = AppSettings.LoadWindowBounds();
+        if (b is null || b.Maximized)
+        {
+            WindowState = WindowState.Maximized;
+            return;
+        }
+        if (b.Width > 100 && b.Height > 100)
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Width = b.Width;
+            Height = b.Height;
+            Position = new PixelPoint((int)b.X, (int)b.Y);
+        }
+        else
+        {
+            WindowState = WindowState.Maximized;
+        }
+    }
+
+    /// <summary>
+    /// If the saved position is on a monitor that's no longer connected,
+    /// center the window on the primary screen instead of opening off-screen.
+    /// </summary>
+    private void EnsureOnScreen()
+    {
+        if (WindowState != WindowState.Normal) return;
+        var screen = Screens.ScreenFromPoint(Position);
+        if (screen is not null) return;
+        var primary = Screens.Primary;
+        if (primary is null) return;
+        var area = primary.WorkingArea;
+        Position = new PixelPoint(
+            area.X + Math.Max(0, (area.Width - (int)Width) / 2),
+            area.Y + Math.Max(0, (area.Height - (int)Height) / 2));
     }
 
     private void OnSeekPointerPressed(object? sender, PointerPressedEventArgs e)
