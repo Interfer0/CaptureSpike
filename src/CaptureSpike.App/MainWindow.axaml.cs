@@ -27,6 +27,19 @@ public partial class MainWindow : Window
         NotesBox.TextChanged += (_, _) => UpdateNotesPreview();
         UpdateNotesPreview();
 
+        // Keyboard shortcuts for the markdown toolbar: Ctrl+B / Ctrl+I.
+        // Bound at the Window level so they fire when the editor has focus.
+        KeyBindings.Add(new KeyBinding
+        {
+            Gesture = new KeyGesture(Key.B, KeyModifiers.Control),
+            Command = new RelayCommand(() => OnNotesBold(null, null!)),
+        });
+        KeyBindings.Add(new KeyBinding
+        {
+            Gesture = new KeyGesture(Key.I, KeyModifiers.Control),
+            Command = new RelayCommand(() => OnNotesItalic(null, null!)),
+        });
+
         Opened += (_, _) =>
         {
             EnsureOnScreen();
@@ -137,6 +150,8 @@ public partial class MainWindow : Window
 
     // ----- Markdown toolbar for Script & notes -----
 
+    /// <summary>Keyboard shortcuts: Ctrl+B (bold), Ctrl+I (italic).
+    /// Wired in the constructor via KeyBindings.</summary>
     private void OnNotesBold(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
         WrapSelectionInNotes("**", "**");
     private void OnNotesItalic(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
