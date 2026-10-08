@@ -1767,6 +1767,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         catch (Exception ex)
         {
             _playerError = ex.Message;
+            Status = $"Playback failed: {ex.Message}";
             await UnloadPlayerAsync();
             Raise(nameof(PlayerPlaceholderText));
         }

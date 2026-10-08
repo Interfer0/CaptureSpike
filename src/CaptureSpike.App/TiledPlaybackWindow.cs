@@ -63,6 +63,14 @@ public sealed class TiledPlaybackWindow : Window
         Title = title;
         Width = 1280;
         Height = 720;
+        // Linux/X11 quirk: a freshly-created Avalonia Window opened via
+        // Show() without an explicit WindowStartupLocation often lands
+        // behind the focused window and stays there until clicked. Set
+        // CenterOwner so the WMs we ship to (GNOME/Mutter, Xfwm, KWin)
+        // place it visibly, and ShowActivated = true so it grabs
+        // focus on creation. The popup isn't modal — owner = null is fine.
+        WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        ShowActivated = true;
 
         if (sources.Count == 0)
         {
