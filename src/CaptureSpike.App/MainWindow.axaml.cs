@@ -24,8 +24,10 @@ public partial class MainWindow : Window
         // TextChanged (not a binding) so we can re-parse the source
         // and assign the resulting block list to the preview without
         // round-tripping through the binding system.
-        NotesBox.TextChanged += (_, _) => UpdateNotesPreview();
-        UpdateNotesPreview();
+        //
+        // NotesBox / NotesPreview are x:Name-generated fields; they're
+        // null until Avalonia resolves them (post-Opened). Don't touch
+        // them from the constructor — wire in Opened.
 
         // Keyboard shortcuts for the markdown toolbar: Ctrl+B / Ctrl+I.
         // Bound at the Window level so they fire when the editor has focus.
@@ -42,6 +44,11 @@ public partial class MainWindow : Window
 
         Opened += (_, _) =>
         {
+            if (NotesBox is { } notesBox)
+            {
+                notesBox.TextChanged += (_, _) => UpdateNotesPreview();
+                UpdateNotesPreview();
+            }
             EnsureOnScreen();
             if (DataContext is MainViewModel vm)
             {
