@@ -116,25 +116,29 @@ internal static class NativeVideoInterop
 
     private static class X11Child
     {
-        [DllImport("libX11")]
+        // DllImport("libX11") resolves at runtime via dlopen("libX11.so"),
+        // which fails on Debian/Ubuntu because the SONAME there is
+        // "libX11.so.6" and only the versioned file exists. Using the
+        // SONAME lets the system loader find the library via ld.so.cache.
+        [DllImport("libX11.so.6")]
         private static extern IntPtr XOpenDisplay(string? display);
-        [DllImport("libX11")]
+        [DllImport("libX11.so.6")]
         private static extern int XCloseDisplay(IntPtr display);
-        [DllImport("libX11")]
+        [DllImport("libX11.so.6")]
         private static extern int XDefaultScreen(IntPtr display);
-        [DllImport("libX11")]
+        [DllImport("libX11.so.6")]
         private static extern ulong XBlackPixel(IntPtr display, int screen);
-        [DllImport("libX11")]
+        [DllImport("libX11.so.6")]
         private static extern IntPtr XCreateSimpleWindow(IntPtr display, IntPtr parent,
             int x, int y, uint width, uint height, uint borderWidth, ulong border, ulong background);
-        [DllImport("libX11")]
+        [DllImport("libX11.so.6")]
         private static extern int XMapWindow(IntPtr display, IntPtr window);
-        [DllImport("libX11")]
+        [DllImport("libX11.so.6")]
         private static extern int XDestroyWindow(IntPtr display, IntPtr window);
-        [DllImport("libX11")]
+        [DllImport("libX11.so.6")]
         private static extern int XMoveResizeWindow(IntPtr display, IntPtr window,
             int x, int y, uint width, uint height);
-        [DllImport("libX11")]
+        [DllImport("libX11.so.6")]
         private static extern int XFlush(IntPtr display);
 
         private static readonly Dictionary<IntPtr, IntPtr> Displays = new();
