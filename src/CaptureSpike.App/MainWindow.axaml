@@ -71,6 +71,10 @@
                 Command="{Binding CopyLogCommand}" FontSize="13"
                 Margin="0,0,6,0"
                 ToolTip.Tip="Copy the log to the clipboard so you can paste it elsewhere" />
+        <Button DockPanel.Dock="Right" Classes="plain" Content="Open Log…"
+                Command="{Binding OpenLogFolderCommand}" FontSize="13"
+                Margin="0,0,12,0"
+                ToolTip.Tip="Open the folder where session logs and crash.log are written on disk" />
         <TextBlock Text="Log" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" />
       </DockPanel>
       <ListBox x:Name="LogListBox" ItemsSource="{Binding LogLines}" Margin="8,0,8,6"

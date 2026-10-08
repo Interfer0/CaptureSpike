@@ -31,13 +31,23 @@ public partial class App : Application
         // Individual operations should still try/catch and report via Status;
         // this catches what slips through (e.g., async void event handlers).
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-            ReportCrash(e.ExceptionObject as Exception);
+        {
+            var ex = e.ExceptionObject as Exception;
+            AppLog.Open().WriteCrash(ex ?? new Exception("Unknown unhandled exception"));
+            ReportCrash(ex);
+        };
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             var vm = new MainViewModel(new AvaloniaClipboardWriter());
+            // Initialize the session log immediately and surface the
+            // folder in the status bar so the user can find it without
+            // hunting around.
+            AppLog.Open();
             desktop.MainWindow = new MainWindow { DataContext = vm };
             SetupTrayIcon(desktop, (Window)desktop.MainWindow, vm);
+            vm.Status = $"Log folder: {AppLog.LogDirectory}";
+            vm.Log($"Session started. Log folder: {AppLog.LogDirectory}");
         }
         base.OnFrameworkInitializationCompleted();
     }
@@ -115,15 +125,12 @@ public partial class App : Application
         var message = ex?.Message ?? "Unknown error";
         try
         {
-            // Write to a crash log next to settings for diagnosis.
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "CaptureSpike");
-            Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "crash.log"),
-                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {ex}{Environment.NewLine}");
+            // Write to the consolidated crash.log in the log folder so the
+            // user has exactly one place to look. AppLog handles its own
+            // disk failures silently — see AppLog.WriteCrash.
+            AppLog.Open().WriteCrash(ex ?? new Exception("Unknown error"));
         }
-        catch { }
+        catch { /* never let logging take the app down */ }
 
         try
         {
@@ -166,19 +173,38 @@ public partial class App : Application
 /// </summary>
 internal sealed class AvaloniaClipboardWriter : IClipboardWriter
 {
-    public async Task SetTextAsync(string text)
+    public Task SetTextAsync(string text) => Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () =>
     {
-        var clipboard = TryGetClipboard();
-        if (clipboard is null) return;
-        await clipboard.SetTextAsync(text);
-    }
+        try
+        {
+            var clipboard = TryGetClipboard();
+            if (clipboard is null)
+            {
+                LogClipboardSkip("no main window yet");
+                return;
+            }
+            await clipboard.SetTextAsync(text);
+        }
+        catch (Exception ex)
+        {
+            // Last-resort surface: the command's own try/catch should have
+            // caught this, but if we got here something is deeply wrong.
+            App.ReportCrash(ex);
+        }
+    });
 
     private static Avalonia.Input.Platform.IClipboard? TryGetClipboard()
     {
-        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() == false)
-            return null; // SetTextAsync above already marshals via the command's await
         var window = (Avalonia.Application.Current?.ApplicationLifetime
             as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
         return window?.Clipboard;
+    }
+
+    private static void LogClipboardSkip(string reason)
+    {
+        var window = (Avalonia.Application.Current?.ApplicationLifetime
+            as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+        if (window?.DataContext is MainViewModel vm)
+            vm.Log($"Copy skipped: {reason}");
     }
 }

@@ -700,8 +700,13 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
 
     public ObservableCollection<string> LogLines { get; } = new();
 
+    /// <summary>Path to the session log on disk — same path as the in-app panel.</summary>
+    public string LogFilePath => AppLog.LogDirectory;
+
     /// <summary>
-    /// Appends a timestamped line to the log panel (capped at 500).
+    /// Appends a timestamped line to the log panel (capped at 500) and
+    /// to the on-disk session log (AppLog) so the user has a durable copy
+    /// they can find without re-launching the app.
     /// Thread-safe: marshals to the UI thread if called from a worker.
     /// </summary>
     public void Log(string message)
@@ -712,8 +717,11 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             Avalonia.Threading.Dispatcher.UIThread.Post(() => Log(message));
             return;
         }
-        LogLines.Add($"{DateTime.Now:HH:mm:ss} {message}");
+        var stamped = $"{DateTime.Now:HH:mm:ss} {message}";
+        LogLines.Add(stamped);
         while (LogLines.Count > 500) LogLines.RemoveAt(0);
+        // Mirror to disk so the user can grab the log even if the app dies.
+        AppLog.Open().WriteLine(message);
     }
 
     /// <summary>
@@ -726,6 +734,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
 
     public ICommand ClearLogCommand { get; }
     public ICommand CopyLogCommand { get; }
+    public ICommand OpenLogFolderCommand { get; }
 
     private readonly IClipboardWriter _clipboard;
 
@@ -842,13 +851,33 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         CopyLogCommand = new RelayCommand(async () =>
         {
             var text = BuildLogText();
-            try { await _clipboard.SetTextAsync(text); }
+            try
+            {
+                await _clipboard.SetTextAsync(text);
+                Status = "Log copied to clipboard";
+            }
             catch (Exception ex)
             {
-                Status = $"Copy failed: {ex.Message}";
-                Log($"Copy failed: {ex.Message}");
+                var msg = $"Copy failed: {ex.Message}";
+                Status = msg;
+                Log(msg);
             }
         }, () => LogLines.Count > 0);
+        OpenLogFolderCommand = new RelayCommand(() =>
+        {
+            // Ensure on-disk logs exist even if Log() has never been
+            // called yet — otherwise the user clicks "Open" and the OS
+            // shows an empty folder, which is confusing.
+            AppLog.Open();
+            var path = AppLog.LogDirectory;
+            if (OpenInOs.Open(path))
+                Status = $"Opened log folder: {path}";
+            else
+            {
+                Status = $"Could not open log folder: {path}";
+                Log($"Could not open log folder: {path} (try opening it manually — see Status).");
+            }
+        });
     }
 
     /// <summary>
