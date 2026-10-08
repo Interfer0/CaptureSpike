@@ -716,7 +716,18 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         while (LogLines.Count > 500) LogLines.RemoveAt(0);
     }
 
+    /// <summary>
+    /// Returns the current log as a single multi-line string (no trailing
+    /// newline). Pure function on <see cref="LogLines"/>; the join logic
+    /// lives in <see cref="CaptureSpike.Core.LogText"/> so it can be
+    /// exercised by Core.Tests without Avalonia.
+    /// </summary>
+    public string BuildLogText() => CaptureSpike.Core.LogText.Join(LogLines);
+
     public ICommand ClearLogCommand { get; }
+    public ICommand CopyLogCommand { get; }
+
+    private readonly IClipboardWriter _clipboard;
 
     private bool _isLogVisible = true;
     public bool IsLogVisible
@@ -783,8 +794,16 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         set => SetField(ref _recordingElapsed, value);
     }
 
-    public MainViewModel()
+    public MainViewModel() : this(new NoopClipboardWriter()) { }
+
+    /// <summary>
+    /// Primary constructor. The clipboard writer is injected so unit tests
+    /// can pass a stub; at runtime <c>App.OnFrameworkInitializationCompleted</c>
+    /// installs one backed by the main window's Avalonia clipboard.
+    /// </summary>
+    public MainViewModel(IClipboardWriter clipboard)
     {
+        _clipboard = clipboard;
         NewProjectCommand = new RelayCommand(() => NewProject(), () => !IsRecording);
         OpenProjectCommand = new RelayCommand(OpenProjectAsync, () => !IsRecording);
         ProjectsCommand = new RelayCommand(ShowProjectBrowser, () => !IsRecording);
@@ -816,6 +835,32 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         AddSceneSourceCommand = new RelayCommand(AddSceneSource,
             () => HasProject && !IsRecording && SelectedScene is not null && SelectedPaletteSourceToAdd is not null);
         ClearLogCommand = new RelayCommand(() => LogLines.Clear());
+        // Builds the snapshot on the UI thread (LogLines is mutated there),
+        // then hands the text to the injected clipboard. Errors land in the
+        // standard RelayCommand crash reporter so a clipboard hiccup doesn't
+        // get silently swallowed.
+        CopyLogCommand = new RelayCommand(async () =>
+        {
+            var text = BuildLogText();
+            try { await _clipboard.SetTextAsync(text); }
+            catch (Exception ex)
+            {
+                Status = $"Copy failed: {ex.Message}";
+                Log($"Copy failed: {ex.Message}");
+            }
+        }, () => LogLines.Count > 0);
+    }
+
+    /// <summary>
+    /// Fallback clipboard writer used when no real one is registered. Does
+    /// nothing; <see cref="CopyLogCommand"/> will silently succeed (so the UI
+    /// stays responsive) and just skip the system clipboard. App's startup
+    /// should install an Avalonia-backed writer — this is the safety net so
+    /// a misconfigured run doesn't crash.
+    /// </summary>
+    private sealed class NoopClipboardWriter : IClipboardWriter
+    {
+        public Task SetTextAsync(string text) => Task.CompletedTask;
     }
 
     /// <summary>

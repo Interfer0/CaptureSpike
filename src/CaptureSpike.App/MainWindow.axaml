@@ -67,6 +67,10 @@
         <Button DockPanel.Dock="Right" Classes="plain" Content="Clear"
                 Command="{Binding ClearLogCommand}" FontSize="13"
                 ToolTip.Tip="Clear the log" />
+        <Button DockPanel.Dock="Right" Classes="plain" Content="Copy"
+                Command="{Binding CopyLogCommand}" FontSize="13"
+                Margin="0,0,6,0"
+                ToolTip.Tip="Copy the log to the clipboard so you can paste it elsewhere" />
         <TextBlock Text="Log" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" />
       </DockPanel>
       <ListBox x:Name="LogListBox" ItemsSource="{Binding LogLines}" Margin="8,0,8,6"

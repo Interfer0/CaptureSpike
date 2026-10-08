@@ -1,8 +1,12 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
+
+using CaptureSpike.Core;
 
 namespace CaptureSpike.App;
 
@@ -31,7 +35,7 @@ public partial class App : Application
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            var vm = new MainViewModel();
+            var vm = new MainViewModel(new AvaloniaClipboardWriter());
             desktop.MainWindow = new MainWindow { DataContext = vm };
             SetupTrayIcon(desktop, (Window)desktop.MainWindow, vm);
         }
@@ -150,5 +154,31 @@ public partial class App : Application
             });
         }
         catch { }
+    }
+}
+
+/// <summary>
+/// Avalonia-backed implementation of <see cref="IClipboardWriter"/>.
+/// Resolves the main window lazily on first use so the writer can be
+/// constructed before the window has finished loading. Falls back to
+/// clipboard=noop if no window is available (e.g., during shutdown or
+/// in unusual lifetime modes).
+/// </summary>
+internal sealed class AvaloniaClipboardWriter : IClipboardWriter
+{
+    public async Task SetTextAsync(string text)
+    {
+        var clipboard = TryGetClipboard();
+        if (clipboard is null) return;
+        await clipboard.SetTextAsync(text);
+    }
+
+    private static Avalonia.Input.Platform.IClipboard? TryGetClipboard()
+    {
+        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() == false)
+            return null; // SetTextAsync above already marshals via the command's await
+        var window = (Avalonia.Application.Current?.ApplicationLifetime
+            as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+        return window?.Clipboard;
     }
 }
