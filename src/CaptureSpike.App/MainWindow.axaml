@@ -322,7 +322,7 @@
             </ComboBox.ItemTemplate>
           </ComboBox>
         </DockPanel>
-        <ListBox DockPanel.Dock="Top" ItemsSource="{Binding SceneSources}" MaxHeight="140">
+        <ListBox DockPanel.Dock="Top" ItemsSource="{Binding SceneSources}" MaxHeight="320">
           <ListBox.ItemTemplate>
             <DataTemplate>
               <DockPanel>
@@ -374,12 +374,12 @@
              scripts in a known format). -->
         <DockPanel DockPanel.Dock="Top" LastChildFill="True" Margin="0,0,0,4">
           <DockPanel DockPanel.Dock="Top">
-            <TextBlock Text="Script and notes" FontSize="15" Opacity="0.7" />
+            <TextBlock Text="Notes" FontSize="15" Opacity="0.7" />
             <TextBlock DockPanel.Dock="Right"
                        Text="{Binding SelectedScene.WordCountText}"
                        FontSize="14" Opacity="0.6" />
           </DockPanel>
-          <TextBox Margin="0,4,0,0" MinHeight="240"
+          <TextBox Margin="0,4,0,0" MinHeight="120"
                    Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
                    AcceptsReturn="True" TextWrapping="Wrap"
                    FontFamily="Consolas, Menlo, monospace"
