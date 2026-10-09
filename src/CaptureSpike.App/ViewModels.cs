@@ -542,6 +542,7 @@ public sealed class TakeRow : ObservableObject
 {
     public TakeRow(Take take, int number, bool isFavorite, string folderPath,
         Action<TakeRow> toggleFavorite, Action<TakeRow> delete, Action<TakeRow> openFolder,
+        Action<TakeRow> normalize,
         Func<string, string?> sourceLabel, Func<string, string?> sourceBadge,
         Action<TakeRow> playTake, Action<TakeRow> saveTake)
     {
@@ -552,6 +553,7 @@ public sealed class TakeRow : ObservableObject
         ToggleFavoriteCommand = new RelayCommand(() => toggleFavorite(this));
         DeleteCommand = new RelayCommand(() => delete(this));
         OpenFolderCommand = new RelayCommand(() => openFolder(this));
+        NormalizeCommand = new RelayCommand(() => normalize(this));
         ToggleExpandedCommand = new RelayCommand(() => IsExpanded = !IsExpanded);
         PlayTakeCommand = new RelayCommand(() => playTake(this));
         _sourceLabel = sourceLabel;
@@ -574,6 +576,7 @@ public sealed class TakeRow : ObservableObject
     public ICommand ToggleFavoriteCommand { get; }
     public ICommand DeleteCommand { get; }
     public ICommand OpenFolderCommand { get; }
+    public ICommand NormalizeCommand { get; }
     public ICommand ToggleExpandedCommand { get; }
     public ICommand PlayTakeCommand { get; }
 
@@ -1165,6 +1168,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                 continue;
             Takes.Add(new TakeRow(t, n++, t.Id == fav, _store.TakeDir(sceneFolder, t.Id),
                 ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder,
+                NormalizeTakeRow,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
                 PlayTakeMultiWindow,
@@ -1291,6 +1295,56 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         catch (Exception ex)
         {
             Status = $"Delete failed: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Normalize the take: write aligned copies of every source file
+    /// (named "&lt;name&gt;.normalized.&lt;ext&gt;") and zero the per-source
+    /// offsets. Originals are kept alongside. The take's player, if
+    /// it's currently playing this take, is unloaded first because
+    /// the underlying file references will change.
+    /// </summary>
+    private async void NormalizeTakeRow(TakeRow row)
+    {
+        if (_store is null || SelectedScene is null || IsRecording) return;
+        var label = row.DisplayName;
+        var scene = SelectedScene.Scene;
+        var takeDir = _store.TakeDir(scene.FolderName, row.Take.Id);
+        var n = row.Take.Sources.Count;
+        if (!await ConfirmAsync("Normalize take",
+                $"Normalize {label}? This writes aligned copies of {n} source file{(n == 1 ? "" : "s")} " +
+                $"and resets their offsets. Originals are kept alongside."))
+            return;
+        try
+        {
+            if (_playerTake?.Id == row.Take.Id)
+                await UnloadPlayerAsync();
+            Status = $"Normalizing {label}…";
+            var result = await CaptureSpike.Core.Playback.TakeNormalizer.NormalizeAsync(
+                takeDir, row.Take,
+                (sourceId, step, message) =>
+                {
+                    if (step is double p)
+                        Status = $"Normalize {label} [{sourceId}]: {p * 100:F0}% — {message}";
+                    else
+                        Status = $"Normalize {label}: {message}";
+                });
+            if (result.Failed.Count > 0)
+            {
+                Status = $"Normalize {label}: {result.Failed.Count} source(s) failed — {string.Join("; ", result.Failed)}";
+                return;
+            }
+            // Apply the new sources back to the take, save, and reload the take list.
+            row.Take.Sources.Clear();
+            foreach (var s in result.UpdatedSources) row.Take.Sources.Add(s);
+            _store.SaveTake(takeDir, row.Take);
+            RefreshTakes();
+            Status = $"Normalized {label}: {result.UpdatedSources.Count} source(s) aligned.";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Normalize failed: {ex.Message}";
         }
     }
 
