@@ -12,6 +12,7 @@ public partial class ProjectBrowserWindow : Window
 {
     private readonly Action<string>? _openProject;
     private readonly Action<string>? _createProject;
+    private readonly Action<string>? _renameProject;
 
     /// <summary>Parameterless ctor used by the Avalonia XAML loader.</summary>
     public ProjectBrowserWindow()
@@ -22,11 +23,15 @@ public partial class ProjectBrowserWindow : Window
         RefreshList();
     }
 
-    public ProjectBrowserWindow(Action<string> openProject, Action<string> createProject)
+    public ProjectBrowserWindow(
+        Action<string> openProject,
+        Action<string> createProject,
+        Action<string> renameProject)
         : this()
     {
         _openProject = openProject;
         _createProject = createProject;
+        _renameProject = renameProject;
     }
 
     private void RefreshList()
@@ -72,6 +77,28 @@ public partial class ProjectBrowserWindow : Window
     {
         if (_openProject is not null) OpenSelected();
         else Close();
+    }
+
+    private void OnRename(object? sender, RoutedEventArgs e)
+    {
+        if (ProjectList.SelectedItem is not ProjectEntry entry) return;
+        if (_renameProject is null) return;
+        _renameProject(entry.Dir);
+        // The VM's rename swaps the project store behind our back
+        // (and may reopen the original). Refresh so the list reflects
+        // the new name; if the renamed project happens to be the
+        // currently-open one, it'll show the new name on next paint.
+        RefreshList();
+        // Re-select the entry that was just renamed so a follow-up
+        // Rename click operates on the same row.
+        foreach (var item in ProjectList.Items)
+        {
+            if (item is ProjectEntry e2 && e2.Dir == entry.Dir)
+            {
+                ProjectList.SelectedItem = item;
+                break;
+            }
+        }
     }
 
     private void OnCreate(object? sender, RoutedEventArgs e)

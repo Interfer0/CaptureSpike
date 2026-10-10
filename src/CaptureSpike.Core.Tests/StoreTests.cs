@@ -48,4 +48,31 @@ public sealed class StoreTests
 
         Directory.Delete(dir, recursive: true);
     }
+
+    [Fact]
+    public void RenameProject_PersistsAndRoundTrips()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"cs-rename-{Guid.NewGuid():N}");
+        try
+        {
+            var store = ProjectStore.Create(dir, "Original name");
+            Assert.Equal("Original name", store.Project.Name);
+
+            // Same path the VM's RenameProjectAtAsync uses: mutate the
+            // model object, call SaveProject. Folder name is intentionally
+            // untouched — the in-app rename doesn't move files on disk.
+            store.Project.Name = "Renamed tutorial";
+            store.SaveProject();
+
+            // Round-trip via a fresh store handle so we know it really
+            // hit disk rather than just sitting on the in-memory copy.
+            var reopened = ProjectStore.Open(dir);
+            Assert.Equal("Renamed tutorial", reopened.Project.Name);
+            Assert.Equal(dir, store.ProjectDir); // folder name didn't move
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
 }

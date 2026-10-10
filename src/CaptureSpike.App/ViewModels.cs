@@ -822,6 +822,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
 
     public ICommand NewProjectCommand { get; }
     public ICommand OpenProjectCommand { get; }
+    public ICommand RenameProjectCommand { get; }
     public ICommand ProjectsCommand { get; }
     public ICommand SettingsCommand { get; }
     public ICommand AddSceneCommand { get; }
@@ -878,6 +879,8 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         _clipboard = clipboard;
         NewProjectCommand = new RelayCommand(() => NewProject(), () => !IsRecording);
         OpenProjectCommand = new RelayCommand(OpenProjectAsync, () => !IsRecording);
+        RenameProjectCommand = new RelayCommand(RenameProjectAsync,
+            () => _store is not null && !IsRecording);
         ProjectsCommand = new RelayCommand(ShowProjectBrowser, () => !IsRecording);
         SettingsCommand = new RelayCommand(ShowSettings);
         AddSceneCommand = new RelayCommand(() => Mutate(AddScene), () => HasProject);
@@ -977,7 +980,10 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             is not IClassicDesktopStyleApplicationLifetime desktop
             || desktop.MainWindow is null) return;
         if (IsRecording) return;
-        var win = new ProjectBrowserWindow(OpenProjectDir, name => NewProject(name));
+        var win = new ProjectBrowserWindow(
+            OpenProjectDir,
+            name => NewProject(name),
+            dir => RenameProjectDirAsync(dir));
         await win.ShowDialog(desktop.MainWindow);
     }
 
@@ -1015,8 +1021,8 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         foreach (var c in new[] { AddSceneCommand, DeleteSceneCommand, MoveSceneUpCommand,
                                   MoveSceneDownCommand, DeleteTakeCommand, ToggleFavoriteCommand,
                                   ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
-                                  ProjectsCommand, AddPaletteSourceCommand, AddSceneSourceCommand,
-                                  PlayerPlayPauseCommand }
+                                  RenameProjectCommand, ProjectsCommand, AddPaletteSourceCommand,
+                                  AddSceneSourceCommand, PlayerPlayPauseCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
     }
@@ -1098,6 +1104,160 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         store.AddScene("Demo");
         OpenProject(dir);
         Status = $"Created {dir}";
+    }
+
+    /// <summary>
+    /// Prompts for a new name, sanitizes it, and writes it to the
+    /// current project's project.json. Does NOT rename the on-disk
+    /// folder (the folder is the project's identity for any external
+    /// tooling — file watchers, paths in scenes, take filenames —
+    /// and a surprise move could break those). The folder can be
+    /// renamed by hand if needed.
+    /// </summary>
+    public async void RenameProjectAsync()
+    {
+        if (_store is null || IsRecording) return;
+        await RenameProjectAtAsync(_store.ProjectDir, restoreCurrent: false);
+    }
+
+    /// <summary>
+    /// Same as <see cref="RenameProjectAsync"/> but takes an explicit
+    /// project directory so the project browser can rename an
+    /// arbitrary project (not just the currently-open one). If the
+    /// requested project is the currently-open one we stay on it;
+    /// otherwise we open it, rename, and reopen whatever was open
+    /// before so the user's editing context isn't disturbed.
+    /// </summary>
+    public async void RenameProjectDirAsync(string dir)
+    {
+        if (string.IsNullOrEmpty(dir)) return;
+        if (IsRecording) return;
+        var openDir = _store?.ProjectDir;
+        await RenameProjectAtAsync(dir, restoreCurrent: openDir is not null && openDir != dir);
+    }
+
+    private async Task RenameProjectAtAsync(string dir, bool restoreCurrent)
+    {
+        string? newName = null;
+        string? oldOpenDir = null;
+        if (restoreCurrent) { oldOpenDir = _store?.ProjectDir; UnloadPlayerQuiet(); _store = null; }
+        try
+        {
+            // Open just for the rename — we close it again below.
+            var tempStore = ProjectStore.Open(dir);
+            var current = tempStore.Project.Name;
+            var input = await PromptTextAsync("Rename project",
+                "New project name:", current);
+            if (input is null) { Status = "Rename cancelled."; return; }
+            newName = input.Trim();
+            if (string.IsNullOrEmpty(newName))
+            {
+                Status = "Project name can't be empty.";
+                return;
+            }
+            if (newName == current)
+            {
+                Status = "Project name unchanged.";
+                return;
+            }
+            tempStore.Project.Name = newName;
+            tempStore.SaveProject();
+            Status = $"Renamed project to '{newName}' (folder unchanged).";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Rename failed: {ex.Message}";
+            return;
+        }
+        finally
+        {
+            if (restoreCurrent && oldOpenDir is not null && Directory.Exists(oldOpenDir))
+            {
+                try { OpenProject(oldOpenDir); }
+                catch { /* leave it unloaded if the open fails */ }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Hushes the player before a store swap so the user doesn't see
+    /// "stopped" status flicker in the UI. No-op if no player is loaded.
+    /// </summary>
+    private void UnloadPlayerQuiet() => _ = UnloadPlayerAsync();
+
+    /// <summary>
+    /// Modal single-line input dialog. Returns the entered text, or
+    /// null if the user cancelled. Enter = accept, Esc = cancel.
+    /// </summary>
+    private async Task<string?> PromptTextAsync(string title, string message,
+        string initialValue)
+    {
+        if (Avalonia.Application.Current?.ApplicationLifetime
+            is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow is null) return null;
+        var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dialog = new Avalonia.Controls.Window
+        {
+            Title = title,
+            Width = 460, Height = 180,
+            WindowStartupLocation = Avalonia.Controls.WindowStartupLocation.CenterOwner,
+        };
+        var panel = new Avalonia.Controls.StackPanel
+        {
+            Margin = new Avalonia.Thickness(16), Spacing = 12,
+        };
+        panel.Children.Add(new Avalonia.Controls.TextBlock
+        {
+            Text = message,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+        });
+        var box = new Avalonia.Controls.TextBox
+        {
+            Text = initialValue,
+            // Select-all so the user can just type a new name without
+            // having to clear the field first.
+        };
+        panel.Children.Add(box);
+        var buttons = new Avalonia.Controls.StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+        };
+        var cancel = new Avalonia.Controls.Button { Content = "Cancel" };
+        var ok = new Avalonia.Controls.Button { Content = "Rename",
+                                              IsDefault = true };
+        ok.Click += (_, _) => { tcs.TrySetResult(box.Text); dialog.Close(); };
+        cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
+        // Enter on the textbox → accept. Esc → cancel.
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key == Avalonia.Input.Key.Enter)
+            {
+                tcs.TrySetResult(box.Text);
+                dialog.Close();
+            }
+            else if (e.Key == Avalonia.Input.Key.Escape)
+            {
+                tcs.TrySetResult(null);
+                dialog.Close();
+            }
+        };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(ok);
+        panel.Children.Add(buttons);
+        dialog.Content = panel;
+        dialog.Closed += (_, _) => tcs.TrySetResult(null);
+        // Focus the textbox and select-all once it's loaded so the user
+        // can immediately type to replace the existing name.
+        dialog.Opened += (_, _) =>
+        {
+            box.Focus();
+            box.SelectAll();
+        };
+        try { await dialog.ShowDialog(desktop.MainWindow).ConfigureAwait(false); }
+        catch { tcs.TrySetResult(null); }
+        return await tcs.Task.ConfigureAwait(false);
     }
 
     private async void OpenProjectAsync()
@@ -1792,7 +1952,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         Raise(nameof(RecordButtonText));
         if (!IsRecording) RecordingElapsed = "";
         foreach (var c in new[] { ToggleRecordCommand, NewProjectCommand, OpenProjectCommand,
-                                  ProjectsCommand, PlayerPlayPauseCommand,
+                                  RenameProjectCommand, ProjectsCommand, PlayerPlayPauseCommand,
                                   DeleteSceneCommand, DeleteTakeCommand }
                  .OfType<RelayCommand>())
             c.RaiseCanExecuteChanged();
