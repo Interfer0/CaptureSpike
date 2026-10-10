@@ -58,9 +58,22 @@ public sealed class Project
     public int NamingVersion { get; set; }
     /// <summary>
     /// The project's reusable source palette. Scenes reference these by id;
-    /// takes record which palette entries they captured.
+    /// takes record which palette entries they captured. Stored in
+    /// project.json for backward compatibility with older projects, but
+    /// the live palette lives in the global <see cref="GlobalPalette"/>
+    /// — these entries are merged into the global palette on first load
+    /// and ignored after that.
     /// </summary>
     public List<ProjectSource> Sources { get; set; } = new();
+
+    /// <summary>
+    /// Per-project overrides on top of the global palette. An entry
+    /// here takes precedence over the corresponding
+    /// <see cref="ProjectSource"/> in the global palette for
+    /// <see cref="SourceOverride.Device"/> and
+    /// <see cref="SourceOverride.Badge"/>.
+    /// </summary>
+    public List<SourceOverride> SourceOverrides { get; set; } = new();
 
     public static List<ProjectSource> DefaultPalette() =>
     [
@@ -94,6 +107,31 @@ public sealed class ProjectSource
 }
 
 /// <summary>
+/// Per-project override on a global palette entry. The override can
+/// set the device selection (which physical screen / camera / mic
+/// THIS project should use), the badge (the short label like "M1"
+/// used in filenames and on chips), and the label (the longer
+/// human-readable name shown in the UI). Stored in
+/// <see cref="Project.SourceOverrides"/>.
+/// </summary>
+public sealed class SourceOverride
+{
+    /// <summary>Matches <see cref="ProjectSource.Id"/> in the global palette.</summary>
+    public string Id { get; set; } = "";
+    /// <summary>Project-specific device. Null = use the global palette's default.</summary>
+    public string? Device { get; set; }
+    /// <summary>
+    /// Project-specific badge. Empty/null = use the global palette's
+    /// default badge (or the kind's default if the global entry has none).
+    /// </summary>
+    public string? Badge { get; set; }
+    /// <summary>
+    /// Project-specific label. Null/empty = use the global palette's label.
+    /// </summary>
+    public string? Label { get; set; }
+}
+
+/// <summary>
 /// A storyboard segment: one planned chunk of the tutorial (e.g. "Intro",
 /// "Install the tools"). Holds an ordered set of takes; exactly one take may
 /// be starred as the favorite used by Export.
@@ -123,6 +161,11 @@ public sealed class Scene
     {
         var scene = new Scene { Title = title, Order = order };
 
+        // In the post-migration model, Project.Sources is empty; the
+        // palette lives in the global palette file. Load it here so
+        // new scenes can still be wired to the four default sources.
+        var palette = GlobalPalette.Load();
+
         SceneSource? Ref(string paletteId, double x, double y, double w, double h)
         {
             var want = paletteId switch
@@ -133,8 +176,8 @@ public sealed class Scene
                 "system" => SourceKind.SystemAudio,
                 _ => (SourceKind?)null,
             };
-            var def = project.Sources.FirstOrDefault(p => p.Id == paletteId)
-                ?? (want.HasValue ? project.Sources.FirstOrDefault(p => p.Kind == want.Value) : null);
+            var def = palette.Sources.FirstOrDefault(p => p.Id == paletteId)
+                ?? (want.HasValue ? palette.Sources.FirstOrDefault(p => p.Kind == want.Value) : null);
             if (def is null) return null;
             return new SceneSource { SourceId = def.Id, X = x, Y = y, Width = w, Height = h };
         }

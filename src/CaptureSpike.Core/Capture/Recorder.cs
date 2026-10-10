@@ -32,9 +32,13 @@ public sealed class Recorder : IRecorder
         // Create all capturers up front so a missing source fails before
         // any process is launched.
         var takeBaseName = Path.GetFileName(takeDir); // "Take 05"
+        // Sources live in the global palette, not the project. Load it
+        // here so the recorder can look up the source definition for
+        // each SceneSource reference.
+        var palette = GlobalPalette.Load();
         var capturers = enabled.Select(sceneSource =>
         {
-            var def = project.Sources.FirstOrDefault(p => p.Id == sceneSource.SourceId)
+            var def = palette.Sources.FirstOrDefault(p => p.Id == sceneSource.SourceId)
                 ?? throw new InvalidOperationException(
                     $"Scene '{scene.Title}' references a source that no longer exists. " +
                     "Remove it from the scene and try again.");

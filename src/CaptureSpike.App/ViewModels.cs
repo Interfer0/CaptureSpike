@@ -258,6 +258,10 @@ public sealed class PaletteSourceViewModel : ObservableObject
             var b = (value ?? "").Trim();
             if (Source.Badge == b) return;
             Source.Badge = b;
+            // Badge changes are persisted as a per-project override
+            // (SourceOverride.Badge) so the user's badge choice stays
+            // attached to this project. The same source can have a
+            // different badge in another project.
             _save();
             Raise(nameof(Badge));
             OnBadgeChanged();
@@ -671,6 +675,12 @@ public sealed class TakeRow : ObservableObject
 public sealed class MainViewModel : ObservableObject, ITransportHost
 {
     private ProjectStore? _store;
+    /// <summary>
+    /// Global palette loaded once at app start. The Sources panel
+    /// reads from this; AddPaletteSource / DeletePaletteSource mutate
+    /// it and Save() to <see cref="GlobalPalette.FilePath"/>.
+    /// </summary>
+    private GlobalPalette _palette = GlobalPalette.Load();
 
     public ObservableCollection<SceneViewModel> Scenes { get; } = new();
     public ObservableCollection<TakeRow> Takes { get; } = new();
@@ -1308,13 +1318,36 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     {
         PaletteSources.Clear();
         if (_store is null) return;
-        foreach (var p in _store.Project.Sources)
+        // The palette is global. Per-project device selections live in
+        // _store.Project.SourceOverrides (preserved across reopens by
+        // ProjectStore.MigrateToGlobalPalette). Build a quick lookup
+        // for the overrides so each VM knows which device to display
+        // as its initial selection. We build a small lookup that gives
+        // us both fields per override so the VMs render the right
+        // effective device AND badge for this project.
+        var overrides = _store.Project.SourceOverrides
+            .ToDictionary(o => o.Id);
+        foreach (var p in _palette.Sources)
         {
-            var vm = new PaletteSourceViewModel(p,
-                () => _store.SaveProject(),
+            overrides.TryGetValue(p.Id, out var ovr);
+            var effectiveDevice = !string.IsNullOrEmpty(ovr?.Device) ? ovr!.Device : p.Device;
+            var effectiveBadge = !string.IsNullOrWhiteSpace(ovr?.Badge) ? ovr!.Badge! : p.Badge;
+            // Construct the VM with a copy of the palette entry that
+            // already has the effective device + badge applied, so the
+            // dropdown shows the right initial selection. We don't
+            // mutate the global palette's entry — per-project
+            // overrides stay in the project's SourceOverrides.
+            PaletteSourceViewModel? vm = null;
+            var projectView = new ProjectSource
+            {
+                Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = effectiveBadge,
+                Device = effectiveDevice,
+            };
+            vm = new PaletteSourceViewModel(projectView,
+                () => SavePaletteSourceOverride(p.Id, vm!),
                 RefreshSceneDeviceLabels);
             vm.DeleteCommand = new RelayCommand(
-                () => Mutate(() => DeletePaletteSource(vm)),
+                () => Mutate(() => DeletePaletteSource(vm!)),
                 () => !IsRecording);
             vm.OnBadgeChanged = () => { RefreshSceneSources(); RefreshTakes(); };
             // Re-evaluate the Record gate when any source's missing-device
@@ -1337,6 +1370,39 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         // "missing" (we treat indeterminate as not-blocking). Refresh
         // after detection completes — see vm.PropertyChanged above.
         RecomputeBlockingDeviceIssue();
+    }
+
+    /// <summary>
+    /// Persists a per-project device selection for the given palette
+    /// entry id. Called from <see cref="PaletteSourceViewModel"/> via
+    /// the closure passed to its constructor. Writes the override
+    /// into <c>project.json</c> via <see cref="ProjectStore.SaveProject"/>.
+    /// </summary>
+    private void SavePaletteSourceOverride(string paletteId, PaletteSourceViewModel vm)
+    {
+        if (_store is null) return;
+        var device = vm.Source.Device;
+        var badge = vm.Source.Badge;
+        var existing = _store.Project.SourceOverrides.FirstOrDefault(o => o.Id == paletteId);
+        // Drop the override entirely if both fields are empty — that
+        // means the user is back to using the global defaults.
+        if (string.IsNullOrEmpty(device) && string.IsNullOrWhiteSpace(badge))
+        {
+            if (existing is not null) _store.Project.SourceOverrides.Remove(existing);
+        }
+        else if (existing is null)
+        {
+            _store.Project.SourceOverrides.Add(new SourceOverride
+            {
+                Id = paletteId, Device = device, Badge = badge,
+            });
+        }
+        else
+        {
+            existing.Device = device;
+            existing.Badge = badge;
+        }
+        _store.SaveProject();
     }
 
     /// <summary>
@@ -1700,33 +1766,43 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         var dialog = new AddSourceWindow();
         var result = await dialog.ShowDialog<ProjectSource?>(desktop.MainWindow!);
         if (result is null) return;
-        _store.Project.Sources.Add(result);
-        _store.SaveProject();
+        // Add to the global palette so this source is available in
+        // every project. A new GUID is generated by AddSourceWindow
+        // already; we just persist globally.
+        _palette.Add(result);
+        _palette.Save();
         Mutate(ReloadPalette);
-        Status = $"Added source \"{result.Label}\"";
+        Status = $"Added source \"{result.Label}\" to the palette.";
     }
 
     private async void DeletePaletteSource(PaletteSourceViewModel vm)
     {
         if (_store is null || IsRecording) return;
         if (!await ConfirmAsync("Delete source",
-                $"Delete source \"{vm.Label}\" from the palette? It will be removed from all scenes. This cannot be undone."))
+                $"Delete source \"{vm.Label}\" from the palette? It will be removed from all scenes in every project. This cannot be undone."))
             return;
         try
         {
             var id = vm.Source.Id;
-            _store.Project.Sources.RemoveAll(p => p.Id == id);
-            foreach (var scene in _store.LoadScenes())
+            _palette.Remove(id);
+            _palette.Save();
+            // Strip the entry from every project's SourceOverrides so
+            // a future per-project device pick doesn't dangle.
+            foreach (var projectDir in EnumerateProjectDirs())
             {
-                var removed = scene.Sources.RemoveAll(s => s.SourceId == id);
-                if (removed > 0) _store.SaveScene(scene);
+                try
+                {
+                    var s = ProjectStore.Open(projectDir);
+                    var n = s.Project.SourceOverrides.RemoveAll(o => o.Id == id);
+                    if (n > 0) s.SaveProject();
+                }
+                catch { /* skip projects that fail to open */ }
             }
-            // Also remove from the in-memory scenes the UI is holding;
-            // otherwise the dangling reference stays enabled and breaks
-            // the next recording.
+            // Also remove from the in-memory scenes the UI is holding
+            // for the current project; otherwise the dangling reference
+            // stays enabled and breaks the next recording.
             foreach (var svm in Scenes)
                 svm.Scene.Sources.RemoveAll(s => s.SourceId == id);
-            _store.SaveProject();
             ReloadPalette();
             RefreshSceneSources();
             Status = $"Deleted source \"{vm.Label}\"";
@@ -1734,6 +1810,22 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         catch (Exception ex)
         {
             Status = $"Delete failed: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Enumerates every project directory under <see cref="AppSettings.ProjectsDir"/>.
+    /// Used to clean up <c>SourceOverrides</c> after a palette entry
+    /// is deleted globally.
+    /// </summary>
+    private static IEnumerable<string> EnumerateProjectDirs()
+    {
+        var root = AppSettings.ProjectsDir;
+        if (!Directory.Exists(root)) yield break;
+        foreach (var dir in Directory.GetDirectories(root))
+        {
+            if (File.Exists(Path.Combine(dir, "project.json")))
+                yield return dir;
         }
     }
 
