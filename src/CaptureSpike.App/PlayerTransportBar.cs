@@ -150,23 +150,23 @@ public sealed class PlayerTransportBar : ContentControl
         //                   polled position (EndScrubFromBar).
         if (_scrubbing) return;
         // If we're awaiting a seek, decide whether to keep the slider
-        // frozen (player hasn't caught up yet) or resume tracking.
-        // Resume when the polled position has converged on the target
-        // (or moved past it after a play-while-frozen).
+        // frozen or resume tracking the live position.
+        //
+        // We resume only when the polled position is within ±0.25s of
+        // the user's chosen target. That's the moment mpv reports the
+        // new time-pos. We deliberately don't have a "played past the
+        // target" early-out: if the user rewinds to 20 and the player
+        // was at 30, they want the slider at 20, not 30 — letting the
+        // polled position through while pos is still ahead of target
+        // would snap the slider back to 30 (the bug behind "I have to
+        // click several times to get it to work").
         if (_awaitingSeek)
         {
             var posSec = pos.TotalSeconds;
-            if (Math.Abs(posSec - _scrubTarget) < 0.25 ||
-                posSec > _scrubTarget + 0.25)
-            {
+            if (Math.Abs(posSec - _scrubTarget) < 0.25)
                 _awaitingSeek = false;
-            }
             else
-            {
-                // Still settling: leave the slider where the user
-                // dropped it, don't fight them.
-                return;
-            }
+                return; // still settling — leave the slider alone
         }
         _slider.Value = Math.Max(0, pos.TotalSeconds);
     }
