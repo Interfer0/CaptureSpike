@@ -57,23 +57,17 @@ public sealed class Project
     /// </summary>
     public int NamingVersion { get; set; }
     /// <summary>
-    /// The project's reusable source palette. Scenes reference these by id;
-    /// takes record which palette entries they captured. Stored in
-    /// project.json for backward compatibility with older projects, but
-    /// the live palette lives in the global <see cref="GlobalPalette"/>
-    /// — these entries are merged into the global palette on first load
-    /// and ignored after that.
+    /// Legacy per-project palette (pre-global-palette). Scenes still
+    /// reference palette entries by id, and takes record which palette
+    /// entries they captured, but the live palette lives in the
+    /// global <see cref="GlobalPalette"/> at
+    /// <c>%APPDATA%/CaptureSpike/palette.json</c>. This field is
+    /// still deserialized for backward compat with older projects and
+    /// is migrated into the global palette on first open (see
+    /// <c>ProjectStore.MigrateToGlobalPalette</c>); it is never
+    /// written.
     /// </summary>
     public List<ProjectSource> Sources { get; set; } = new();
-
-    /// <summary>
-    /// Per-project overrides on top of the global palette. An entry
-    /// here takes precedence over the corresponding
-    /// <see cref="ProjectSource"/> in the global palette for
-    /// <see cref="SourceOverride.Device"/> and
-    /// <see cref="SourceOverride.Badge"/>.
-    /// </summary>
-    public List<SourceOverride> SourceOverrides { get; set; } = new();
 
     public static List<ProjectSource> DefaultPalette() =>
     [
@@ -104,31 +98,6 @@ public sealed class ProjectSource
     /// <summary>Custom badge if set, otherwise the kind's default badge.</summary>
     public string EffectiveBadge() =>
         string.IsNullOrWhiteSpace(Badge) ? Kind.Badge() : Badge.Trim().ToUpperInvariant();
-}
-
-/// <summary>
-/// Per-project override on a global palette entry. The override can
-/// set the device selection (which physical screen / camera / mic
-/// THIS project should use), the badge (the short label like "M1"
-/// used in filenames and on chips), and the label (the longer
-/// human-readable name shown in the UI). Stored in
-/// <see cref="Project.SourceOverrides"/>.
-/// </summary>
-public sealed class SourceOverride
-{
-    /// <summary>Matches <see cref="ProjectSource.Id"/> in the global palette.</summary>
-    public string Id { get; set; } = "";
-    /// <summary>Project-specific device. Null = use the global palette's default.</summary>
-    public string? Device { get; set; }
-    /// <summary>
-    /// Project-specific badge. Empty/null = use the global palette's
-    /// default badge (or the kind's default if the global entry has none).
-    /// </summary>
-    public string? Badge { get; set; }
-    /// <summary>
-    /// Project-specific label. Null/empty = use the global palette's label.
-    /// </summary>
-    public string? Label { get; set; }
 }
 
 /// <summary>

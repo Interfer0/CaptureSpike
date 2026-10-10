@@ -2,10 +2,10 @@ namespace CaptureSpike.Core;
 
 /// <summary>
 /// One reusable capture device available across every project — a screen,
-/// a webcam, a microphone, or a system-audio loopback. The <see cref="Device"/>
-/// field on a palette entry is the *default* device the user picked last
-/// time; each project can override it per-project via
-/// <see cref="Project.SourceOverrides"/>.
+/// a webcam, a microphone, or a system-audio loopback. The <see cref="Device"/>,
+/// <see cref="ProjectSource.Badge"/>, and <see cref="ProjectSource.Label"/>
+/// fields are global — there are no per-project overrides anymore. Every
+/// project uses the same set of sources with the same configuration.
 /// </summary>
 public sealed class GlobalPalette
 {

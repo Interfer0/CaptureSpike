@@ -1384,33 +1384,24 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     {
         PaletteSources.Clear();
         if (_store is null) return;
-        // The palette is global. Per-project device selections live in
-        // _store.Project.SourceOverrides (preserved across reopens by
-        // ProjectStore.MigrateToGlobalPalette). Build a quick lookup
-        // for the overrides so each VM knows which device to display
-        // as its initial selection. We build a small lookup that gives
-        // us both fields per override so the VMs render the right
-        // effective device AND badge for this project.
-        var overrides = _store.Project.SourceOverrides
-            .ToDictionary(o => o.Id);
+        // The palette is fully global — there's no per-project state
+        // anymore. Each VM is a thin wrapper over the live global
+        // entry, and edits write straight back to the global palette.
         foreach (var p in _palette.Sources)
         {
-            overrides.TryGetValue(p.Id, out var ovr);
-            var effectiveDevice = !string.IsNullOrEmpty(ovr?.Device) ? ovr!.Device : p.Device;
-            var effectiveBadge = !string.IsNullOrWhiteSpace(ovr?.Badge) ? ovr!.Badge! : p.Badge;
-            // Construct the VM with a copy of the palette entry that
-            // already has the effective device + badge applied, so the
-            // dropdown shows the right initial selection. We don't
-            // mutate the global palette's entry — per-project
-            // overrides stay in the project's SourceOverrides.
-            PaletteSourceViewModel? vm = null;
+            // Pass a copy of the global entry so the VM can mutate its
+            // own Badge/Device without surprising the user with
+            // mid-edit changes to the global palette from elsewhere.
+            // (ProjectSource is a class; without the copy, RefreshPalette
+            // would show whatever the last picker set across reloads.)
             var projectView = new ProjectSource
             {
-                Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = effectiveBadge,
-                Device = effectiveDevice,
+                Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = p.Badge,
+                Device = p.Device,
             };
+            PaletteSourceViewModel? vm = null;
             vm = new PaletteSourceViewModel(projectView,
-                () => SavePaletteSourceOverride(p.Id, vm!),
+                () => SavePaletteSource(p.Id, vm!),
                 RefreshSceneDeviceLabels);
             vm.DeleteCommand = new RelayCommand(
                 () => Mutate(() => DeletePaletteSource(vm!)),
@@ -1439,63 +1430,27 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     }
 
     /// <summary>
-    /// Persists a per-project device selection for the given palette
-    /// entry id. Called from <see cref="PaletteSourceViewModel"/> via
-    /// the closure passed to its constructor. Writes the override
-    /// into <c>project.json</c> via <see cref="ProjectStore.SaveProject"/>.
+    /// Persists the user's edits to a palette entry (device, badge,
+    /// label) straight into the global palette. There is no per-
+    /// project override anymore — every project sees the same set
+    /// of sources with the same configuration.
     /// </summary>
-    private void SavePaletteSourceOverride(string paletteId, PaletteSourceViewModel vm)
+    private void SavePaletteSource(string paletteId, PaletteSourceViewModel vm)
     {
         if (_store is null) return;
-        var device = vm.Source.Device;
-        var badge = vm.Source.Badge;
-        DebugPalette($"save: paletteId={paletteId} device={device ?? "<null>"} badge={badge ?? "<null>"}");
-        var existing = _store.Project.SourceOverrides.FirstOrDefault(o => o.Id == paletteId);
-        // Drop the override entirely if both fields are empty — that
-        // means the user is back to using the global defaults.
-        if (string.IsNullOrEmpty(device) && string.IsNullOrWhiteSpace(badge))
-        {
-            if (existing is not null) _store.Project.SourceOverrides.Remove(existing);
-        }
-        else if (existing is null)
-        {
-            _store.Project.SourceOverrides.Add(new SourceOverride
-            {
-                Id = paletteId, Device = device, Badge = badge,
-            });
-        }
-        else
-        {
-            existing.Device = device;
-            existing.Badge = badge;
-        }
-        _store.SaveProject();
-        // Mirror the picked device to the global palette's default
-        // so newly-created projects (which have no per-project
-        // overrides yet) inherit the user's recent choice instead
-        // of falling back to the OS default. The per-project
-        // override above still wins for the current project, so
-        // existing projects that have already committed to a
-        // different device per project are unaffected.
-        if (!string.IsNullOrEmpty(device))
-        {
-            var entry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
-            if (entry is not null)
-            {
-                var changed = entry.Device != device;
-                DebugPalette($"mirror: palette entry {paletteId} device {entry.Device ?? "<null>"} -> {device} (changed={changed})");
-                if (changed)
-                {
-                    entry.Device = device;
-                    try { _palette.Save(); }
-                    catch (Exception ex) { DebugPalette($"mirror: save FAILED: {ex.Message}"); throw; }
-                }
-            }
-            else
-            {
-                DebugPalette($"mirror: NO palette entry for {paletteId}");
-            }
-        }
+        var entry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
+        if (entry is null) return;
+        DebugPalette($"save: paletteId={paletteId} device={vm.Source.Device ?? "<null>"} badge={vm.Source.Badge ?? "<null>"}");
+        var changed = false;
+        if (entry.Device != vm.Source.Device) { entry.Device = vm.Source.Device; changed = true; }
+        if (entry.Badge != vm.Source.Badge) { entry.Badge = vm.Source.Badge; changed = true; }
+        if (entry.Label != vm.Source.Label) { entry.Label = vm.Source.Label; changed = true; }
+        if (!changed) return;
+        try { _palette.Save(); }
+        catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
+        // No project.json to write — the project's palette section is
+        // a legacy field kept only for reading older files. The change
+        // lives in palette.json and is shared across every project.
     }
 
     // Diagnostic logging for palette save debugging. Off by default;
@@ -1905,21 +1860,11 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             var id = vm.Source.Id;
             _palette.Remove(id);
             _palette.Save();
-            // Strip the entry from every project's SourceOverrides so
-            // a future per-project device pick doesn't dangle.
-            foreach (var projectDir in EnumerateProjectDirs())
-            {
-                try
-                {
-                    var s = ProjectStore.Open(projectDir);
-                    var n = s.Project.SourceOverrides.RemoveAll(o => o.Id == id);
-                    if (n > 0) s.SaveProject();
-                }
-                catch { /* skip projects that fail to open */ }
-            }
-            // Also remove from the in-memory scenes the UI is holding
-            // for the current project; otherwise the dangling reference
-            // stays enabled and breaks the next recording.
+            // Strip from the in-memory scenes the UI is holding for the
+            // current project; otherwise the dangling reference stays
+            // enabled and breaks the next recording. Other projects
+            // have their own scene state in memory; they'll be cleaned
+            // up next time they open.
             foreach (var svm in Scenes)
                 svm.Scene.Sources.RemoveAll(s => s.SourceId == id);
             ReloadPalette();
@@ -1929,22 +1874,6 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         catch (Exception ex)
         {
             Status = $"Delete failed: {ex.Message}";
-        }
-    }
-
-    /// <summary>
-    /// Enumerates every project directory under <see cref="AppSettings.ProjectsDir"/>.
-    /// Used to clean up <c>SourceOverrides</c> after a palette entry
-    /// is deleted globally.
-    /// </summary>
-    private static IEnumerable<string> EnumerateProjectDirs()
-    {
-        var root = AppSettings.ProjectsDir;
-        if (!Directory.Exists(root)) yield break;
-        foreach (var dir in Directory.GetDirectories(root))
-        {
-            if (File.Exists(Path.Combine(dir, "project.json")))
-                yield return dir;
         }
     }
 

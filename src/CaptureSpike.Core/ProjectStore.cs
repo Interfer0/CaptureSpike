@@ -75,12 +75,10 @@ public sealed class ProjectStore
     /// One-time migration of the per-project palette into the global
     /// palette. Any <see cref="ProjectSource"/> in this project's
     /// <c>Sources</c> is added to the global palette (dedup by id;
-    /// existing entries are preserved). Any per-source <c>Device</c>
-    /// and <c>Badge</c> selections are preserved as
-    /// <see cref="SourceOverride"/> entries on this project so the
-    /// user keeps the device and badge they had picked. Safe to call
-    /// repeatedly — once a project has empty <c>Sources</c> AND the
-    /// global palette contains all of them, it's a no-op.
+    /// existing entries are preserved with their current device /
+    /// badge / label). Safe to call repeatedly — once a project has
+    /// empty <c>Sources</c> AND the global palette contains all of
+    /// them, it's a no-op.
     /// </summary>
     private void MigrateToGlobalPalette()
     {
@@ -89,35 +87,27 @@ public sealed class ProjectStore
         var changed = false;
         foreach (var src in Project.Sources)
         {
-            if (!palette.Contains(src.Id))
+            var entry = palette.Sources.FirstOrDefault(s => s.Id == src.Id);
+            if (entry is null)
             {
                 palette.Add(src);
                 changed = true;
             }
-            // Preserve any per-source device / badge / label selection
-            // as an override. These are project-specific (different
-            // projects might pick different devices, badges, or
-            // labels for the same palette id), so they stay out of
-            // the global palette.
-            var existing = Project.SourceOverrides.FirstOrDefault(o => o.Id == src.Id);
-            if (existing is null &&
-                (!string.IsNullOrEmpty(src.Device)
-                 || !string.IsNullOrWhiteSpace(src.Badge)
-                 || !string.IsNullOrWhiteSpace(src.Label)))
+            else
             {
-                Project.SourceOverrides.Add(new SourceOverride
-                {
-                    Id = src.Id, Device = src.Device, Badge = src.Badge, Label = src.Label,
-                });
-            }
-            else if (existing is not null)
-            {
-                if (!string.IsNullOrEmpty(src.Device) && existing.Device != src.Device)
-                    existing.Device = src.Device;
-                if (!string.IsNullOrWhiteSpace(src.Badge) && existing.Badge != src.Badge)
-                    existing.Badge = src.Badge;
-                if (!string.IsNullOrWhiteSpace(src.Label) && existing.Label != src.Label)
-                    existing.Label = src.Label;
+                // Source id is already in the global palette. Pick up
+                // any project-specific customizations (label, badge,
+                // device) the project had so the migration preserves
+                // what the user picked. The first project to write wins
+                // for any given id — this is fine for our single-user
+                // case (the global palette is global, the project
+                // can't pick something different later anyway).
+                if (!string.IsNullOrEmpty(src.Device) && entry.Device != src.Device)
+                { entry.Device = src.Device; changed = true; }
+                if (!string.IsNullOrWhiteSpace(src.Badge) && entry.Badge != src.Badge)
+                { entry.Badge = src.Badge; changed = true; }
+                if (!string.IsNullOrWhiteSpace(src.Label) && entry.Label != src.Label)
+                { entry.Label = src.Label; changed = true; }
             }
         }
         if (changed) palette.Save();
@@ -316,18 +306,11 @@ public sealed class ProjectStore
 
     private (string baseName, string ext) MediaFileBase(string sceneTitle, string takeBaseName, TakeSource ts)
     {
-        // Look up the badge and label in the global palette, with
-        // per-project overrides taking precedence. The Sources field
-        // on the project is empty in the post-migration model; the
-        // global palette is the source of truth.
-        var global = GlobalPalette.Load();
-        var palette = global.Sources.FirstOrDefault(p => p.Id == ts.Id);
-        var ovr = Project.SourceOverrides.FirstOrDefault(o => o.Id == ts.Id);
-        var badge = !string.IsNullOrWhiteSpace(ovr?.Badge)
-            ? ovr!.Badge!.Trim().ToUpperInvariant()
-            : palette?.EffectiveBadge() ?? ts.Kind.Badge();
-        var label = !string.IsNullOrWhiteSpace(ovr?.Label) ? ovr!.Label! :
-                    palette?.Label ?? ts.Kind.DefaultLabel();
+        // The badge and label come from the global palette — there
+        // are no per-project overrides anymore.
+        var palette = GlobalPalette.Load().Sources.FirstOrDefault(p => p.Id == ts.Id);
+        var badge = palette?.EffectiveBadge() ?? ts.Kind.Badge();
+        var label = palette?.Label ?? ts.Kind.DefaultLabel();
         var ext = Path.GetExtension(ts.File);
         if (string.IsNullOrEmpty(ext)) ext = ts.Kind.IsVideo() ? ".mkv" : ".wav";
         var baseName = string.Join("-", new[]

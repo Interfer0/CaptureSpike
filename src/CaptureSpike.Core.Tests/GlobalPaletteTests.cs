@@ -70,8 +70,7 @@ public sealed class GlobalPaletteTests : IDisposable
         // The migration runs inside ProjectStore.Open. Build a fake
         // project.json with a per-project palette that has explicit
         // device selections, run Open, and verify the global palette
-        // got those entries and the project's SourceOverrides carries
-        // the device through.
+        // got those entries (with their device / label preserved).
         var projectDir = Path.Combine(_dir, "proj1.csp");
         Directory.CreateDirectory(projectDir);
         Directory.CreateDirectory(Path.Combine(projectDir, "scenes"));
@@ -97,30 +96,17 @@ public sealed class GlobalPaletteTests : IDisposable
 
         var store = ProjectStore.Open(projectDir);
 
-        // After migration, the project's Sources is empty.
+        // After migration, the project's Sources is empty (live data
+        // is in the global palette).
         Assert.Empty(store.Project.Sources);
-        // And the per-project device is preserved as an override.
-        var screenOverride = store.Project.SourceOverrides
-            .FirstOrDefault(o => o.Id == "screen");
-        Assert.NotNull(screenOverride);
-        Assert.Equal("DisplayPort-0", screenOverride!.Device);
-        // The webcam had no device but did have a custom label, so it
-        // got an override carrying the label. (Every field with a
-        // non-default value lands in the override table — the goal
-        // is to preserve the project's selections across migration.)
-        var webcamOverride = store.Project.SourceOverrides
-            .FirstOrDefault(o => o.Id == "webcam");
-        Assert.NotNull(webcamOverride);
-
-        // The global palette got the entries migrated.
+        // The global palette got the entries migrated. The device
+        // field on each source is preserved verbatim — whatever the
+        // project had, the global palette now has.
         var global = GlobalPalette.Load();
-        Assert.Contains(global.Sources, s => s.Id == "screen");
-        Assert.Contains(global.Sources, s => s.Id == "webcam");
-        // The global palette's default device is unchanged (we don't
-        // copy the project's device into the global entry — per-project
-        // device is the override's job).
-        var globalScreen = global.Sources.First(s => s.Id == "screen");
-        Assert.Null(globalScreen.Device);
+        var screen = global.Sources.First(s => s.Id == "screen");
+        Assert.Equal("DisplayPort-0", screen.Device);
+        var webcam = global.Sources.First(s => s.Id == "webcam");
+        Assert.Null(webcam.Device);
     }
 
     [Fact]
