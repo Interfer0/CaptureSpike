@@ -1383,6 +1383,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (_store is null) return;
         var device = vm.Source.Device;
         var badge = vm.Source.Badge;
+        DebugPalette($"save: paletteId={paletteId} device={device ?? "<null>"} badge={badge ?? "<null>"}");
         var existing = _store.Project.SourceOverrides.FirstOrDefault(o => o.Id == paletteId);
         // Drop the override entirely if both fields are empty — that
         // means the user is back to using the global defaults.
@@ -1413,12 +1414,35 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (!string.IsNullOrEmpty(device))
         {
             var entry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
-            if (entry is not null && entry.Device != device)
+            if (entry is not null)
             {
-                entry.Device = device;
-                _palette.Save();
+                var changed = entry.Device != device;
+                DebugPalette($"mirror: palette entry {paletteId} device {entry.Device ?? "<null>"} -> {device} (changed={changed})");
+                if (changed)
+                {
+                    entry.Device = device;
+                    try { _palette.Save(); }
+                    catch (Exception ex) { DebugPalette($"mirror: save FAILED: {ex.Message}"); throw; }
+                }
+            }
+            else
+            {
+                DebugPalette($"mirror: NO palette entry for {paletteId}");
             }
         }
+    }
+
+    // Diagnostic logging for palette save debugging. Off by default;
+    // set CAPTURESPIKE_PALETTE_TRACE=1 in the environment to enable.
+    private static bool PaletteTraceEnabled =>
+        System.Environment.GetEnvironmentVariable("CAPTURESPIKE_PALETTE_TRACE") == "1";
+    private void DebugPalette(string msg)
+    {
+        if (!PaletteTraceEnabled) return;
+        if (Avalonia.Application.Current?.ApplicationLifetime
+            is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow?.DataContext is not MainViewModel vm) return;
+        vm.Log($"[palette] {msg}");
     }
 
     /// <summary>
