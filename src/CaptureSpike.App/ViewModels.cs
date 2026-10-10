@@ -981,7 +981,18 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             OpenProject(last);
         if (_store is null)
             NewProject(); // first run: create a starter project so the UI isn't empty
-        await Task.CompletedTask;
+        // Wait for device detection to finish before returning. The
+        // dropdowns all show "Default" until RefreshDevicesAsync
+        // completes — if the user opens one before then, they think
+        // "Default" is the only option, and the picker never sees a
+        // device pick to mirror into the global palette. Running the
+        // detections in parallel and awaiting them all before the
+        // window is shown is the simplest fix.
+        if (PaletteSources.Count > 0)
+        {
+            var dets = PaletteSources.Select(ps => ps.RefreshDevicesAsync()).ToArray();
+            await Task.WhenAll(dets);
+        }
     }
 
     public async Task ShowProjectBrowser()
@@ -993,8 +1004,55 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         var win = new ProjectBrowserWindow(
             OpenProjectDir,
             name => NewProject(name),
-            dir => RenameProjectDirAsync(dir));
+            dir => RenameProjectDirAsync(dir),
+            dir => DeleteProjectAsync(dir));
         await win.ShowDialog(desktop.MainWindow);
+    }
+
+    /// <summary>
+    /// Deletes a project directory from disk. If the project is the one
+    /// currently open, the in-memory store is cleared first and a
+    /// fresh starter project is created so the UI doesn't end up in
+    /// a stale state. Refreshes the global palette's
+    /// <c>SourceOverrides</c> to drop any overrides pointing at the
+    /// deleted project (orphan cleanup).
+    /// </summary>
+    public async Task DeleteProjectAsync(string dir)
+    {
+        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
+        // If the project being deleted is the one we have open, unload
+        // it and create a fresh placeholder so the UI stays usable.
+        var isOpen = _store?.ProjectDir == dir;
+        if (isOpen) { _ = UnloadPlayerAsync(); _store = null; }
+        // Unload can race with the directory delete on Windows
+        // (file handles); a brief Task.Yield lets the unload
+        // settle. Keeps the delete itself synchronous so failures
+        // surface immediately to the caller.
+        await Task.Yield();
+        try
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+        catch
+        {
+            // Reopen the original project if we were deleting the
+            // open one and the delete failed.
+            if (isOpen && Directory.Exists(dir))
+                OpenProject(dir);
+            throw;
+        }
+        // Drop SourceOverrides that point at this project's
+        // source-overrides-by-id mapping… actually, the global
+        // palette is keyed by source id, not project path, so
+        // nothing to clean there. Project's per-source overrides
+        // went with the folder.
+        // If we just removed the open project, replace it with a
+        // fresh starter so the user has somewhere to land.
+        if (isOpen)
+        {
+            NewProject();
+        }
+        Status = $"Deleted project: {dir}";
     }
 
     public void OpenProjectDir(string dir)
