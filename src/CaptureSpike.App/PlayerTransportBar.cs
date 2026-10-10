@@ -27,6 +27,17 @@ public sealed class PlayerTransportBar : ContentControl
     private readonly DispatcherTimer _poll;
     private ITransportHost? _host;
     private bool _scrubbing;
+    // Captured during PointerPressed → PointerReleased so the seek
+    // uses the value the user actually chose. Reading _slider.Value
+    // directly at release is unreliable in Avalonia 12 (the property
+    // can be one frame behind the visual thumb when the user clicks
+    // somewhere on the track, or stale while a drag is in flight).
+    private double _scrubTarget;
+    // True from the moment we issue a seek until the player's Position
+    // catches up. While set, RefreshFromHost ignores the polled position
+    // and lets the slider keep the user's chosen value, so backward
+    // scrubs no longer snap back to the live playhead.
+    private bool _awaitingSeek;
 
     public PlayerTransportBar()
     {
@@ -61,12 +72,16 @@ public sealed class PlayerTransportBar : ContentControl
             VerticalAlignment = VerticalAlignment.Center,
             Minimum = 0,
         };
+        // Capture every value change between PointerPressed and
+        // PointerReleased. This way the seek uses the exact value the
+        // user chose even if Avalonia's slider state is a frame behind.
         _slider.PointerPressed += OnSliderPressed;
         _slider.PointerReleased += OnSliderReleased;
+        _slider.ValueChanged += OnSliderValueChanged;
         // If the pointer leaves the slider mid-drag (e.g., focus stolen,
         // drag off the thumb) PointerReleased may never fire — release
         // the scrub flag so the slider doesn't get stuck.
-        _slider.PointerCaptureLost += (_, _) => ClearScrubSoon();
+        _slider.PointerCaptureLost += (_, _) => EndScrubFromBar();
 
         // Layout: a DockPanel so the buttons sit on the left, slider
         // stretches, time label pins to the right.
@@ -123,8 +138,37 @@ public sealed class PlayerTransportBar : ContentControl
         _playPauseBtn.Content = _host.PlayPauseGlyph;
         _timeText.Text = $"{FormatTime(pos)} / {FormatTime(dur)}";
         _slider.Maximum = Math.Max(0, dur.TotalSeconds);
-        if (!_scrubbing)
-            _slider.Value = Math.Max(0, pos.TotalSeconds);
+        // Two guards keep the slider from snapping:
+        //   _scrubbing   — the user is mid-drag, don't fight the thumb.
+        //   _awaitingSeek — a seek has been issued and the player's
+        //                   Position hasn't caught up yet. Letting the
+        //                   polled position through here would drag
+        //                   the slider back to the pre-seek location
+        //                   and was the source of the "backward seek
+        //                   doesn't work" bug. The flag is cleared
+        //                   when the slider's Value converges on the
+        //                   polled position (EndScrubFromBar).
+        if (_scrubbing) return;
+        // If we're awaiting a seek, decide whether to keep the slider
+        // frozen (player hasn't caught up yet) or resume tracking.
+        // Resume when the polled position has converged on the target
+        // (or moved past it after a play-while-frozen).
+        if (_awaitingSeek)
+        {
+            var posSec = pos.TotalSeconds;
+            if (Math.Abs(posSec - _scrubTarget) < 0.25 ||
+                posSec > _scrubTarget + 0.25)
+            {
+                _awaitingSeek = false;
+            }
+            else
+            {
+                // Still settling: leave the slider where the user
+                // dropped it, don't fight them.
+                return;
+            }
+        }
+        _slider.Value = Math.Max(0, pos.TotalSeconds);
     }
 
     private static string FormatTime(TimeSpan t) =>
@@ -135,30 +179,40 @@ public sealed class PlayerTransportBar : ContentControl
     private void OnSliderPressed(object? sender, PointerPressedEventArgs e)
     {
         _scrubbing = true;
+        // Seed the target with the value the user just clicked on so
+        // OnSliderReleased can use it even if no ValueChanged event
+        // fires between press and release (e.g., a static click on
+        // a single pixel where the thumb already sits).
+        _scrubTarget = _slider.Value;
+    }
+
+    private void OnSliderValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        // While the user is actively scrubbing, remember the value
+        // they ended up at so OnSliderReleased seeks to exactly that.
+        if (_scrubbing)
+            _scrubTarget = e.NewValue;
     }
 
     private void OnSliderReleased(object? sender, PointerReleasedEventArgs e)
     {
-        // Issue the seek, but keep _scrubbing = true so the next
-        // RefreshFromHost tick doesn't snap the slider back to the
-        // stale player position (which lags behind the seek).
-        // ClearScrubSoon() releases the flag after the seek has had
-        // time to propagate through _player.Position.
-        if (_host is not null && _slider.Value >= 0)
-        {
-            var target = _slider.Value;
-            _host.SeekTo(target);
-        }
-        ClearScrubSoon();
+        EndScrubFromBar();
     }
 
-    /// <summary>Defers releasing the scrub flag by ~350ms so the in-flight
-    /// seek completes and the player's position updates before the
-    /// next timer tick reasserts the slider value.</summary>
-    private void ClearScrubSoon()
+    /// <summary>
+    /// Issue the seek to the value the user chose, then keep the slider
+    /// frozen at that value until the player's position catches up.
+    /// </summary>
+    private void EndScrubFromBar()
     {
-        Avalonia.Threading.Dispatcher.UIThread.Post(() => _scrubbing = false,
-            Avalonia.Threading.DispatcherPriority.Background);
+        _scrubbing = false;
+        if (_host is null) return;
+        if (_scrubTarget < 0) { _scrubTarget = 0; }
+        _host.SeekTo(_scrubTarget);
+        // Hold the slider at the user's chosen value until the
+        // player's polled Position converges — see _awaitingSeek in
+        // RefreshFromHost. Cleared there once the position lands.
+        _awaitingSeek = true;
     }
 
     private static IBrush Brush(string key) =>
