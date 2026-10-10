@@ -3,6 +3,8 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using CaptureSpike.Core;
 
+using System.Threading.Tasks;
+
 namespace CaptureSpike.App;
 
 /// <summary>One project folder in the library.</summary>
@@ -12,7 +14,7 @@ public partial class ProjectBrowserWindow : Window
 {
     private readonly Action<string>? _openProject;
     private readonly Action<string>? _createProject;
-    private readonly Action<string>? _renameProject;
+    private readonly Func<string, Task>? _renameProject;
 
     /// <summary>Parameterless ctor used by the Avalonia XAML loader.</summary>
     public ProjectBrowserWindow()
@@ -26,7 +28,7 @@ public partial class ProjectBrowserWindow : Window
     public ProjectBrowserWindow(
         Action<string> openProject,
         Action<string> createProject,
-        Action<string> renameProject)
+        Func<string, Task> renameProject)
         : this()
     {
         _openProject = openProject;
@@ -83,22 +85,27 @@ public partial class ProjectBrowserWindow : Window
     {
         if (ProjectList.SelectedItem is not ProjectEntry entry) return;
         if (_renameProject is null) return;
-        _renameProject(entry.Dir);
-        // The VM's rename swaps the project store behind our back
-        // (and may reopen the original). Refresh so the list reflects
-        // the new name; if the renamed project happens to be the
-        // currently-open one, it'll show the new name on next paint.
-        RefreshList();
-        // Re-select the entry that was just renamed so a follow-up
-        // Rename click operates on the same row.
-        foreach (var item in ProjectList.Items)
+        // Hand the rename off to the VM and refresh the list only
+        // when the VM is done — otherwise we'd read the project.json
+        // before the new name has been written to disk.
+        _renameProject(entry.Dir).ContinueWith(_ =>
         {
-            if (item is ProjectEntry e2 && e2.Dir == entry.Dir)
+            // Back on the UI thread to mutate the ListBox.
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
-                ProjectList.SelectedItem = item;
-                break;
-            }
-        }
+                RefreshList();
+                // Re-select the entry that was just renamed so a follow-up
+                // Rename click operates on the same row.
+                foreach (var item in ProjectList.Items)
+                {
+                    if (item is ProjectEntry e2 && e2.Dir == entry.Dir)
+                    {
+                        ProjectList.SelectedItem = item;
+                        break;
+                    }
+                }
+            });
+        }, TaskScheduler.Default);
     }
 
     private void OnCreate(object? sender, RoutedEventArgs e)

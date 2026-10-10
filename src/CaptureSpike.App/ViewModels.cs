@@ -1128,7 +1128,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     /// otherwise we open it, rename, and reopen whatever was open
     /// before so the user's editing context isn't disturbed.
     /// </summary>
-    public async void RenameProjectDirAsync(string dir)
+    public async Task RenameProjectDirAsync(string dir)
     {
         if (string.IsNullOrEmpty(dir)) return;
         if (IsRecording) return;
