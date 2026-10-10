@@ -50,8 +50,10 @@ public sealed class StoreTests
         Assert.Empty(store.Project.Sources);
         var global = GlobalPalette.Load();
         Assert.Equal(4, global.Sources.Count);
-        // The new scene was created with the four default sources wired in.
-        Assert.Equal(4, scene.Sources.Count);
+        // The new scene was created with screen + mic by default; the
+        // rest are opt-in via the scene's + Add picker (otherwise the
+        // picker has nothing to offer and the project feels locked).
+        Assert.Equal(2, scene.Sources.Count);
         Assert.All(scene.Sources,
             s => Assert.Contains(global.Sources, p => p.Id == s.SourceId));
 

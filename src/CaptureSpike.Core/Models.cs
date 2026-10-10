@@ -182,13 +182,18 @@ public sealed class Scene
             return new SceneSource { SourceId = def.Id, X = x, Y = y, Width = w, Height = h };
         }
 
-        foreach (var id in new[] { "screen", "webcam", "mic", "system" })
+        // Wire the minimum useful sources by default: screen (the main
+        // capture) and mic (the spoken audio). Webcam and system audio
+        // are optional extras — pre-wiring everything means the
+        // "Sources in scene" add picker has nothing left to offer, so
+        // new projects feel locked. The user can add the rest via the
+        // scene's "+ Add" picker.
+        foreach (var id in new[] { "screen", "mic" })
         {
             var layout = id switch
             {
                 "screen" => (0.0, 0.0, 1.0, 1.0),
-                "webcam" => (0.72, 0.70, 0.26, 0.26),
-                _ => (0.0, 0.0, 1.0, 1.0),
+                _ => (0.0, 0.0, 1.0, 1.0), // audio is full-frame (no rect)
             };
             var r = Ref(id, layout.Item1, layout.Item2, layout.Item3, layout.Item4);
             if (r is not null) scene.Sources.Add(r);

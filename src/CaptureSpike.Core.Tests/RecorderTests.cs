@@ -1,3 +1,4 @@
+using CaptureSpike.Core;
 using CaptureSpike.Core.Capture;
 using Xunit;
 
@@ -16,7 +17,18 @@ public sealed class RecorderTests
             try
             {
                 var scene = store.AddScene("Intro");
-                Assert.Equal(4, scene.Sources.Count); // screen, webcam, mic, system
+                Assert.Equal(2, scene.Sources.Count); // screen + mic by default; rest opt-in
+
+                // Add webcam + system audio so this test exercises the
+                // full pipeline. With the new-project default of just
+                // screen + mic, the + Add picker has entries to offer.
+                var palette = GlobalPalette.Load();
+                var webcam = palette.Sources.First(p => p.Kind == SourceKind.Webcam);
+                var system = palette.Sources.First(p => p.Kind == SourceKind.SystemAudio);
+                scene.Sources.Add(new SceneSource { SourceId = webcam.Id, X = 0.72, Y = 0.70, Width = 0.26, Height = 0.26 });
+                scene.Sources.Add(new SceneSource { SourceId = system.Id, X = 0, Y = 0, Width = 1, Height = 1 });
+                store.SaveScene(scene);
+                Assert.Equal(4, scene.Sources.Count);
 
                 var takeDir = store.BeginTake(scene);
                 var recorder = new Recorder(store);

@@ -117,8 +117,8 @@
         <DockPanel Grid.Row="2" IsVisible="{Binding IsSourcesVisible}">
           <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
             <Button DockPanel.Dock="Right" Content="+" Command="{Binding AddPaletteSourceCommand}"
-                    ToolTip.Tip="Add a source to the palette" />
-            <TextBlock Text="Sources" FontWeight="Bold" VerticalAlignment="Center" />
+                    ToolTip.Tip="Add a new kind of source to the global palette (e.g. a second webcam)" />
+            <TextBlock Text="Available sources" FontWeight="Bold" VerticalAlignment="Center" />
           </DockPanel>
           <ListBox ItemsSource="{Binding PaletteSources}">
             <ListBox.ItemTemplate>
@@ -322,8 +322,8 @@
           <TextBox Text="{Binding SelectedScene.Title, Mode=TwoWay}" />
         </StackPanel>
 
-        <TextBlock DockPanel.Dock="Top" Text="Sources in this scene"
-                   FontSize="15" Opacity="0.7" Margin="0,0,0,4" />
+        <TextBlock DockPanel.Dock="Top" Text="Sources in scene"
+                   FontSize="15" FontWeight="Bold" Margin="0,0,0,4" />
         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
           <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddSceneSourceCommand}" />
           <ComboBox ItemsSource="{Binding AvailablePaletteSources}"
