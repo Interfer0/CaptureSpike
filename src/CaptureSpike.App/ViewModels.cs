@@ -960,8 +960,17 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             c.RaiseCanExecuteChanged();
     }
 
-    /// <summary>Shows a Yes/No confirmation dialog. Returns false if the window is gone.</summary>
-    private async Task<bool> ConfirmAsync(string title, string message)
+    /// <summary>
+    /// Shows a confirmation dialog. Returns true when the user picks the
+    /// primary action, false on Cancel / window close. The primary button
+    /// is labelled with <paramref name="confirmText"/> — default is
+    /// "Delete" for backwards compatibility with destructive dialogs that
+    /// pass only a title and message. Non-destructive callers should
+    /// pass a verb that matches their action ("Normalize", "Reset", etc.)
+    /// so the user isn't asked to "Delete" a take they're not deleting.
+    /// </summary>
+    private async Task<bool> ConfirmAsync(string title, string message,
+        string confirmText = "Delete")
     {
         if (Avalonia.Application.Current?.ApplicationLifetime
             is not IClassicDesktopStyleApplicationLifetime desktop
@@ -988,12 +997,16 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             Spacing = 8,
             HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
         };
-        var delete = new Avalonia.Controls.Button { Content = "Delete" };
+        // Cancel on the left, primary on the right — matches every
+        // desktop OS convention and keeps destructive actions visibly
+        // "last" in the tab order. Enter still triggers the focused
+        // button (default IsCancel/IsDefault on Cancel here).
         var cancel = new Avalonia.Controls.Button { Content = "Cancel" };
-        delete.Click += (_, _) => { tcs.TrySetResult(true); dialog.Close(); };
+        var primary = new Avalonia.Controls.Button { Content = confirmText };
+        primary.Click += (_, _) => { tcs.TrySetResult(true); dialog.Close(); };
         cancel.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
-        buttons.Children.Add(delete);
         buttons.Children.Add(cancel);
+        buttons.Children.Add(primary);
         panel.Children.Add(buttons);
         dialog.Content = panel;
         dialog.Closed += (_, _) => tcs.TrySetResult(false);
@@ -1314,7 +1327,8 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         var n = row.Take.Sources.Count;
         if (!await ConfirmAsync("Normalize take",
                 $"Normalize {label}? This writes aligned copies of {n} source file{(n == 1 ? "" : "s")} " +
-                $"and resets their offsets. Originals are kept alongside."))
+                $"and resets their offsets. Originals are kept alongside.",
+                confirmText: "Normalize"))
             return;
         try
         {
