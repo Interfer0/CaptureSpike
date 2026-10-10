@@ -1496,8 +1496,8 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             Takes.Add(new TakeRow(t, n++, t.Id == fav, _store.TakeDir(sceneFolder, t.Id),
                 ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder,
                 NormalizeTakeRow,
-                id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label,
-                id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
+                id => _palette.Sources.FirstOrDefault(p => p.Id == id)?.Label,
+                id => _palette.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
                 PlayTakeMultiWindow,
                 row =>
                 {
@@ -1530,9 +1530,13 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         SceneSources.Clear();
         _selectedPaletteSourceToAdd = null;
         if (_store is null || SelectedScene is null) return;
+        // Sources live in the global palette, not on the project.
+        // _store.Project.Sources is empty after migration; we need
+        // the global lookup to find each scene source's palette entry.
+        var global = _palette.Sources;
         foreach (var ss in SelectedScene.Scene.Sources)
         {
-            var palette = _store.Project.Sources.FirstOrDefault(p => p.Id == ss.SourceId);
+            var palette = global.FirstOrDefault(p => p.Id == ss.SourceId);
             if (palette is null) continue; // dangling ref; cleaned on next save
             var vm = new SceneSourceViewModel(ss, palette);
             vm.SetPaletteSource(
@@ -1580,8 +1584,10 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (_store is null || SelectedScene is null || SelectedPaletteSourceToAdd is null) return;
         var palette = SelectedPaletteSourceToAdd.Source;
         // New video sources land as a PiP; audio is full-frame (ignored for audio).
+        // Source kind lookup goes through the global palette now — the
+        // project's own Sources list is empty post-migration.
         var videoCount = SelectedScene.Scene.Sources.Count(s =>
-            _store.Project.Sources.FirstOrDefault(p => p.Id == s.SourceId)?.Kind.IsVideo() == true);
+            _palette.Sources.FirstOrDefault(p => p.Id == s.SourceId)?.Kind.IsVideo() == true);
         var layout = palette.Kind.IsVideo()
             ? (0.72, 0.70 - 0.28 * (videoCount % 3), 0.26, 0.26)
             : (0.0, 0.0, 1.0, 1.0);
@@ -2180,7 +2186,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             foreach (var ts in take.Sources)
             {
                 var filePath = Path.Combine(takeDir, ts.File);
-                var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
+                var label = _palette.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
                     ?? ts.Kind.DefaultLabel();
                 if (!File.Exists(filePath))
                 {
@@ -2191,7 +2197,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                 var fileBytes = new FileInfo(filePath).Length;
                 if (fileBytes < 1024)
                     suspicious.Add($"{label} ({ts.File} is only {fileBytes} bytes)");
-                var badge = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
+                var badge = _palette.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
                     ?? ts.Kind.Badge();
                 var isVideo = !Path.GetExtension(filePath).Equals(".wav", StringComparison.OrdinalIgnoreCase);
                 items.Add((ts, label, badge, filePath, isVideo));
