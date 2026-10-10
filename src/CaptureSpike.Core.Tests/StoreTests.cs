@@ -18,12 +18,13 @@ public sealed class StoreTests
 
         var store = ProjectStore.Open(dir);
 
-        // Sources now live in the global palette, not in the project.
-        // The project's own Sources is empty after migration; the
-        // global palette is what was seeded.
-        Assert.Empty(store.Project.Sources);
+        // The project was migrated: Sources seeded from the global
+        // kinds registry, scene sources updated to reference palette ids.
+        // The migration also picks up the new registry kinds so the
+        // project isn't empty (the scene needs screen + mic to work).
+        Assert.NotEmpty(store.Project.Sources);
         var global = GlobalPalette.Load();
-        Assert.Equal(4, global.Sources.Count); // default palette seeded
+        Assert.Equal(4, global.Sources.Count); // default kinds registry
         var scene = store.LoadScenes().Single();
         Assert.Equal(2, scene.Sources.Count);
         Assert.Equal("screen", scene.Sources[0].SourceId);
@@ -33,7 +34,7 @@ public sealed class StoreTests
 
         // Reopening is stable: no duplicate palette entries, no re-migration.
         var reopened = ProjectStore.Open(dir);
-        Assert.Empty(reopened.Project.Sources);
+        Assert.Equal(4, reopened.Project.Sources.Count);
         Assert.Equal(2, reopened.LoadScenes().Single().Sources.Count);
 
         Directory.Delete(dir, recursive: true);
@@ -46,8 +47,11 @@ public sealed class StoreTests
         var store = ProjectStore.Create(dir, "Test");
         var scene = store.AddScene("Intro");
 
-        // Sources live in the global palette, not on the project.
-        Assert.Empty(store.Project.Sources);
+        // A fresh project seeds its palette from the global kinds
+        // registry on Create, so the "Available sources" panel is
+        // populated immediately. Each entry has no device until the
+        // user picks one per project.
+        Assert.Equal(4, store.Project.Sources.Count);
         var global = GlobalPalette.Load();
         Assert.Equal(4, global.Sources.Count);
         // The new scene was created with screen + mic by default; the
@@ -55,7 +59,7 @@ public sealed class StoreTests
         // picker has nothing to offer and the project feels locked).
         Assert.Equal(2, scene.Sources.Count);
         Assert.All(scene.Sources,
-            s => Assert.Contains(global.Sources, p => p.Id == s.SourceId));
+            s => Assert.Contains(store.Project.Sources, p => p.Id == s.SourceId));
 
         Directory.Delete(dir, recursive: true);
     }

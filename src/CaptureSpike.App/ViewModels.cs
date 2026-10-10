@@ -1384,16 +1384,16 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     {
         PaletteSources.Clear();
         if (_store is null) return;
-        // The palette is fully global — there's no per-project state
-        // anymore. Each VM is a thin wrapper over the live global
-        // entry, and edits write straight back to the global palette.
-        foreach (var p in _palette.Sources)
+        // The Sources panel shows the project's own palette (Project.Sources).
+        // Each entry carries the project's per-source picks — device, badge,
+        // label — which is why they stick around project-to-project: the
+        // project owns them, the global registry is just a kinds-pool for
+        // adding new entries.
+        foreach (var p in _store.Project.Sources)
         {
-            // Pass a copy of the global entry so the VM can mutate its
-            // own Badge/Device without surprising the user with
-            // mid-edit changes to the global palette from elsewhere.
-            // (ProjectSource is a class; without the copy, RefreshPalette
-            // would show whatever the last picker set across reloads.)
+            // Pass a copy of the entry so the VM can mutate its
+            // own Badge/Device mid-edit without surprising the user with
+            // mid-edit changes to the underlying source from elsewhere.
             var projectView = new ProjectSource
             {
                 Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = p.Badge,
@@ -1430,15 +1430,17 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     }
 
     /// <summary>
-    /// Persists the user's edits to a palette entry (device, badge,
-    /// label) straight into the global palette. There is no per-
-    /// project override anymore — every project sees the same set
-    /// of sources with the same configuration.
+    /// Persists the user's edits to a project palette entry (device,
+    /// badge, label) into the current project's <c>Project.Sources</c>.
+    /// The global registry is a separate kinds-pool; per-project picks
+    /// don't touch it. Saving through this method is what makes the
+    /// settings stick to THIS project — switching projects and back
+    /// reads the same data from <c>Project.Sources</c>.
     /// </summary>
     private void SavePaletteSource(string paletteId, PaletteSourceViewModel vm)
     {
         if (_store is null) return;
-        var entry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
+        var entry = _store.Project.Sources.FirstOrDefault(s => s.Id == paletteId);
         if (entry is null) return;
         DebugPalette($"save: paletteId={paletteId} device={vm.Source.Device ?? "<null>"} badge={vm.Source.Badge ?? "<null>"}");
         var changed = false;
@@ -1446,11 +1448,8 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (entry.Badge != vm.Source.Badge) { entry.Badge = vm.Source.Badge; changed = true; }
         if (entry.Label != vm.Source.Label) { entry.Label = vm.Source.Label; changed = true; }
         if (!changed) return;
-        try { _palette.Save(); }
+        try { _store.SaveProject(); }
         catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
-        // No project.json to write — the project's palette section is
-        // a legacy field kept only for reading older files. The change
-        // lives in palette.json and is shared across every project.
     }
 
     // Diagnostic logging for palette save debugging. Off by default;
@@ -1557,8 +1556,10 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             Takes.Add(new TakeRow(t, n++, t.Id == fav, _store.TakeDir(sceneFolder, t.Id),
                 ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder,
                 NormalizeTakeRow,
-                id => _palette.Sources.FirstOrDefault(p => p.Id == id)?.Label,
-                id => _palette.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
+                id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label
+                       ?? _palette.Sources.FirstOrDefault(p => p.Id == id)?.Label,
+                id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge()
+                       ?? _palette.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge(),
                 PlayTakeMultiWindow,
                 row =>
                 {
@@ -1645,10 +1646,15 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (_store is null || SelectedScene is null || SelectedPaletteSourceToAdd is null) return;
         var palette = SelectedPaletteSourceToAdd.Source;
         // New video sources land as a PiP; audio is full-frame (ignored for audio).
-        // Source kind lookup goes through the global palette now — the
-        // project's own Sources list is empty post-migration.
-        var videoCount = SelectedScene.Scene.Sources.Count(s =>
-            _palette.Sources.FirstOrDefault(p => p.Id == s.SourceId)?.Kind.IsVideo() == true);
+        // Kind lookup uses the project's palette, falling back to the
+        // global registry for kinds the project hasn't been seeded with
+        // yet (e.g., a kind the user just added in another project).
+        var registry = _palette.Sources;
+        var local = _store.Project.Sources;
+        bool IsVideo(string id) =>
+            (local.FirstOrDefault(p => p.Id == id)
+                ?? registry.FirstOrDefault(p => p.Id == id))?.Kind.IsVideo() == true;
+        var videoCount = SelectedScene.Scene.Sources.Count(s => IsVideo(s.SourceId));
         var layout = palette.Kind.IsVideo()
             ? (0.72, 0.70 - 0.28 * (videoCount % 3), 0.26, 0.26)
             : (0.0, 0.0, 1.0, 1.0);
@@ -1835,11 +1841,31 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (result is null) return;
         try
         {
-            // Add to the global palette so this source is available in
-            // every project. A new GUID is generated by AddSourceWindow
-            // already; we just persist globally.
-            _palette.Add(result);
-            _palette.Save();
+            // Two-step add: the new kind lands in the global registry
+            // (so other projects can use it) AND in this project's
+            // palette (so the user sees it immediately). The registry
+            // is the kinds-pool — no device selection there. The
+            // project entry gets the user's id/kind/label; device
+            // stays null until the user picks one.
+            if (!_palette.Contains(result.Id))
+            {
+                _palette.Add(new ProjectSource
+                {
+                    Id = result.Id, Kind = result.Kind, Label = result.Label,
+                    Badge = result.Badge,
+                    // Device intentionally not copied to the registry.
+                });
+                _palette.Save();
+            }
+            if (!_store.Project.Sources.Any(s => s.Id == result.Id))
+            {
+                _store.Project.Sources.Add(new ProjectSource
+                {
+                    Id = result.Id, Kind = result.Kind, Label = result.Label,
+                    Badge = result.Badge, Device = result.Device,
+                });
+                _store.SaveProject();
+            }
             Mutate(ReloadPalette);
             Status = $"Added source \"{result.Label}\" to the palette.";
         }
@@ -1858,8 +1884,13 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         try
         {
             var id = vm.Source.Id;
+            // Drop from the global kinds registry and from this
+            // project's palette. Other projects have their own
+            // copies on disk; they get cleaned up on next open.
             _palette.Remove(id);
             _palette.Save();
+            _store.Project.Sources.RemoveAll(s => s.Id == id);
+            _store.SaveProject();
             // Strip from the in-memory scenes the UI is holding for the
             // current project; otherwise the dangling reference stays
             // enabled and breaks the next recording. Other projects
@@ -2221,7 +2252,8 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             foreach (var ts in take.Sources)
             {
                 var filePath = Path.Combine(takeDir, ts.File);
-                var label = _palette.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
+                var label = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
+                    ?? _palette.Sources.FirstOrDefault(p => p.Id == ts.Id)?.Label
                     ?? ts.Kind.DefaultLabel();
                 if (!File.Exists(filePath))
                 {
@@ -2232,7 +2264,8 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                 var fileBytes = new FileInfo(filePath).Length;
                 if (fileBytes < 1024)
                     suspicious.Add($"{label} ({ts.File} is only {fileBytes} bytes)");
-                var badge = _palette.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
+                var badge = _store.Project.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
+                    ?? _palette.Sources.FirstOrDefault(p => p.Id == ts.Id)?.EffectiveBadge()
                     ?? ts.Kind.Badge();
                 var isVideo = !Path.GetExtension(filePath).Equals(".wav", StringComparison.OrdinalIgnoreCase);
                 items.Add((ts, label, badge, filePath, isVideo));

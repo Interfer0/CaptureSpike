@@ -65,12 +65,13 @@ public sealed class GlobalPaletteTests : IDisposable
     }
 
     [Fact]
-    public void Migration_FromProjectToGlobal_PreservesDevices()
+    public void EnsureProjectSources_SeedsFromGlobalRegistry_PreservesDevices()
     {
         // The migration runs inside ProjectStore.Open. Build a fake
         // project.json with a per-project palette that has explicit
-        // device selections, run Open, and verify the global palette
-        // got those entries (with their device / label preserved).
+        // device selections, run Open, and verify the project kept
+        // its sources (with their device / label preserved verbatim)
+        // and that the global kinds registry also got any new kinds.
         var projectDir = Path.Combine(_dir, "proj1.csp");
         Directory.CreateDirectory(projectDir);
         Directory.CreateDirectory(Path.Combine(projectDir, "scenes"));
@@ -88,25 +89,35 @@ public sealed class GlobalPaletteTests : IDisposable
             }
             """);
 
-        // ProjectStore.Open uses Environment.SpecialFolder.ApplicationData
-        // for the global palette, which we redirected above via APPDATA.
-        // Make sure that path is empty so we get a clean palette.
+        // Make sure the global palette file is empty so we get a clean
+        // registry to compare against.
         var palettePath = Path.Combine(_dir, "CaptureSpike", "palette.json");
         if (File.Exists(palettePath)) File.Delete(palettePath);
 
         var store = ProjectStore.Open(projectDir);
 
-        // After migration, the project's Sources is empty (live data
-        // is in the global palette).
-        Assert.Empty(store.Project.Sources);
-        // The global palette got the entries migrated. The device
-        // field on each source is preserved verbatim — whatever the
-        // project had, the global palette now has.
-        var global = GlobalPalette.Load();
-        var screen = global.Sources.First(s => s.Id == "screen");
+        // The project's palette is preserved verbatim. The screen
+        // entry keeps the user's DisplayPort-0 device.
+        Assert.Equal(4, store.Project.Sources.Count);
+        var screen = store.Project.Sources.First(s => s.Id == "screen");
         Assert.Equal("DisplayPort-0", screen.Device);
-        var webcam = global.Sources.First(s => s.Id == "webcam");
+        // The webcam had no device and no badge — preserved as-is.
+        var webcam = store.Project.Sources.First(s => s.Id == "webcam");
         Assert.Null(webcam.Device);
+        Assert.Equal("Webcam", webcam.Label);
+        // The global registry has all the kinds, so the project also
+        // picks up the ones it was missing (mic, system).
+        Assert.Contains(store.Project.Sources, s => s.Id == "mic");
+        Assert.Contains(store.Project.Sources, s => s.Id == "system");
+        // The global registry is unchanged — the project is just a
+        // consumer; the registry isn't populated from the project
+        // (kinds are added there explicitly by the user).
+        var global = GlobalPalette.Load();
+        Assert.Equal(4, global.Sources.Count);
+        Assert.Contains(global.Sources, s => s.Id == "screen");
+        Assert.Contains(global.Sources, s => s.Id == "webcam");
+        Assert.Contains(global.Sources, s => s.Id == "mic");
+        Assert.Contains(global.Sources, s => s.Id == "system");
     }
 
     [Fact]

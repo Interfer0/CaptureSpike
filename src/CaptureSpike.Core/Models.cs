@@ -57,15 +57,14 @@ public sealed class Project
     /// </summary>
     public int NamingVersion { get; set; }
     /// <summary>
-    /// Legacy per-project palette (pre-global-palette). Scenes still
-    /// reference palette entries by id, and takes record which palette
-    /// entries they captured, but the live palette lives in the
-    /// global <see cref="GlobalPalette"/> at
-    /// <c>%APPDATA%/CaptureSpike/palette.json</c>. This field is
-    /// still deserialized for backward compat with older projects and
-    /// is migrated into the global palette on first open (see
-    /// <c>ProjectStore.MigrateToGlobalPalette</c>); it is never
-    /// written.
+    /// The project's reusable source palette. Each entry is the
+    /// project's own copy of a kind — kind, label, badge, and the
+    /// device the user picked for THIS project. Two projects can
+    /// have a "Webcam" source with different device picks; that's
+    /// intentional, the project owns its source config. The
+    /// "master" <see cref="GlobalPalette"/> only tracks which kinds
+    /// exist (so the user has something to pick from when adding a
+    /// new kind); it does NOT override per-project choices.
     /// </summary>
     public List<ProjectSource> Sources { get; set; } = new();
 
@@ -130,10 +129,12 @@ public sealed class Scene
     {
         var scene = new Scene { Title = title, Order = order };
 
-        // In the post-migration model, Project.Sources is empty; the
-        // palette lives in the global palette file. Load it here so
-        // new scenes can still be wired to the four default sources.
-        var palette = GlobalPalette.Load();
+        // Per-project palette. The global registry is the fallback for
+        // kinds the project doesn't have yet (e.g., the user just added
+        // a new webcam in another project and hasn't opened this one
+        // since — they'd still see it on next open).
+        var local = project.Sources;
+        var registry = GlobalPalette.Load().Sources;
 
         SceneSource? Ref(string paletteId, double x, double y, double w, double h)
         {
@@ -145,8 +146,10 @@ public sealed class Scene
                 "system" => SourceKind.SystemAudio,
                 _ => (SourceKind?)null,
             };
-            var def = palette.Sources.FirstOrDefault(p => p.Id == paletteId)
-                ?? (want.HasValue ? palette.Sources.FirstOrDefault(p => p.Kind == want.Value) : null);
+            var def = local.FirstOrDefault(p => p.Id == paletteId)
+                ?? registry.FirstOrDefault(p => p.Id == paletteId)
+                ?? (want.HasValue ? local.FirstOrDefault(p => p.Kind == want.Value) : null)
+                ?? (want.HasValue ? registry.FirstOrDefault(p => p.Kind == want.Value) : null);
             if (def is null) return null;
             return new SceneSource { SourceId = def.Id, X = x, Y = y, Width = w, Height = h };
         }
