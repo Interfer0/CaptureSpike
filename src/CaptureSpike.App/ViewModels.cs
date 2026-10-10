@@ -294,7 +294,10 @@ public sealed class PaletteSourceViewModel : ObservableObject
         }
     }
 
-    public string DeviceDisplay => SelectedDevice?.Label ?? "Default";
+    public string DeviceDisplay =>
+        !DetectionCompleted ? "Detecting devices…"
+        : SelectedDevice is null ? "Default"
+        : SelectedDevice.Label;
 
     private bool _detecting;
     public bool IsDetecting
@@ -376,11 +379,16 @@ public sealed class PaletteSourceViewModel : ObservableObject
         }
         catch
         {
-            // Detection is best-effort; the Default entry always remains.
-            // We don't mark DetectionCompleted = true here so the UI
-            // doesn't paint "missing" red just because detection itself
-            // errored (e.g., ffmpeg missing) — we'd rather let the user
-            // try again than freeze Record.
+            // Detection is best-effort. We DO mark DetectionCompleted =
+            // true here so the dropdown doesn't get stuck on
+            // 'Detecting devices…' forever — the user would think
+            // detection is still running and that the saved device
+            // isn't available. The "missing device" red flag is
+            // driven by IsDeviceMissing, which is independently
+            // false here (we don't know whether the device is
+            // missing — we just couldn't enumerate at all).
+            DetectionCompleted = true;
+            Raise(nameof(DeviceDisplay));
         }
         finally
         {

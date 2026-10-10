@@ -148,6 +148,7 @@
                               ToolTip.Tip="Detect devices" />
                       <ComboBox ItemsSource="{Binding Devices}"
                                 SelectedItem="{Binding SelectedDevice}"
+                                IsEnabled="{Binding DetectionCompleted}"
                                 HorizontalAlignment="Stretch"
                                 ToolTip.Tip="Which device to capture">
                         <ComboBox.ItemTemplate>
