@@ -74,15 +74,25 @@ public sealed class PlayerTransportBar : ContentControl
             Minimum = 0,
         };
         // Capture every value change between PointerPressed and
-        // PointerReleased. This way the seek uses the exact value the
-        // user chose even if Avalonia's slider state is a frame behind.
-        _slider.PointerPressed += OnSliderPressed;
-        _slider.PointerReleased += OnSliderReleased;
+        // PointerReleased. This way the seek uses the exact value
+        // the user chose even if Avalonia's slider state is a frame
+        // behind.
+        //
+        // IMPORTANT: AddHandler(handledEventsToo: true) — Avalonia 12's
+        // Slider template marks its internal PointerPressed/Released
+        // events Handled = true so the embedded Thumb can drive
+        // tracking. Without handledEventsToo, our external handler
+        // never fires (which is exactly what the trace showed: the
+        // slider's value updates correctly, but scrubbing stayed
+        // False on every event and the user had to click several
+        // times to land a seek).
+        _slider.AddHandler(InputElement.PointerPressedEvent,
+            OnSliderPressed, handledEventsToo: true);
+        _slider.AddHandler(InputElement.PointerReleasedEvent,
+            OnSliderReleased, handledEventsToo: true);
+        _slider.AddHandler(InputElement.PointerCaptureLostEvent,
+            (_, _) => EndScrubFromBar(), handledEventsToo: true);
         _slider.ValueChanged += OnSliderValueChanged;
-        // If the pointer leaves the slider mid-drag (e.g., focus stolen,
-        // drag off the thumb) PointerReleased may never fire — release
-        // the scrub flag so the slider doesn't get stuck.
-        _slider.PointerCaptureLost += (_, _) => EndScrubFromBar();
 
         // Layout: a DockPanel so the buttons sit on the left, slider
         // stretches, time label pins to the right.
