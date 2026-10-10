@@ -188,8 +188,9 @@ public sealed class PlayerTransportBar : ContentControl
 
     private void OnSliderValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        // While the user is actively scrubbing, remember the value
-        // they ended up at so OnSliderReleased seeks to exactly that.
+        // Track the slider's value while scrubbing so a quick press+click
+        // on the track (where Avalonia may fire ValueChanged slightly out
+        // of order with PointerReleased) still lands on the right target.
         if (_scrubbing)
             _scrubTarget = e.NewValue;
     }
@@ -207,6 +208,14 @@ public sealed class PlayerTransportBar : ContentControl
     {
         _scrubbing = false;
         if (_host is null) return;
+        // Re-read the slider's value at the moment of release. This
+        // protects against races where Avalonia's ValueChanged event
+        // fires after PointerReleased — without this, we'd seek to a
+        // stale _scrubTarget from when the press started, and forward
+        // scrubs (where the user clicks past the thumb and releases
+        // quickly) would appear not to work.
+        var v = _slider.Value;
+        if (v >= 0) _scrubTarget = v;
         if (_scrubTarget < 0) { _scrubTarget = 0; }
         _host.SeekTo(_scrubTarget);
         // Hold the slider at the user's chosen value until the

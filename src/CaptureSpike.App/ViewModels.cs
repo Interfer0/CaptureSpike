@@ -284,6 +284,7 @@ public sealed class PaletteSourceViewModel : ObservableObject
                 Source.Device = string.IsNullOrEmpty(value?.Id) ? null : value.Id;
                 _save();
                 Raise(nameof(DeviceDisplay));
+                Raise(nameof(IsDeviceMissing));
                 _onDeviceChanged();
             }
         }
@@ -306,6 +307,41 @@ public sealed class PaletteSourceViewModel : ObservableObject
     }
     public string RefreshGlyph => IsDetecting ? "…" : "↻";
     public ICommand RefreshDevicesCommand { get; }
+
+    // Has detection ever completed for this VM? Until it has, we can't
+    // claim a device is missing — maybe detection is just slow or the
+    // user hasn't clicked "Refresh" yet. The Record-gating logic
+    // ignores "indeterminate" sources.
+    private bool _detectionCompleted;
+    public bool DetectionCompleted
+    {
+        get => _detectionCompleted;
+        private set
+        {
+            if (SetField(ref _detectionCompleted, value))
+                Raise(nameof(IsDeviceMissing));
+        }
+    }
+
+    /// <summary>
+    /// True when the user has a specific device selected (Source.Device is
+    /// non-empty) but that device wasn't seen in the latest detection
+    /// sweep. Drives a red border on the source row and disables Record.
+    /// </summary>
+    public bool IsDeviceMissing
+    {
+        get
+        {
+            if (!DetectionCompleted) return false;
+            if (string.IsNullOrEmpty(Source.Device)) return false;
+            // The "Default" entry's Id is ""; anything else is a real
+            // device choice. If SelectedDevice landed on the (not
+            // connected) sentinel, the source device is missing.
+            if (SelectedDevice is null) return true;
+            return SelectedDevice.Label.EndsWith("(not connected)",
+                StringComparison.Ordinal);
+        }
+    }
 
     /// <summary>Detects real devices in the background; never throws.</summary>
     public async Task RefreshDevicesAsync()
@@ -332,10 +368,15 @@ public sealed class PaletteSourceViewModel : ObservableObject
             _selectedDevice = match ?? DefaultOption;
             Raise(nameof(SelectedDevice));
             Raise(nameof(DeviceDisplay));
+            DetectionCompleted = true;
         }
         catch
         {
             // Detection is best-effort; the Default entry always remains.
+            // We don't mark DetectionCompleted = true here so the UI
+            // doesn't paint "missing" red just because detection itself
+            // errored (e.g., ffmpeg missing) — we'd rather let the user
+            // try again than freeze Record.
         }
         finally
         {
@@ -650,6 +691,10 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                 Raise(nameof(SceneNumberText));
                 Raise(nameof(TakeSceneHeader));
                 RaiseCommandStates();
+                // Re-evaluate which palette sources are missing — the
+                // blocking status is per-scene (a source only matters
+                // if the current scene actually includes it).
+                RecomputeBlockingDeviceIssue();
                 if (_playerTake is not null && _playerSceneId != value?.Scene.Id)
                     _ = UnloadPlayerAsync();
             }
@@ -786,6 +831,21 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     public ICommand DeleteTakeCommand { get; }
     public ICommand ToggleFavoriteCommand { get; }
     public ICommand ToggleRecordCommand { get; }
+    private bool _hasBlockingDeviceIssue;
+    /// <summary>
+    /// True when the current scene has an enabled source whose saved
+    /// device wasn't seen in the latest detection sweep. Drives the
+    /// Record button's CanExecute.
+    /// </summary>
+    public bool HasBlockingDeviceIssue
+    {
+        get => _hasBlockingDeviceIssue;
+        private set
+        {
+            if (SetField(ref _hasBlockingDeviceIssue, value))
+                RaiseCommandStates();
+        }
+    }
     public ICommand AddPaletteSourceCommand { get; }
     public ICommand AddSceneSourceCommand { get; }
 
@@ -827,7 +887,8 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         DeleteTakeCommand = new RelayCommand(() => Mutate(DeleteTake), () => HasProject && SelectedTake is not null && !IsRecording);
         ToggleFavoriteCommand = new RelayCommand(() => Mutate(ToggleFavorite), () => HasProject && SelectedTake is not null);
         ToggleRecordCommand = new RelayCommand(ToggleRecordAsync,
-            () => HasProject && !_starting && (IsRecording || SelectedScene is not null));
+            () => HasProject && !_starting && !HasBlockingDeviceIssue &&
+                  (IsRecording || SelectedScene is not null));
         _playerTimer.Tick += (_, _) => UpdatePlayerState();
         PlayerPlayPauseCommand = new RelayCommand(TogglePlayerPlayPauseAsync,
             () => _player is not null && !IsRecording);
@@ -1096,6 +1157,14 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                 () => Mutate(() => DeletePaletteSource(vm)),
                 () => !IsRecording);
             vm.OnBadgeChanged = () => { RefreshSceneSources(); RefreshTakes(); };
+            // Re-evaluate the Record gate when any source's missing-device
+            // status flips. Subscribe to PropertyChanged and watch for
+            // IsDeviceMissing — cheap because Raise only fires on change.
+            vm.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(PaletteSourceViewModel.IsDeviceMissing))
+                    RecomputeBlockingDeviceIssue();
+            };
             PaletteSources.Add(vm);
             _ = vm.RefreshDevicesAsync(); // fire-and-forget background detection
         }
@@ -1104,6 +1173,25 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             svm.SetPaletteSource(
                 PaletteSources.FirstOrDefault(ps => ps.Source.Id == svm.SceneSource.SourceId));
         Raise(nameof(AvailablePaletteSources));
+        // Initial state: detection hasn't run yet, so no source is
+        // "missing" (we treat indeterminate as not-blocking). Refresh
+        // after detection completes — see vm.PropertyChanged above.
+        RecomputeBlockingDeviceIssue();
+    }
+
+    /// <summary>
+    /// Walks the current scene's enabled sources and checks whether any
+    /// has a missing device. Sets <see cref="HasBlockingDeviceIssue"/>.
+    /// </summary>
+    private void RecomputeBlockingDeviceIssue()
+    {
+        var scene = SelectedScene?.Scene;
+        if (scene is null) { HasBlockingDeviceIssue = false; return; }
+        var byId = PaletteSources.ToDictionary(ps => ps.Source.Id, ps => ps);
+        var any = scene.Sources
+            .Where(ss => ss.Enabled)
+            .Any(ss => byId.TryGetValue(ss.SourceId, out var p) && p.IsDeviceMissing);
+        HasBlockingDeviceIssue = any;
     }
 
     private void RefreshSceneDeviceLabels()
@@ -1504,6 +1592,13 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             return;
         }
         if (SelectedScene is null) return;
+        if (HasBlockingDeviceIssue)
+        {
+            // Safety net in case the button is enabled by a stale
+            // CanExecute before RecomputeBlockingDeviceIssue catches up.
+            Status = "Can't record: a source device is missing. Pick a connected device or remove the source from this scene.";
+            return;
+        }
         await StartRecordingAsync();
     }
 

@@ -31,6 +31,18 @@
     <Style Selector="ComboBox">
       <Setter Property="FontSize" Value="15" />
     </Style>
+
+    <!-- Visual flag for palette sources whose saved device wasn't seen
+         on the latest detection sweep. Painted via the
+         Classes.missing pseudo-class (set from MainWindow.axaml through
+         a binding converter, or directly by a style trigger — see
+         MainWindow.axaml). -->
+    <Style Selector="Border.source-missing">
+      <Setter Property="Background" Value="{DynamicResource SourceMissingBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource SourceMissingBorderBrush}" />
+      <Setter Property="BorderThickness" Value="2" />
+      <Setter Property="CornerRadius" Value="3" />
+    </Style>
   </Application.Styles>
 
   <!-- Theme-aware brushes. Referenced from XAML via DynamicResource so
@@ -50,6 +62,8 @@
           <SolidColorBrush x:Key="MutedTileMutedBrush"     Color="#3C0D0D" />
           <SolidColorBrush x:Key="TileBorderBrush"         Color="#555555" />
           <SolidColorBrush x:Key="TileBorderMutedBrush"    Color="#C84040" />
+          <SolidColorBrush x:Key="SourceMissingBackgroundBrush" Color="#3A1818" />
+          <SolidColorBrush x:Key="SourceMissingBorderBrush"     Color="#FF5050" />
         </ResourceDictionary>
 
         <ResourceDictionary x:Key="Light">
@@ -60,6 +74,8 @@
           <SolidColorBrush x:Key="MutedTileMutedBrush"     Color="#FBE6E6" />
           <SolidColorBrush x:Key="TileBorderBrush"         Color="#C0C5CA" />
           <SolidColorBrush x:Key="TileBorderMutedBrush"    Color="#C84040" />
+          <SolidColorBrush x:Key="SourceMissingBackgroundBrush" Color="#FBE6E6" />
+          <SolidColorBrush x:Key="SourceMissingBorderBrush"     Color="#C84040" />
         </ResourceDictionary>
 
       </ResourceDictionary.ThemeDictionaries>

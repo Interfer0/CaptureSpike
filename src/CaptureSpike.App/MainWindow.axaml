@@ -122,34 +122,42 @@
           <ListBox ItemsSource="{Binding PaletteSources}">
             <ListBox.ItemTemplate>
               <DataTemplate>
-                <StackPanel Spacing="2">
-                  <DockPanel>
-                    <Button DockPanel.Dock="Right" Classes="plain" Content="×"
-                            Command="{Binding DeleteCommand}"
-                            ToolTip.Tip="Delete from palette" />
-                    <Border Classes="badge">
-                      <TextBox Text="{Binding Badge, Mode=TwoWay}" MaxLength="3"
-                               ToolTip.Tip="Rename the source badge (e.g. M1, MK)" />
-                    </Border>
-                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center" Margin="6,0,0,0" />
-                  </DockPanel>
-                  <DockPanel Margin="22,0,0,0">
-                    <Button DockPanel.Dock="Right" Classes="plain"
-                            Content="{Binding RefreshGlyph}"
-                            Command="{Binding RefreshDevicesCommand}"
-                            ToolTip.Tip="Detect devices" />
-                    <ComboBox ItemsSource="{Binding Devices}"
-                              SelectedItem="{Binding SelectedDevice}"
-                              HorizontalAlignment="Stretch"
-                              ToolTip.Tip="Which device to capture">
-                      <ComboBox.ItemTemplate>
-                        <DataTemplate>
-                          <TextBlock Text="{Binding Label}" />
-                        </DataTemplate>
-                      </ComboBox.ItemTemplate>
-                    </ComboBox>
-                  </DockPanel>
-                </StackPanel>
+                <!--
+                  source-missing class on the outer Border lights the row
+                  red when the saved device wasn't seen in the latest
+                  detection sweep. Tooltip explains why.
+                -->
+                <Border Classes.source-missing="{Binding IsDeviceMissing}"
+                        Padding="2">
+                  <StackPanel Spacing="2">
+                    <DockPanel>
+                      <Button DockPanel.Dock="Right" Classes="plain" Content="×"
+                              Command="{Binding DeleteCommand}"
+                              ToolTip.Tip="Delete from palette" />
+                      <Border Classes="badge">
+                        <TextBox Text="{Binding Badge, Mode=TwoWay}" MaxLength="3"
+                                 ToolTip.Tip="Rename the source badge (e.g. M1, MK)" />
+                      </Border>
+                      <TextBlock Text="{Binding Label}" VerticalAlignment="Center" Margin="6,0,0,0" />
+                    </DockPanel>
+                    <DockPanel Margin="22,0,0,0">
+                      <Button DockPanel.Dock="Right" Classes="plain"
+                              Content="{Binding RefreshGlyph}"
+                              Command="{Binding RefreshDevicesCommand}"
+                              ToolTip.Tip="Detect devices" />
+                      <ComboBox ItemsSource="{Binding Devices}"
+                                SelectedItem="{Binding SelectedDevice}"
+                                HorizontalAlignment="Stretch"
+                                ToolTip.Tip="Which device to capture">
+                        <ComboBox.ItemTemplate>
+                          <DataTemplate>
+                            <TextBlock Text="{Binding Label}" />
+                          </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                      </ComboBox>
+                    </DockPanel>
+                  </StackPanel>
+                </Border>
               </DataTemplate>
             </ListBox.ItemTemplate>
           </ListBox>
