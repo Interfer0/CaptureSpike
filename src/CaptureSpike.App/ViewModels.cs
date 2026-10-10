@@ -1403,6 +1403,22 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             existing.Badge = badge;
         }
         _store.SaveProject();
+        // Mirror the picked device to the global palette's default
+        // so newly-created projects (which have no per-project
+        // overrides yet) inherit the user's recent choice instead
+        // of falling back to the OS default. The per-project
+        // override above still wins for the current project, so
+        // existing projects that have already committed to a
+        // different device per project are unaffected.
+        if (!string.IsNullOrEmpty(device))
+        {
+            var entry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
+            if (entry is not null && entry.Device != device)
+            {
+                entry.Device = device;
+                _palette.Save();
+            }
+        }
     }
 
     /// <summary>
