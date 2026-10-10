@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
@@ -164,11 +165,19 @@ public sealed class PlayerTransportBar : ContentControl
         {
             var posSec = pos.TotalSeconds;
             if (Math.Abs(posSec - _scrubTarget) < 0.25)
+            {
                 _awaitingSeek = false;
+                DebugScrub($"awaiting: cleared pos={posSec:F2} target={_scrubTarget:F2}");
+            }
             else
+            {
+                DebugScrub($"awaiting: holding pos={posSec:F2} target={_scrubTarget:F2}");
                 return; // still settling — leave the slider alone
+            }
         }
+        var before = _slider.Value;
         _slider.Value = Math.Max(0, pos.TotalSeconds);
+        DebugScrub($"refresh: slider {before:F2} -> {_slider.Value:F2} (pos={pos.TotalSeconds:F2})");
     }
 
     private static string FormatTime(TimeSpan t) =>
@@ -184,6 +193,7 @@ public sealed class PlayerTransportBar : ContentControl
         // fires between press and release (e.g., a static click on
         // a single pixel where the thumb already sits).
         _scrubTarget = _slider.Value;
+        DebugScrub($"press: target={_scrubTarget:F2} slider={_slider.Value:F2}");
     }
 
     private void OnSliderValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
@@ -193,10 +203,12 @@ public sealed class PlayerTransportBar : ContentControl
         // of order with PointerReleased) still lands on the right target.
         if (_scrubbing)
             _scrubTarget = e.NewValue;
+        DebugScrub($"value-changed: {e.OldValue:F2} -> {e.NewValue:F2} scrubbing={_scrubbing} target={_scrubTarget:F2}");
     }
 
     private void OnSliderReleased(object? sender, PointerReleasedEventArgs e)
     {
+        DebugScrub($"release: slider={_slider.Value:F2} target={_scrubTarget:F2}");
         EndScrubFromBar();
     }
 
@@ -217,11 +229,27 @@ public sealed class PlayerTransportBar : ContentControl
         var v = _slider.Value;
         if (v >= 0) _scrubTarget = v;
         if (_scrubTarget < 0) { _scrubTarget = 0; }
+        DebugScrub($"seek: target={_scrubTarget:F2}");
         _host.SeekTo(_scrubTarget);
         // Hold the slider at the user's chosen value until the
         // player's polled Position converges — see _awaitingSeek in
         // RefreshFromHost. Cleared there once the position lands.
         _awaitingSeek = true;
+    }
+
+    // Diagnostic logging for slider seek debugging. Off by default; flip
+    // CAPTURESPIKE_SLIDER_TRACE=1 in the environment to enable. Writes
+    // through the app's log panel and the on-disk session log so users
+    // can paste the trace straight into chat.
+    private static bool _sliderTraceEnabled =
+        System.Environment.GetEnvironmentVariable("CAPTURESPIKE_SLIDER_TRACE") == "1";
+    private void DebugScrub(string msg)
+    {
+        if (!_sliderTraceEnabled) return;
+        if (Avalonia.Application.Current?.ApplicationLifetime
+            is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow?.DataContext is not MainViewModel vm) return;
+        vm.Log($"[slider] {msg}");
     }
 
     private static IBrush Brush(string key) =>
