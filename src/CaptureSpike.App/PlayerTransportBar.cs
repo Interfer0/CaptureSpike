@@ -114,6 +114,7 @@ public sealed class PlayerTransportBar : ContentControl
     public void Attach(ITransportHost host)
     {
         _host = host;
+        AnnounceTraceState();
         RefreshFromHost();
         _poll.Start();
     }
@@ -240,16 +241,34 @@ public sealed class PlayerTransportBar : ContentControl
     // Diagnostic logging for slider seek debugging. Off by default; flip
     // CAPTURESPIKE_SLIDER_TRACE=1 in the environment to enable. Writes
     // through the app's log panel and the on-disk session log so users
-    // can paste the trace straight into chat.
-    private static bool _sliderTraceEnabled =
+    // can paste the trace straight into chat. Read on every call so the
+    // user can toggle it without restarting (and so the value is what
+    // they think it is, even if the static field was initialized
+    // before the env was set).
+    private static bool SliderTraceEnabled =>
         System.Environment.GetEnvironmentVariable("CAPTURESPIKE_SLIDER_TRACE") == "1";
     private void DebugScrub(string msg)
     {
-        if (!_sliderTraceEnabled) return;
+        if (!SliderTraceEnabled) return;
         if (Avalonia.Application.Current?.ApplicationLifetime
             is not IClassicDesktopStyleApplicationLifetime desktop
             || desktop.MainWindow?.DataContext is not MainViewModel vm) return;
         vm.Log($"[slider] {msg}");
+    }
+
+    /// <summary>
+    /// Logs the initial state of the slider-trace toggle. Called once
+    /// after the playbar attaches to a host so the user can confirm in
+    /// the log panel that they set the env var correctly (and aren't
+    /// hunting for a trace that was disabled at startup).
+    /// </summary>
+    public void AnnounceTraceState()
+    {
+        if (!SliderTraceEnabled) return;
+        if (Avalonia.Application.Current?.ApplicationLifetime
+            is not IClassicDesktopStyleApplicationLifetime desktop
+            || desktop.MainWindow?.DataContext is not MainViewModel vm) return;
+        vm.Log("[slider] trace ENABLED (CAPTURESPIKE_SLIDER_TRACE=1)");
     }
 
     private static IBrush Brush(string key) =>
