@@ -186,9 +186,7 @@ public sealed class PlayerTransportBar : ContentControl
                 return; // still settling — leave the slider alone
             }
         }
-        var before = _slider.Value;
         _slider.Value = Math.Max(0, pos.TotalSeconds);
-        DebugScrub($"refresh: slider {before:F2} -> {_slider.Value:F2} (pos={pos.TotalSeconds:F2})");
     }
 
     private static string FormatTime(TimeSpan t) =>
@@ -248,13 +246,13 @@ public sealed class PlayerTransportBar : ContentControl
         _awaitingSeek = true;
     }
 
-    // Diagnostic logging for slider seek debugging. Off by default; flip
-    // CAPTURESPIKE_SLIDER_TRACE=1 in the environment to enable. Writes
-    // through the app's log panel and the on-disk session log so users
-    // can paste the trace straight into chat. Read on every call so the
-    // user can toggle it without restarting (and so the value is what
-    // they think it is, even if the static field was initialized
-    // before the env was set).
+    // Diagnostic logging for slider seek debugging. Off by default;
+    // flip CAPTURESPIKE_SLIDER_TRACE=1 in the environment to enable.
+    // Writes through the app's log panel and the on-disk session log
+    // so users can paste the trace straight into chat. The
+    // CAPTURESPIKE_SLIDER_TRACE toggle stays in for the next time we
+    // need to chase a slider race — the cost when off is one env-var
+    // lookup per slider event, which is negligible.
     private static bool SliderTraceEnabled =>
         System.Environment.GetEnvironmentVariable("CAPTURESPIKE_SLIDER_TRACE") == "1";
     private void DebugScrub(string msg)
