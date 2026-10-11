@@ -243,8 +243,19 @@ public static class TakeNormalizer
                 "-y",
                 "-i", input,
                 "-ss", secStr,
+                // Video: re-encode from the seek point so the
+                // output is exactly at the requested offset (no
+                // keyframe snap).
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
-                "-c:a", "aac",
+                // Audio: STREAM COPY the audio track rather than
+                // re-encoding to AAC. AAC frames are 1024 samples
+                // (21.33ms at 48kHz), so re-encoding would round
+                // the audio's t=0 to the nearest frame boundary —
+                // up to 21ms off from the exact seek point. Stream
+                // copy keeps the audio sample-accurate. The mux
+                // (mkv) handles video and audio with different
+                // codecs natively.
+                "-c:a", "copy",
                 "-movflags", "+faststart",
                 output,
             };
