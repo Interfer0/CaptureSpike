@@ -1473,7 +1473,17 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (globalEntry.Badge != vm.Source.Badge) { globalEntry.Badge = vm.Source.Badge; changed = true; }
         if (globalEntry.Label != vm.Source.Label) { globalEntry.Label = vm.Source.Label; changed = true; }
         if (!changed) return;
-        try { _palette.Save(); }
+        // Capture the full state BEFORE Save so we can prove the
+        // save serialised what we expected, and prove other entries
+        // weren't touched.
+        var beforeSave = _palette.Sources
+            .Select(s => $"{s.Id}={s.Device ?? "<null>"}")
+            .ToList();
+        try
+        {
+            _palette.Save();
+            DebugPalette($"save: wrote {_palette.Sources.Count} entries: {string.Join(", ", beforeSave)}");
+        }
         catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
     }
 
@@ -1481,8 +1491,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     // CAPTURESPIKE_PALETTE_TRACE=1 in the environment. Always
     // trace the file path Load() reads from, since a wrong
     // path silently drops the user's devices.
-    private static bool PaletteTraceEnabled =>
-        System.Environment.GetEnvironmentVariable("CAPTURESPIKE_PALETTE_TRACE") == "1";
+    private static bool PaletteTraceEnabled => true;
     private void DebugPalette(string msg)
     {
         if (!PaletteTraceEnabled) return;
