@@ -336,10 +336,19 @@ public static class TakeNormalizer
 
         try
         {
-            var exitCode = await RunFfmpegAsync(ffmpeg, args.ToArray(), ct);
+            var stderr = new StringBuilder();
+            var exitCode = await RunFfmpegAsync(ffmpeg, args.ToArray(), ct, stderr);
             if (exitCode != 0)
+            {
+                // Surface ffmpeg's last error line so the user
+                // can see what the filter actually rejected.
+                var tail = stderr.ToString();
+                var lastLines = tail.Length > 2000
+                    ? tail[^2000..]
+                    : tail;
                 throw new InvalidOperationException(
-                    $"ffmpeg pad exited with code {exitCode}.");
+                    $"ffmpeg pad exited with code {exitCode}. Last ffmpeg output: {lastLines.Trim()}");
+            }
             File.Move(tempPath, path, overwrite: true);
         }
         catch
@@ -351,9 +360,12 @@ public static class TakeNormalizer
 
     /// <summary>
     /// Run ffmpeg with the given args, capture stderr, return exit code.
-    /// Throws OperationCanceledException if the token fires.
+    /// Throws OperationCanceledException if the token fires. Stderr is
+    /// captured but truncated to ~64KB; on non-zero exit the full
+    /// captured stderr is available via <paramref name="stderrOut"/>
+    /// for diagnostic messages.
     /// </summary>
-    private static async Task<int> RunFfmpegAsync(string ffmpeg, string[] args, CancellationToken ct)
+    private static async Task<int> RunFfmpegAsync(string ffmpeg, string[] args, CancellationToken ct, StringBuilder? stderrOut = null)
     {
         var psi = new ProcessStartInfo
         {
@@ -369,14 +381,18 @@ public static class TakeNormalizer
             ?? throw new InvalidOperationException("Could not start ffmpeg.");
 
         // Drain stderr asynchronously; if it grows huge that's fine.
-        var stderr = new StringBuilder();
+        var stderr = stderrOut ?? new StringBuilder();
         var stderrTask = Task.Run(async () =>
         {
             string? line;
             while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) != null)
             {
                 stderr.AppendLine(line);
-                if (stderr.Length > 64 * 1024) stderr.Length = 64 * 1024; // cap
+                // Cap only the in-memory copy. If a caller passed
+                // their own StringBuilder, leave it uncapped so
+                // they can see the full ffmpeg error.
+                if (ReferenceEquals(stderrOut, null) && stderr.Length > 64 * 1024)
+                    stderr.Length = 64 * 1024;
             }
         }, ct);
 
