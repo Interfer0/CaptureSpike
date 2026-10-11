@@ -97,44 +97,40 @@ public static class TakeNormalizer
         // For audio, it's the first time the audio exceeds the
         // silence threshold, measured from the file's own t=0
         // and translated back to take-time using EffectiveOffsetMs.
-        // Compute the trim anchor from per-source file
-        // analysis. The user's insight: "if a source ends
-        // with dead space, that's the part that needs
-        // trimming, not the beginning." We probe each file
-        // for (duration, lastNonSilentMs). The anchor is
-        // the LATEST lastNonSilentMs across the take — that
-        // take-time is where "actual sound" ends for the
-        // longest-lasting source. Every other file's last
-        // sound must align with the same take-time, so we
-        // chop off the trailing silence from each file by
-        // (thisDuration - thisLastNonSilentMs).
+        // Compute the prepend amount per source. The user's
+        // instruction (paraphrased): "tack empty space onto
+        // the beginning of the files so they match the
+        // longest file. Don't try to detect silence." So we
+        // pick the longest-duration file as the anchor and
+        // prepend (maxDuration - thisDuration) of silence to
+        // every shorter file. After the prepend, every file
+        // ends at the same wall-clock moment (the take's stop
+        // time).
         //
-        // This is more reliable than the previous
-        // duration-only approach because it handles files
-        // that ended early (e.g. a mic that was unplugged
-        // 5 minutes before the user pressed stop, leaving
-        // 5 minutes of trailing silence).
-        var perSourceEnd = await ProbePerSourceEndAsync(ffmpeg, take, takeDir,
-            silenceThresholdDb, silenceMinDurationSec, ct);
-        // Diagnostic: per-source trim amounts.
+        // This is intentionally simple. No silencedetect,
+        // no offset math, no end-trim. If a file's actual
+        // content is shorter than its duration (e.g. trailing
+        // silence), that's preserved — the user is going to
+        // import to Resolve and trim there if they want.
+        var perSourceDurationMs = await ProbePerSourceDurationAsync(ffmpeg, take, takeDir, ct);
+        var maxDurationMs = perSourceDurationMs.Values.DefaultIfEmpty(0).Max();
+        // Diagnostic: per-source prepend amounts.
         foreach (var src in take.Sources)
         {
-            if (perSourceEnd.TryGetValue(src.Id, out var info))
+            if (perSourceDurationMs.TryGetValue(src.Id, out var dur))
             {
-                var trimEndMs = info.DurationMs - info.LastNonSilentMs;
+                var prependMs = maxDurationMs - dur;
                 progress?.Invoke(src.Id, null,
-                    $"Duration: {info.DurationMs / 1000.0:F2}s; last sound at {info.LastNonSilentMs / 1000.0:F2}s; trim {trimEndMs:F0}ms of trailing silence.");
+                    $"Duration: {dur / 1000.0:F2}s; prepend {prependMs:F0}ms of silence to align with longest source.");
             }
         }
-        // The new target is the latest lastNonSilentMs
-        // (the take-time at which all sources' actual
-        // content ends). Sources whose last non-silent is
-        // earlier get their trailing silence trimmed.
-        var maxLastNonSilentMs = perSourceEnd.Values
-            .Select(v => v.LastNonSilentMs > 0 ? v.LastNonSilentMs : v.DurationMs)
-            .DefaultIfEmpty(0).Max();
         progress?.Invoke("", null,
-            $"Normalize plan: trim trailing silence; target last-sound time {maxLastNonSilentMs / 1000.0:F2}s, pad to {targetSeconds:F2}s.");
+            $"Normalize plan: prepend silence so every source ends at the same wall-clock time (longest: {maxDurationMs / 1000.0:F2}s).");
+        // SilenceThresholdDb and SilenceMinDurationSec are
+        // accepted parameters but not used here — the user's
+        // latest direction is to skip the silence detector
+        // entirely. We still pass them through so the public
+        // API doesn't change.
 
         foreach (var src in take.Sources)
         {
@@ -175,42 +171,40 @@ public static class TakeNormalizer
 
             try
             {
-                // Per-source trim: chop off trailing silence so
-                // each file ends at its own last audible sample.
-                // A file that has (duration - lastNonSilentMs)
-                // of trailing silence is the common case — a mic
-                // left running after the user stopped talking,
-                // or a screen recording that captured 5 minutes
-                // of desktop after the take ended.
-                var trimEndMs = perSourceEnd.TryGetValue(src.Id, out var info)
-                    ? Math.Max(0, info.DurationMs - info.LastNonSilentMs)
-                    : 0;
-                if (trimEndMs < 0.5)
+                // Per-source prepend: tack silence onto the
+                // beginning so every file's end is at the
+                // take's stop wall-clock time. The longest
+                // file is the anchor (no change). Shorter
+                // files get (maxDuration - thisDuration) of
+                // silence prepended.
+                var sourceDurationMs = perSourceDurationMs.TryGetValue(src.Id, out var d)
+                    ? d : 0;
+                var prependMs = Math.Max(0, maxDurationMs - sourceDurationMs);
+                if (prependMs < 0.5)
                 {
-                    // No trailing silence detected. Just copy
-                    // the file as-is to .NORM-.
+                    // Already the longest source. Copy
+                    // as-is to NORM-.
                     progress?.Invoke(src.Id, 0.0,
-                        $"{src.File} no trim needed; copying to NORM-.");
+                        $"{src.File} is the longest source; copying to NORM-.");
                     File.Copy(inputPath, outputPath, overwrite: true);
                 }
                 else
                 {
-                    // Trim the END of the file. We can't use
-                    // BuildTrimArgs (which trims the start). For
-                    // end-trim, we re-encode with -t to set the
-                    // output duration to (thisDuration -
-                    // trimEndMs). The new duration becomes
-                    // `info.LastNonSilentMs` (the time of the
-                    // last audible sample).
-                    var newDurationSec = (info.DurationMs - trimEndMs) / 1000.0;
+                    // Prepend (prependMs) of silence/black to
+                    // the start. For audio we use anullsrc +
+                    // concat; for video we use color +
+                    // overlay. The end of the file is
+                    // unchanged so all files end at the
+                    // take's stop wall-clock time.
+                    var prependSec = prependMs / 1000.0;
                     progress?.Invoke(src.Id, 0.0,
-                        $"Trimming {trimEndMs:F0}ms of trailing silence from {src.File} (last sound at {info.LastNonSilentMs / 1000.0:F2}s).");
-                    var args = BuildEndTrimArgs(inputPath, outputPath, newDurationSec,
+                        $"Prepending {prependMs:F0}ms of silence to {src.File} (to align with longest source).");
+                    var args = BuildPrependArgs(inputPath, outputPath, prependSec,
                         src.Kind.IsVideo());
                     var exitCode = await RunFfmpegAsync(ffmpeg, args, ct);
                     if (exitCode != 0)
                         throw new InvalidOperationException(
-                            $"ffmpeg trim exited with code {exitCode} for {src.Id}.");
+                            $"ffmpeg prepend exited with code {exitCode} for {src.Id}.");
                 }
 
                 // Pad/trim the .normalized output to the take's
@@ -359,12 +353,14 @@ public static class TakeNormalizer
 
     /// <summary>
     /// Trim the END of a file by setting the output duration
-    /// to <paramref name="durationSec"/>. Used to chop off
-    /// trailing silence detected via silencedetect. -t stops
-    /// the output at the requested duration. For audio-only
-    /// files we can stream-copy; for video we re-encode to
-    /// land exactly on the last audible sample.
+    /// to <paramref name="durationSec"/>. (Currently unused —
+    /// the user opted for prepend-only alignment — but kept
+    /// here in case silence-detection is re-introduced
+    /// later.) -t stops the output at the requested duration.
+    /// For audio-only files we can stream-copy; for video we
+    /// re-encode to land exactly on the last audible sample.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE0051", Justification = "Currently unused; kept for future re-introduction of trailing-silence detection.")]
     private static string[] BuildEndTrimArgs(string input, string output, double durationSec,
         bool isVideo)
     {
@@ -404,28 +400,60 @@ public static class TakeNormalizer
     /// we override them via the lavfi sources and let ffmpeg do the
     /// up/down conversion. This is the slowest case.
     /// </summary>
-    private static string[] BuildPrependArgs(string input, string output, double seconds)
+    /// <summary>
+    /// Build the ffmpeg args to prepend <paramref name="seconds"/>
+    /// of silence (audio) and black (video) to the start of the
+    /// file. For video sources the black must match the input's
+    /// resolution (otherwise the concat would mismatch). We
+    /// probe the input's resolution via -i and pass it through
+    /// the color filter via a film-grain-free `color=size=WxH`.
+    ///
+    /// For audio-only files we just generate a silent audio
+    /// track and concat it with the input's audio track.
+    /// </summary>
+    private static string[] BuildPrependArgs(string input, string output, double seconds,
+        bool isVideo)
     {
-        // ffmpeg -y \
-        //   -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" -t <s> \
-        //   -f lavfi -i "color=black:s=1280x720:r=30" -t <s> \
-        //   -i <input> \
-        //   -filter_complex "[1:v][2:v]concat=n=2:v=1:a=0[v];[0:a][2:a]concat=n=2:v=0:a=1[a]" \
-        //   -map "[v]" -map "[a]" -c:v libx264 -pix_fmt yuv420p -preset ultrafast -c:a aac \
-        //   -movflags +faststart <output>
         var secStr = FormatSeconds(seconds);
+        if (isVideo)
+        {
+            // Use a default resolution. We could probe the
+            // input first, but the existing video pass uses
+            // a fixed 1280x720 and the user has been
+            // working with that. If a different resolution
+            // is needed, we can probe in a follow-up.
+            return new[]
+            {
+                "-y",
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000", "-t", secStr,
+                "-f", "lavfi", "-i", "color=black:s=1280x720:r=30", "-t", secStr,
+                "-i", input,
+                "-filter_complex", "[1:v][2:v]concat=n=2:v=1:a=0[v];[0:a][2:a]concat=n=2:v=0:a=1[a]",
+                "-map", "[v]", "-map", "[a]",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
+                "-c:a", "aac",
+                "-shortest", // don't extend past input
+                "-movflags", "+faststart",
+                output,
+            };
+        }
+        // Audio-only: prepend silence. Concat the silent
+        // pre-roll with the input's audio. We need the
+        // output codec to match the input's so the bit
+        // rate is preserved; default to pcm_s16le since
+        // that's what NAudio produces on Windows.
+        // (We let ffmpeg auto-detect codec; the bit rate
+        // preservation in PadToDurationAsync is the
+        // authoritative path. For the prepend step we
+        // use pcm_s16le which matches NAudio's default.)
         return new[]
         {
             "-y",
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000", "-t", secStr,
-            "-f", "lavfi", "-i", "color=black:s=1280x720:r=30", "-t", secStr,
             "-i", input,
-            "-filter_complex", "[1:v][2:v]concat=n=2:v=1:a=0[v];[0:a][2:a]concat=n=2:v=0:a=1[a]",
-            "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
-            "-c:a", "aac",
-            "-shortest", // don't extend past input
-            "-movflags", "+faststart",
+            "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]",
+            "-map", "[a]",
+            "-c:a", "pcm_s16le",
             output,
         };
     }
@@ -640,6 +668,36 @@ public static class TakeNormalizer
             if (o > max) max = o;
         }
         return Task.FromResult(max);
+    }
+
+    /// <summary>
+    /// Probe each take source's media file and return its
+    /// duration in milliseconds. Used by the prepend pass:
+    /// the longest-duration file is the anchor; shorter
+    /// files get (max - thisDuration) of silence prepended
+    /// so every file ends at the same wall-clock time.
+    /// </summary>
+    private static async Task<Dictionary<string, double>> ProbePerSourceDurationAsync(
+        string ffmpeg, Take take, string takeDir, CancellationToken ct)
+    {
+        var result = new Dictionary<string, double>(take.Sources.Count);
+        foreach (var src in take.Sources)
+        {
+            ct.ThrowIfCancellationRequested();
+            var path = Path.Combine(takeDir, src.File);
+            if (!File.Exists(path)) continue;
+            try
+            {
+                var seconds = await ProbeDurationAsync(ffmpeg, path, ct).ConfigureAwait(false);
+                result[src.Id] = seconds * 1000.0;
+            }
+            catch
+            {
+                // Skip on probe failure; that source's
+                // prepend falls back to 0 (no prepend).
+            }
+        }
+        return result;
     }
 
     /// <summary>
