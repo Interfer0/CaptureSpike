@@ -74,10 +74,17 @@ public sealed class TiledTakePlayer : IPlayer
         return Task.CompletedTask;
     }
 
+    // Per-source mute state. Populated only by
+    // SetSourceIncludedAsync / SetSourceMutedAsync. The
+    // initial "everything is unmuted" semantics means
+    // _muted starts empty — sources are unmuted by default.
+    private readonly HashSet<string> _muted = new();
+
     // Per-source include state. Mirrors the per-track toggle
     // in the player panel: when a source is "not included",
     // its audio is muted in the graph (and its video, if any,
-    // is also dropped from the tiled layout).
+    // is also dropped from the tiled layout). Kept in sync
+    // with _muted for query convenience.
     private readonly HashSet<string> _included = new();
 
     public TimeSpan Position =>
@@ -126,7 +133,16 @@ public sealed class TiledTakePlayer : IPlayer
     /// <summary>Includes or excludes a source from playback (mutes in the graph).</summary>
     public async Task SetSourceIncludedAsync(string sourceId, bool included, CancellationToken ct = default)
     {
-        if (included) _included.Add(sourceId); else _included.Remove(sourceId);
+        if (included)
+        {
+            _included.Add(sourceId);
+            _muted.Remove(sourceId);
+        }
+        else
+        {
+            _included.Remove(sourceId);
+            _muted.Add(sourceId);
+        }
         if (_engine is null) return;
         // MpvPlaybackEngine's mute handling rebuilds the graph
         // with the new muted set. We model "not included" as
@@ -147,6 +163,7 @@ public sealed class TiledTakePlayer : IPlayer
 
     public async Task SetSourceMutedAsync(string sourceId, bool muted, CancellationToken ct = default)
     {
+        if (muted) _muted.Add(sourceId); else _muted.Remove(sourceId);
         if (_engine is null) return;
         await _engine.SetTrackMutedAsync(sourceId, muted, ct).ConfigureAwait(false);
     }
@@ -161,12 +178,16 @@ public sealed class TiledTakePlayer : IPlayer
             EmbedWindowHandle = _embedHandle,
             KeepOpen = true,
         };
-        // Build the muted set: everything that's not in
-        // _included is muted. (On first call, _included is
-        // empty, so all sources play.)
-        var muted = new HashSet<string>();
-        foreach (var s in _sources)
-            if (!_included.Contains(s.SourceId)) muted.Add(s.SourceId);
+        // Build the muted set. The semantics: a source is
+        // muted only if it has been EXPLICITLY toggled off by
+        // the user (via SetSourceIncludedAsync). On first
+        // call, nothing has been toggled, so nothing is muted.
+        // We track explicit-off state in _muted (a HashSet
+        // populated only by SetSourceIncludedAsync). _included
+        // is just the inverse cache used for queries; do not
+        // build muted from "not in _included" — that mutes
+        // everything on first call.
+        var muted = new HashSet<string>(_muted);
         var graph = FilterGraphBuilder.BuildTakeGraph(
             _sources.Select(s => s.TakeSource).ToList(),
             muted);
