@@ -636,7 +636,7 @@ public sealed class TakeRow : ObservableObject
 {
     public TakeRow(Take take, int number, bool isFavorite, string folderPath,
         Action<TakeRow> toggleFavorite, Action<TakeRow> delete, Action<TakeRow> openFolder,
-        Action<TakeRow> normalize,
+        Action<TakeRow> normalize, Action<TakeRow> unnormalize,
         Func<string, string?> sourceLabel, Func<string, string?> sourceBadge,
         Action<TakeRow> playTake, Action<TakeRow> saveTake)
     {
@@ -648,6 +648,7 @@ public sealed class TakeRow : ObservableObject
         DeleteCommand = new RelayCommand(() => delete(this));
         OpenFolderCommand = new RelayCommand(() => openFolder(this));
         NormalizeCommand = new RelayCommand(() => normalize(this));
+        UnnormalizeCommand = new RelayCommand(() => unnormalize(this));
         ToggleExpandedCommand = new RelayCommand(() => IsExpanded = !IsExpanded);
         PlayTakeCommand = new RelayCommand(() => playTake(this));
         _sourceLabel = sourceLabel;
@@ -671,6 +672,11 @@ public sealed class TakeRow : ObservableObject
     public ICommand DeleteCommand { get; }
     public ICommand OpenFolderCommand { get; }
     public ICommand NormalizeCommand { get; }
+    /// <summary>Revert any .normalized.* files: point each source at
+    /// its original (pre-normalize) file, delete the .normalized
+    /// files on disk, save the take, and refresh the file list.
+    /// Has no effect if the take isn't currently normalized.</summary>
+    public ICommand UnnormalizeCommand { get; }
     public ICommand ToggleExpandedCommand { get; }
     public ICommand PlayTakeCommand { get; }
 
@@ -696,6 +702,34 @@ public sealed class TakeRow : ObservableObject
         }
     }
     public string ExpandGlyph => IsExpanded ? "▾" : "▸";
+
+    /// <summary>Re-read the take folder and rebuild the Files list.
+    /// Used by Unnormalize (and any future action that adds or
+    /// removes files under the take folder) to keep the row's
+    /// expanded file list in sync with disk.</summary>
+    public void RefreshFiles()
+    {
+        Files.Clear();
+        try
+        {
+            if (string.IsNullOrEmpty(FolderPath) || !Directory.Exists(FolderPath)) return;
+            foreach (var f in Directory.GetFiles(FolderPath).OrderBy(Path.GetFileName))
+            {
+                var name = Path.GetFileName(f)!;
+                // take.json is metadata, not a playable source file.
+                if (name.Equals("take.json", StringComparison.OrdinalIgnoreCase)) continue;
+                var ts = Take.Sources.FirstOrDefault(s =>
+                    s.File.Equals(name, StringComparison.OrdinalIgnoreCase));
+                var label = ts is null ? null : _sourceLabel(ts.Id);
+                Files.Add(new TakeFileRow(f, new FileInfo(f).Length, label, ts,
+                    () => _saveTake(this)));
+            }
+        }
+        catch
+        {
+            // Folder may vanish if deleted externally; the row just stays empty.
+        }
+    }
 
     private void LoadFiles()
     {
@@ -1675,7 +1709,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                 continue;
             Takes.Add(new TakeRow(t, n++, t.Id == fav, _store.TakeDir(sceneFolder, t.Id),
                 ToggleFavoriteRow, DeleteTakeRow, OpenTakeFolder,
-                NormalizeTakeRow,
+                NormalizeTakeRow, UnnormalizeTakeRow,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.Label
                        ?? _palette.Sources.FirstOrDefault(p => p.Id == id)?.Label,
                 id => _store.Project.Sources.FirstOrDefault(p => p.Id == id)?.EffectiveBadge()
@@ -1866,6 +1900,75 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         catch (Exception ex)
         {
             Status = $"Normalize failed: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Revert a normalized take: point each TakeSource whose
+    /// File ends in '.normalized' back at the original file
+    /// (e.g. 'foo.normalized.wav' -> 'foo.wav'), delete the
+    /// .normalized.* files on disk, save the take, and refresh
+    /// the row's file list. If the take has no normalized
+    /// sources, no files are touched.
+    /// </summary>
+    private void UnnormalizeTakeRow(TakeRow row)
+    {
+        if (_store is null || IsRecording) return;
+        var takeDir = row.FolderPath;
+        try
+        {
+            // Find the take on disk. The Take object in row.Take is
+            // the same one we built the row from; mutate it in
+            // place and save.
+            var take = row.Take;
+            var changed = false;
+            foreach (var src in take.Sources)
+            {
+                if (!src.File.Contains(".normalized.", StringComparison.Ordinal))
+                    continue;
+                // 'foo.normalized.wav' -> 'foo.wav'. Replace just
+                // the .normalized segment so the extension is
+                // preserved.
+                var originalName = src.File.Replace(".normalized.", ".", StringComparison.Ordinal);
+                var originalPath = Path.Combine(takeDir, originalName);
+                if (!File.Exists(originalPath))
+                {
+                    Status = $"Unnormalize {row.DisplayName}: missing original '{originalName}' — skipping {src.Id}.";
+                    continue;
+                }
+                src.File = originalName;
+                changed = true;
+            }
+            // Delete any .normalized.* files on disk that aren't
+            // referenced by the take any more.
+            if (Directory.Exists(takeDir))
+            {
+                foreach (var f in Directory.EnumerateFiles(takeDir))
+                {
+                    var name = Path.GetFileName(f);
+                    if (name.Contains(".normalized.", StringComparison.Ordinal)
+                        && !take.Sources.Any(s => s.File.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        try { File.Delete(f); } catch { }
+                    }
+                }
+            }
+            if (changed)
+            {
+                _store.SaveTake(takeDir, take);
+                Status = $"Unnormalized {row.DisplayName}: reverted to original files.";
+            }
+            else
+            {
+                Status = $"Unnormalize {row.DisplayName}: nothing to revert.";
+            }
+            // Refresh the row's file list (it's cached after the
+            // first expand).
+            row.RefreshFiles();
+        }
+        catch (Exception ex)
+        {
+            Status = $"Unnormalize failed: {ex.Message}";
         }
     }
 

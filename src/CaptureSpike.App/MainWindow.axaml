@@ -245,6 +245,9 @@
                   <Button DockPanel.Dock="Left" Classes="plain" Content="⇆"
                           Command="{Binding NormalizeCommand}" FontSize="15"
                           ToolTip.Tip="Normalize: write aligned copies of all source files and reset their offsets. Originals are kept." />
+                  <Button DockPanel.Dock="Left" Classes="plain" Content="↶"
+                          Command="{Binding UnnormalizeCommand}" FontSize="15"
+                          ToolTip.Tip="Unnormalize: revert a normalized take back to its original files. Deletes the .normalized.* files and points the take at the originals." />
                   <Button DockPanel.Dock="Left" Classes="plain" Content="{Binding ExpandGlyph}"
                           Command="{Binding ToggleExpandedCommand}" FontSize="13"
                           ToolTip.Tip="Show take files" />
