@@ -55,6 +55,17 @@ public partial class App : Application
             SetupTrayIcon(desktop, (Window)desktop.MainWindow, vm);
             vm.Status = $"Log folder: {AppLog.LogDirectory}";
             vm.Log($"Session started. Log folder: {AppLog.LogDirectory}");
+            // Kill any external-tool child processes that are still
+            // running when the user closes the app. ffmpeg
+            // occasionally hangs (e.g. on infinite silent sources)
+            // and mpv can stay open if its engine wasn't disposed.
+            // Without this, those processes keep writing to disk
+            // (the user reported a 75GB WAV being created from a
+            // runaway ffmpeg) and never release the IPC pipe.
+            desktop.ShutdownRequested += (_, _) =>
+            {
+                ChildProcessRegistry.KillAll();
+            };
         }
         base.OnFrameworkInitializationCompleted();
     }

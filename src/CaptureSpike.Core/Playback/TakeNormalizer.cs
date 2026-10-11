@@ -437,29 +437,46 @@ public static class TakeNormalizer
                 output,
             };
         }
-        // Audio-only: prepend silence. Concat the silent
-        // pre-roll with the input's audio. Without
-        // `-shortest` and a `-t` bound on the silent
-        // source, ffmpeg's concat filter waits for BOTH
-        // inputs to "finish" — but the anullsrc is
-        // open-ended (infinite silence), so ffmpeg hangs.
-        // The previous version hung on the user's machine
-        // (per their log: "I keep hanging on the 930ms of
-        // silence"). -t <prependSec> on the silent input
-        // makes it finite, -shortest makes concat stop
-        // after the real input ends.
+        // Audio-only: delay the input by <prependSec> so its
+        // first sample lands at prependSec instead of 0. The
+        // output is just the input with a prepended silence
+        // region. No second input, no concat, no infinite
+        // source filters — ffmpeg can process this in a
+        // single pass and the output duration is exactly
+        // (prependSec + inputDuration).
+        //
+        // Why not the previous approach (concat anullsrc
+        // + input)? Two reasons:
+        // 1. ffmpeg's `concat` filter makes all inputs
+        //    the same duration, padding the shorter one.
+        //    Anullsrc is open-ended by default; -t on it
+        //    bounds it, but ffmpeg still waits for the
+        //    shortest input to "finish" before producing
+        //    output, and the silent source can hang the
+        //    muxer.
+        // 2. With -c:a pcm_s16le the bit rate matches
+        //    NAudio's output (the user's mic files are
+        //    pcm_f32le though — bit rate is preserved
+        //    separately by the pad pass).
         return new[]
         {
             "-y",
-            "-f", "lavfi", "-i", $"anullsrc=channel_layout=stereo:sample_rate=48000", "-t", secStr,
             "-i", input,
-            "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]",
-            "-map", "[a]",
+            "-af", $"adelay=delays={FormatAdelayMs(seconds)}:all=1",
             "-c:a", "pcm_s16le",
-            "-shortest",
             output,
         };
     }
+
+    /// <summary>
+    /// Convert a seconds value to milliseconds (rounded to
+    /// integer) for ffmpeg's adelay filter. adelay takes
+    /// delays in milliseconds, one per channel, separated
+    /// by '|'. With all=1, the same delay applies to every
+    /// channel.
+    /// </summary>
+    private static string FormatAdelayMs(double seconds) =>
+        ((int)Math.Round(seconds * 1000.0)).ToString(CultureInfo.InvariantCulture);
 
     private static string FormatSeconds(double seconds) =>
         seconds.ToString("0.000", CultureInfo.InvariantCulture);
@@ -979,6 +996,13 @@ public static class TakeNormalizer
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException("Could not start ffmpeg.");
+        // Track so the app can kill a runaway ffmpeg on shutdown.
+        // Without this, an ffmpeg hung on an unbounded source
+        // (anullsrc with concat that ignores -shortest, for
+        // example) would keep writing to the output file long
+        // after the user closed the app. The user reported a
+        // 75GB WAV being created this way.
+        ChildProcessRegistry.Track(process);
 
         // Drain stderr asynchronously; if it grows huge that's fine.
         var stderr = stderrOut ?? new StringBuilder();
@@ -1004,6 +1028,9 @@ public static class TakeNormalizer
 
         await process.WaitForExitAsync(ct).ConfigureAwait(false);
         try { await stderrTask.ConfigureAwait(false); } catch { }
+        // Process completed normally. Untrack so the registry
+        // doesn't accumulate dead references over the session.
+        ChildProcessRegistry.Untrack(process);
 
         if (ct.IsCancellationRequested)
             throw new OperationCanceledException(ct);

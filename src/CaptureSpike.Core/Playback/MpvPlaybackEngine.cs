@@ -377,10 +377,16 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         catch
         {
             await KillProcessAsync(process).ConfigureAwait(false);
+            ChildProcessRegistry.Untrack(process);
             throw;
         }
 
         _process = process;
+        // Track so the app can kill a runaway mpv on shutdown.
+        // Without this, an mpv stuck waiting for a graph load
+        // can keep the IPC pipe open long after the user
+        // closed the app, blocking the next session.
+        ChildProcessRegistry.Track(process);
         var ipc = _ipc ?? throw new InvalidOperationException("mpv IPC did not connect.");
         ipc.TrafficLog = LogIpcTraffic;
         _fileLoadedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -625,7 +631,14 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         var process = _process;
         _process = null;
         if (process is not null)
+        {
             await KillProcessAsync(process).ConfigureAwait(false);
+            // Process is dead; remove from the registry so
+            // the app's shutdown handler doesn't try to kill
+            // it again (and so the list doesn't grow over the
+            // session as the user opens/closes the player).
+            ChildProcessRegistry.Untrack(process);
+        }
         _loaded = false;
     }
 
