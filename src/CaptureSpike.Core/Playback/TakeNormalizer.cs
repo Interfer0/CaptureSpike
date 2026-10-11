@@ -94,10 +94,6 @@ public static class TakeNormalizer
         // Diagnostic: surface the per-source first-non-silent
         // times so the user can see what each source was
         // detected at, and what the trim anchor ended up being.
-        // Helps confirm the right sources went into the max
-        // calculation (e.g. a source whose first-non-silent is
-        // 0 because the file is all silence shouldn't lower
-        // the max).
         foreach (var src in take.Sources)
         {
             if (perSourceFirstNonSilentMs.TryGetValue(src.Id, out var ms))
@@ -109,12 +105,16 @@ public static class TakeNormalizer
         // Diagnostic: surface the computed max so the user can
         // see what value the code decided on.
         progress?.Invoke("", null,
-            $"Normalize plan: trim {maxFirstNonSilentMs:F0}ms (max first-non-silent), pad to {targetSeconds:F2}s (longest input).");
-        // maxOffsetMs (the old variable) is replaced by
-        // maxFirstNonSilentMs in the per-source trim below. The
-        // old field stays as maxOffsetMs so the rest of the
-        // function is unchanged.
-        var maxOffsetMs = maxFirstNonSilentMs;
+            $"Normalize plan: trim to take-time {maxFirstNonSilentMs:F0}ms (max first-non-silent), pad to {targetSeconds:F2}s (longest input).");
+        // We no longer pre-compute a single trim value here.
+        // Each source's trim is computed per-source from its own
+        // first-non-silent time: a source whose first sound is
+        // AT the anchor (e.g. the screen that started late and
+        // whose first frame IS the trim anchor) is not trimmed
+        // at all. A source that started before the anchor (a
+        // mic with a few hundred ms of pre-anchor silence) is
+        // trimmed by (anchor - firstNonSilentMs) so its first
+        // sound lines up with the anchor.
 
         foreach (var src in take.Sources)
         {
@@ -149,21 +149,25 @@ public static class TakeNormalizer
 
             try
             {
-                // Trim the file so its content starts at the same
-                // take-time across every source in the take. The
-                // amount trimmed is the MAX offset across the take
-                // (not this source's own offset). A source that
-                // started earlier (smaller offset) loses that much
-                // extra silence/no-data to the trim; a source that
-                // started exactly at maxOffset keeps its full first
-                // data. After trim, every file's t=0 corresponds to
-                // the same take-time, and the player can play from
-                // t=0 with no per-source seek — all content aligns.
-                var trimMs = maxOffsetMs;
+                // Per-source trim: how much of THIS file's
+                // beginning we drop so that its first audible
+                // content lands at the take's trim anchor
+                // (maxFirstNonSilentMs). A source whose
+                // first-non-silent is BEFORE the anchor gets
+                // trimmed by (anchor - firstNonSilentMs). A
+                // source whose first-non-silent IS the anchor
+                // (e.g. the screen that started late and whose
+                // first frame is the anchor itself) is not
+                // trimmed at all — the trim amount is zero.
+                var sourceFirstNonSilentMs = perSourceFirstNonSilentMs.TryGetValue(src.Id, out var v)
+                    ? v : src.EffectiveOffsetMs;
+                var trimMs = Math.Max(0, maxFirstNonSilentMs - sourceFirstNonSilentMs);
                 if (trimMs < 0.5)
                 {
-                    // maxOffset is 0 (or all sources are missing).
-                    // Just copy the file as-is to .normalized.
+                    // Either the source's first-non-silent is
+                    // already at the anchor, or all sources are
+                    // at offset 0. Either way, just copy the
+                    // file as-is to .normalized.
                     progress?.Invoke(src.Id, 0.0,
                         $"{src.File} no trim needed; copying to .normalized.");
                     File.Copy(inputPath, outputPath, overwrite: true);
