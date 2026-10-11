@@ -280,7 +280,15 @@ public static class TakeNormalizer
     /// </summary>
     private static async Task PadToDurationAsync(string ffmpeg, string path, double targetSeconds, CancellationToken ct)
     {
-        var tempPath = path + ".padtmp";
+        // ffmpeg picks the output muxer from the file extension, so
+        // the temp file must keep the input's extension (.wav,
+        // .mkv, .mp4, ...) or ffmpeg returns EINVAL — "Unable to
+        // choose an output format for '*.padtmp'". Strip the
+        // original extension, append .padtmp.<ext> so ffmpeg can
+        // mux the output, and File.Move at the end will swap it
+        // back over the canonical .normalized.<ext> path.
+        var origExt = Path.GetExtension(path);
+        var tempPath = Path.ChangeExtension(path, null) + ".padtmp" + origExt;
         var secStr = FormatSeconds(targetSeconds);
         // We branch on whether the input has a video stream. A
         // single filter graph that applies both tpad and apad
