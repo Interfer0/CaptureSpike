@@ -684,9 +684,12 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
 {
     private ProjectStore? _store;
     /// <summary>
-    /// Global palette loaded once at app start. The Sources panel
-    /// reads from this; AddPaletteSource / DeletePaletteSource mutate
-    /// it and Save() to <see cref="GlobalPalette.FilePath"/>.
+    /// Global palette (palette.json in the CaptureSpike data folder)
+    /// loaded once at app start. It's the user's startup catalog:
+    /// opened at startup, edited by the user via "+ Add" / delete,
+    /// and used to seed brand-new projects. Opening a project
+    /// does NOT touch this — it's the user's master list, not a
+    /// project cache.
     /// </summary>
     private GlobalPalette _palette = GlobalPalette.Load();
 
@@ -1431,42 +1434,27 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     }
 
     /// <summary>
-    /// Persists the user's edits to a project source. The project
-    /// file is the source of truth for THIS project's view of the
-    /// source (device, badge, label). The global palette.json is
-    /// a master catalog — when the user picks a device here, we
-    /// also write the device to the global entry so the next project
-    /// that opens sees the same pick. Without the global write, each
-    /// new project would have to re-pick every device.
+    /// Persists the user's edits to a project source. ONLY the
+    /// project's own Project.Sources entry is touched. The global
+    /// palette.json is the user's startup catalog and is NEVER
+    /// modified by opening or editing a project — it changes only
+    /// when the user explicitly uses the "+ Add Source" or delete
+    /// actions. Without this rule, opening a project would silently
+    /// overwrite the user's catalog.
     /// </summary>
     private void SavePaletteSource(string paletteId, PaletteSourceViewModel vm)
     {
         if (_store is null) return;
         var projectEntry = _store.Project.Sources.FirstOrDefault(s => s.Id == paletteId);
         if (projectEntry is null) return;
-        var globalEntry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
         DebugPalette($"save: paletteId={paletteId} device={vm.Source.Device ?? "<null>"} badge={vm.Source.Badge ?? "<null>"}");
-        // Update the project's own entry. Device lives here too —
-        // the project file is the primary read path on open.
-        var projectChanged = false;
-        if (projectEntry.Device != vm.Source.Device) { projectEntry.Device = vm.Source.Device; projectChanged = true; }
-        if (projectEntry.Badge != vm.Source.Badge) { projectEntry.Badge = vm.Source.Badge; projectChanged = true; }
-        if (projectEntry.Label != vm.Source.Label) { projectEntry.Label = vm.Source.Label; projectChanged = true; }
-        if (projectChanged)
-        {
-            try { _store.SaveProject(); }
-            catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
-        }
-        // Also write the device to the global palette so other
-        // projects see the same pick. We do this second and ignore
-        // failures — the local save is what the user immediately
-        // sees; the global is a propagation step.
-        if (globalEntry is not null && globalEntry.Device != vm.Source.Device)
-        {
-            globalEntry.Device = vm.Source.Device;
-            try { _palette.Save(); }
-            catch (Exception ex) { DebugPalette($"save global: FAILED: {ex.Message}"); }
-        }
+        var changed = false;
+        if (projectEntry.Device != vm.Source.Device) { projectEntry.Device = vm.Source.Device; changed = true; }
+        if (projectEntry.Badge != vm.Source.Badge) { projectEntry.Badge = vm.Source.Badge; changed = true; }
+        if (projectEntry.Label != vm.Source.Label) { projectEntry.Label = vm.Source.Label; changed = true; }
+        if (!changed) return;
+        try { _store.SaveProject(); }
+        catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
     }
 
     // Diagnostic logging for palette save debugging. Off by default;

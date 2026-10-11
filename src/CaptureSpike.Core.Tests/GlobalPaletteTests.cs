@@ -65,13 +65,16 @@ public sealed class GlobalPaletteTests : IDisposable
     }
 
     [Fact]
-    public void EnsureProjectSources_SeedsFromGlobalRegistry_AndPreservesKinds()
+    public void EnsureProjectSources_LeavesNonEmptyProjectAlone()
     {
-        // The migration runs inside ProjectStore.Open. Build a fake
-        // project.json with a per-project palette that has explicit
-        // kind/label/badge, run Open, and verify the project kept
-        // its kinds (with kind/label/badge preserved verbatim) and
-        // that the global kinds registry also got any new kinds.
+        // The user's available sources catalog is theirs. Opening
+        // a project with a non-empty Project.Sources must NOT
+        // touch the global palette, must NOT add kinds the user
+        // hasn't explicitly added, and must NOT save the project.
+        // Whatever the project file says is what the user sees —
+        // full stop. The earlier "add missing global kinds" loop
+        // was rewriting the user's catalog on every open, which
+        // is exactly the bug Daniel is reporting.
         var projectDir = Path.Combine(_dir, "proj1.csp");
         Directory.CreateDirectory(projectDir);
         Directory.CreateDirectory(Path.Combine(projectDir, "scenes"));
@@ -89,42 +92,38 @@ public sealed class GlobalPaletteTests : IDisposable
             }
             """);
 
-        // Make sure the global palette file is empty so we get a clean
-        // registry to compare against.
-        var palettePath = Path.Combine(_dir, "CaptureSpike", "palette.json");
+        // Empty the global palette so we can prove opening the
+        // project doesn't touch it. CAPTURESPIKE_PALETTE_DIR is set
+        // to _dir in the ctor, so GlobalPalette.FilePath is just
+        // _dir/palette.json (no CaptureSpike subfolder — that's
+        // only the App's data folder; the env var bypasses the
+        // default layout).
+        var palettePath = _path;
         if (File.Exists(palettePath)) File.Delete(palettePath);
+
+        var beforeJson = "";
+        if (File.Exists(palettePath)) beforeJson = File.ReadAllText(palettePath);
 
         var store = ProjectStore.Open(projectDir);
 
-        // The project's palette keeps the full config: id, kind,
-        // label, badge, AND the device the user picked. Devices
-        // live in the project (per-project, the project's own
-        // file is the source of truth). The global palette is
-        // a master catalog that other projects also read; the
-        // project carries its own copy with the user's device.
-        Assert.Equal(4, store.Project.Sources.Count);
+        // The project's palette is preserved verbatim. Exactly the
+        // two entries the file had — no extras added from anywhere.
+        Assert.Equal(2, store.Project.Sources.Count);
         var screen = store.Project.Sources.First(s => s.Id == "screen");
         Assert.Equal("DisplayPort-0", screen.Device);
-        // The webcam had no device — preserved as-is.
         var webcam = store.Project.Sources.First(s => s.Id == "webcam");
         Assert.Null(webcam.Device);
-        Assert.Equal("Webcam", webcam.Label);
-        // The global registry has all the kinds, so the project also
-        // picks up the ones it was missing (mic, system).
-        Assert.Contains(store.Project.Sources, s => s.Id == "mic");
-        Assert.Contains(store.Project.Sources, s => s.Id == "system");
-        // The global registry is unchanged — the project is just a
-        // consumer; the registry isn't populated from the project
-        // (kinds are added there explicitly by the user).
-        var global = GlobalPalette.Load();
-        Assert.Equal(4, global.Sources.Count);
-        Assert.Contains(global.Sources, s => s.Id == "screen");
-        Assert.Contains(global.Sources, s => s.Id == "webcam");
-        Assert.Contains(global.Sources, s => s.Id == "mic");
-        Assert.Contains(global.Sources, s => s.Id == "system");
-        // Device stays on the project, not the registry.
-        var globalScreen = global.Sources.First(s => s.Id == "screen");
-        Assert.Null(globalScreen.Device);
+
+        // The global palette is untouched. If it didn't exist
+        // before, it still doesn't exist; if it had a specific
+        // contents, the byte-for-byte contents are unchanged.
+        Assert.Equal(beforeJson,
+            File.Exists(palettePath) ? File.ReadAllText(palettePath) : "");
+
+        // Reopening is stable: no writes, no surprises.
+        var reopened = ProjectStore.Open(projectDir);
+        Assert.Equal(2, reopened.Project.Sources.Count);
+        Assert.Equal("DisplayPort-0", reopened.Project.Sources.First(s => s.Id == "screen").Device);
     }
 
     [Fact]

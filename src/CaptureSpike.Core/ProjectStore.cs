@@ -75,52 +75,35 @@ public sealed class ProjectStore
     }
 
     /// <summary>
-    /// Ensures the project's <see cref="Project.Sources"/> contains
-    /// the kinds the user expects to see. Three cases:
-    ///   1. The project has its own entries (legacy or already
-    ///      populated) — leave them alone.
-    ///   2. The project has no entries — copy in the global registry
-    ///      so the user sees the kinds they can use. New projects
-    ///      start in this state.
-    ///   3. The global registry has kinds the project is missing —
-    ///      add them (the user has since added them in another
-    ///      project and they should be available here too).
-    /// Project.Sources is just a list of kinds the project uses
-    /// (id, kind, label, badge) — the device for each comes from
-    /// the global palette, not the project. Safe to call repeatedly.
+    /// Ensures the project has a usable <see cref="Project.Sources"/>
+    /// list when opened. Two cases:
+    ///   1. The project has its own entries — leave them exactly
+    ///      alone. Do NOT touch the global palette, do NOT add new
+    ///      kinds from the global, do NOT save the project. Opening
+    ///      a project must be a pure read; the user's available
+    ///      sources catalog is only changed by explicit user actions
+    ///      ("+ Add", device pick, delete).
+    ///   2. The project has no entries (a brand-new project or one
+    ///      from before the palette existed) — seed it from the
+    ///      global catalog. This is a one-time bootstrap that runs
+    ///      when the project is FIRST created or FIRST opened with
+    ///      an empty sources list; it never runs again on subsequent
+    ///      opens.
     /// </summary>
     private void EnsureProjectSources()
     {
-        // Project.Sources is the project's own available-sources list.
-        // It already has whatever the user picked (device, label,
-        // badge) — we don't touch it. If a kind exists in the global
-        // catalog (palette.json) that the project doesn't have, add
-        // it so the user sees kinds they've added in other projects.
-        // Devices on the new entries come from the global palette
-        // (the user's last pick) so the user doesn't have to re-pick
-        // on every project.
         if (Project.Sources.Count > 0)
         {
-            var palette = GlobalPalette.Load();
-            var existingIds = new HashSet<string>(Project.Sources.Select(s => s.Id));
-            var added = false;
-            foreach (var kind in palette.Sources)
-            {
-                if (existingIds.Contains(kind.Id)) continue;
-                Project.Sources.Add(new ProjectSource
-                {
-                    Id = kind.Id, Kind = kind.Kind, Label = kind.Label,
-                    Badge = kind.Badge, Device = kind.Device,
-                });
-                added = true;
-            }
-            if (added) SaveProject();
+            // The project already has its own catalog. Do nothing —
+            // do not reconcile with the global palette, do not save.
+            // The user's "Available sources" are whatever this file
+            // says, period.
             return;
         }
         // Empty project — seed from the global registry so the
-        // project inherits the kinds and the user's last-picked
-        // devices. Falls back to a clean default palette if the
-        // global file is missing.
+        // project inherits the user's catalog (kinds + devices).
+        // Falls back to a clean default palette if the global
+        // file is missing.
         var registry = GlobalPalette.Load();
         if (registry.Sources.Count > 0)
         {
