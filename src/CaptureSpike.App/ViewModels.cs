@@ -1380,7 +1380,11 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         }
         SelectedScene = Scenes.FirstOrDefault();
         foreach (var vm in Scenes) vm.RefreshOrder();
-        ReloadPalette();
+        // Do NOT call ReloadPalette here — the "Available sources"
+        // panel is bound to the GLOBAL palette and is loaded once at
+        // app startup. Opening or creating a project must never
+        // touch it. Only the user explicitly changes the panel via
+        // "+ Add", delete, or device pick.
     }
 
     private void ReloadPalette()
