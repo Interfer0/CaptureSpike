@@ -30,6 +30,28 @@
     <TextBlock Text="System default follows whatever your OS UI is set to (Light or Dark)."
                FontSize="14" Opacity="0.5" TextWrapping="Wrap" />
 
+    <TextBlock Text="Normalize: silence threshold (dB)"
+               FontSize="15" Opacity="0.7" Margin="0,8,0,0" />
+    <DockPanel>
+      <TextBlock DockPanel.Dock="Right" Text="dB" VerticalAlignment="Center"
+                 Margin="8,0,0,0" Opacity="0.7" />
+      <TextBox Text="{Binding SilenceThresholdDb, Mode=TwoWay}"
+               ToolTip.Tip="Audio quieter than this is treated as silence. Lower (more negative) is stricter. Default -30. Range -60 to -10." />
+    </DockPanel>
+    <TextBlock Text="Lower values (e.g. -40) catch more room tone. Higher (e.g. -20) only catch true silence. Try -20 if your normalized files are getting cut short; try -40 if they're not getting trimmed enough."
+               FontSize="14" Opacity="0.5" TextWrapping="Wrap" />
+
+    <TextBlock Text="Normalize: minimum sound duration (seconds)"
+               FontSize="15" Opacity="0.7" Margin="0,8,0,0" />
+    <DockPanel>
+      <TextBlock DockPanel.Dock="Right" Text="s" VerticalAlignment="Center"
+                 Margin="8,0,0,0" Opacity="0.7" />
+      <TextBox Text="{Binding SilenceMinDurationSec, Mode=TwoWay}"
+               ToolTip.Tip="Audio above the silence threshold must last at least this long to count as a sound event. Default 0.05s. Range 0.01 to 1.0." />
+    </DockPanel>
+    <TextBlock Text="Default 0.05s (50ms) filters noise-floor blips. Raise to 0.2s or more if your mic picks up brief clicks that are being misread as sound."
+               FontSize="14" Opacity="0.5" TextWrapping="Wrap" />
+
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                 Spacing="8" Margin="0,8,0,0">
       <Button Content="Cancel" Click="OnCancel" />

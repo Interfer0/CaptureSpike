@@ -45,10 +45,18 @@ public static class TakeNormalizer
     /// to the new file name and zeroes the offsets. Does not write take.json
     /// — the caller does that after merging the updated sources back.
     /// </summary>
+    /// <param name="silenceThresholdDb">dB below which audio is
+    /// considered silence. Default -30. Lower (more negative)
+    /// = stricter; higher (less negative) = more sensitive.</param>
+    /// <param name="silenceMinDurationSec">Minimum duration of
+    /// audio above the threshold before it counts as a sound
+    /// event. Default 0.05s.</param>
     public static async Task<Result> NormalizeAsync(
         string takeDir,
         Take take,
         ProgressReporter? progress = null,
+        double silenceThresholdDb = -30.0,
+        double silenceMinDurationSec = 0.05,
         CancellationToken ct = default)
     {
         var ffmpeg = ToolPaths.Resolve("ffmpeg");
@@ -106,7 +114,8 @@ public static class TakeNormalizer
         // that ended early (e.g. a mic that was unplugged
         // 5 minutes before the user pressed stop, leaving
         // 5 minutes of trailing silence).
-        var perSourceEnd = await ProbePerSourceEndAsync(ffmpeg, take, takeDir, ct);
+        var perSourceEnd = await ProbePerSourceEndAsync(ffmpeg, take, takeDir,
+            silenceThresholdDb, silenceMinDurationSec, ct);
         // Diagnostic: per-source trim amounts.
         foreach (var src in take.Sources)
         {
@@ -648,7 +657,9 @@ public static class TakeNormalizer
     /// </summary>
     private static async Task<Dictionary<string, (double DurationMs, double LastNonSilentMs)>>
         ProbePerSourceEndAsync(
-        string ffmpeg, Take take, string takeDir, CancellationToken ct)
+        string ffmpeg, Take take, string takeDir,
+        double silenceThresholdDb, double silenceMinDurationSec,
+        CancellationToken ct)
     {
         var result = new Dictionary<string, (double, double)>(take.Sources.Count);
         foreach (var src in take.Sources)
@@ -670,7 +681,8 @@ public static class TakeNormalizer
                 }
                 else
                 {
-                    lastNonSilentMs = await ProbeLastNonSilentAsync(ffmpeg, path, ct)
+                    lastNonSilentMs = await ProbeLastNonSilentAsync(ffmpeg, path,
+                        silenceThresholdDb, silenceMinDurationSec, ct)
                         .ConfigureAwait(false);
                 }
                 result[src.Id] = (durMs, lastNonSilentMs);
@@ -691,7 +703,9 @@ public static class TakeNormalizer
     /// to substitute dur) if detection fails.
     /// </summary>
     private static async Task<double> ProbeLastNonSilentAsync(
-        string ffmpeg, string path, CancellationToken ct)
+        string ffmpeg, string path,
+        double silenceThresholdDb, double silenceMinDurationSec,
+        CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
@@ -705,7 +719,7 @@ public static class TakeNormalizer
         psi.ArgumentList.Add("-i");
         psi.ArgumentList.Add(path);
         psi.ArgumentList.Add("-af");
-        psi.ArgumentList.Add("silencedetect=noise=-30dB:d=0.05");
+        psi.ArgumentList.Add($"silencedetect=noise={silenceThresholdDb.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}dB:d={silenceMinDurationSec.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}");
         psi.ArgumentList.Add("-f");
         psi.ArgumentList.Add("null");
         psi.ArgumentList.Add("-");

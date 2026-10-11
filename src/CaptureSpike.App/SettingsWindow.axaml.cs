@@ -47,6 +47,8 @@ public sealed class SettingsViewModel : ObservableObject
     public SettingsViewModel()
     {
         _projectsFolder = AppSettings.ProjectsDir;
+        _silenceThresholdDb = AppSettings.SilenceThresholdDb;
+        _silenceMinDurationSec = AppSettings.SilenceMinDurationSec;
         ThemeOptions =
         [
             new ThemeChoice("Dark", "Dark"),
@@ -68,6 +70,36 @@ public sealed class SettingsViewModel : ObservableObject
     {
         get => _projectsFolder;
         set => SetField(ref _projectsFolder, value);
+    }
+
+    // Audio level (in dB) below which a sample is considered
+    // silence. Used by the normalize pass's trailing-silence
+    // detector. Default -30dB. Range -60 to -10.
+    private double _silenceThresholdDb;
+    public double SilenceThresholdDb
+    {
+        get => _silenceThresholdDb;
+        set
+        {
+            // Clamp on input so the TextBox can't show values
+            // outside the supported range.
+            var clamped = Math.Max(-60.0, Math.Min(-10.0, value));
+            if (SetField(ref _silenceThresholdDb, clamped)) { }
+        }
+    }
+
+    // Minimum duration of audio above the silence threshold
+    // before it counts as a sound event. Default 0.05s
+    // (50ms). Range 0.01 to 1.0.
+    private double _silenceMinDurationSec;
+    public double SilenceMinDurationSec
+    {
+        get => _silenceMinDurationSec;
+        set
+        {
+            var clamped = Math.Max(0.01, Math.Min(1.0, value));
+            if (SetField(ref _silenceMinDurationSec, clamped)) { }
+        }
     }
 
     public IReadOnlyList<ThemeChoice> ThemeOptions { get; }
@@ -92,6 +124,8 @@ public sealed class SettingsViewModel : ObservableObject
         if (!string.IsNullOrWhiteSpace(_projectsFolder))
             AppSettings.ProjectsDir = _projectsFolder;
         AppSettings.Theme = _theme;
+        AppSettings.SilenceThresholdDb = _silenceThresholdDb;
+        AppSettings.SilenceMinDurationSec = _silenceMinDurationSec;
     }
 
     /// <summary>Apply the current theme to Avalonia. Called on construction

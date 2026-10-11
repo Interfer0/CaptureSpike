@@ -101,6 +101,22 @@ internal static class AppSettings
         public double? WindowHeight { get; set; }
         [JsonPropertyName("windowMaximized")]
         public bool WindowMaximized { get; set; }
+        [JsonPropertyName("silenceThresholdDb")]
+        /// <summary>Audio level (in dB) below which a sample is
+        /// considered silence. Used by the normalize pass's
+        /// trailing-silence detector. Defaults to -30dB;
+        /// lower (more negative) = stricter (only true silence
+        /// is silent), higher (less negative) = more sensitive
+        /// (quiet speech / room tone counts as sound). Range
+        /// -60 to -10 is the practical window.</summary>
+        public double? SilenceThresholdDb { get; set; }
+        [JsonPropertyName("silenceMinDurationSec")]
+        /// <summary>Minimum duration of audio above the
+        /// silence threshold before it counts as a sound
+        /// event. Sub-second blips from the noise floor
+        /// don't count. Default 0.05s (50ms). Range
+        /// 0.01..1.0.</summary>
+        public double? SilenceMinDurationSec { get; set; }
     }
 
     private static SettingsData Load()
@@ -153,6 +169,42 @@ internal static class AppSettings
     {
         get => Load().ProjectsDir ?? DefaultProjectsDir();
         set { var d = Load(); d.ProjectsDir = value; Save(d); }
+    }
+
+    /// <summary>
+    /// dB threshold for the normalize pass's silence
+    /// detector. Audio quieter than this is treated as
+    /// silence; the trim cuts the file at the last sample
+    /// above the threshold. Default -30dB. Range -60 to -10.
+    /// </summary>
+    public static double SilenceThresholdDb
+    {
+        get => Load().SilenceThresholdDb ?? -30.0;
+        set
+        {
+            // Clamp to a sensible window so a typo doesn't
+            // produce a useless graph. -60dB is essentially
+            // the digital noise floor; -10dB is loud speech.
+            var clamped = Math.Max(-60.0, Math.Min(-10.0, value));
+            var d = Load(); d.SilenceThresholdDb = clamped; Save(d);
+        }
+    }
+
+    /// <summary>
+    /// Minimum duration (in seconds) of audio above the
+    /// silence threshold before the detector treats it as
+    /// a sound event. Sub-second blips from the noise
+    /// floor don't count. Default 0.05s (50ms). Range
+    /// 0.01 to 1.0.
+    /// </summary>
+    public static double SilenceMinDurationSec
+    {
+        get => Load().SilenceMinDurationSec ?? 0.05;
+        set
+        {
+            var clamped = Math.Max(0.01, Math.Min(1.0, value));
+            var d = Load(); d.SilenceMinDurationSec = clamped; Save(d);
+        }
     }
 
     /// <summary>
@@ -1904,7 +1956,9 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                         Status = $"Normalize {label} [{sourceId}]: {p * 100:F0}% — {message}";
                     else
                         Status = $"Normalize {label}: {message}";
-                });
+                },
+                silenceThresholdDb: AppSettings.SilenceThresholdDb,
+                silenceMinDurationSec: AppSettings.SilenceMinDurationSec);
             if (result.Failed.Count > 0)
             {
                 Status = $"Normalize {label}: {result.Failed.Count} source(s) failed — {string.Join("; ", result.Failed)}";
