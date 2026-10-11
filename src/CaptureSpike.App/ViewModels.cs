@@ -1583,13 +1583,15 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     /// </summary>
     private void SavePaletteSource(string paletteId, PaletteSourceViewModel vm)
     {
+        if (vm is null || vm.Source is null) return;
+        var src = vm.Source;
         var globalEntry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
         if (globalEntry is null) return;
-        DebugPalette($"save: paletteId={paletteId} device={vm.Source.Device ?? "<null>"} badge={vm.Source.Badge ?? "<null>"}");
+        DebugPalette($"save: paletteId={paletteId} device={src.Device ?? "<null>"} badge={src.Badge ?? "<null>"}");
         var changed = false;
-        if (globalEntry.Device != vm.Source.Device) { globalEntry.Device = vm.Source.Device; changed = true; }
-        if (globalEntry.Badge != vm.Source.Badge) { globalEntry.Badge = vm.Source.Badge; changed = true; }
-        if (globalEntry.Label != vm.Source.Label) { globalEntry.Label = vm.Source.Label; changed = true; }
+        if (globalEntry.Device != src.Device) { globalEntry.Device = src.Device ?? ""; changed = true; }
+        if (globalEntry.Badge != src.Badge) { globalEntry.Badge = src.Badge ?? ""; changed = true; }
+        if (globalEntry.Label != src.Label) { globalEntry.Label = src.Label ?? ""; changed = true; }
         if (!changed) return;
         // Capture the full state BEFORE Save so we can prove the
         // save serialised what we expected, and prove other entries

@@ -42,7 +42,7 @@ public sealed class TiledPlaybackWindow : Window
 
     private readonly List<TileSourceInfo> _sources;
     private readonly Action<string> _onTrackClicked;
-    private readonly MpvVideoHost _videoHost;
+    private readonly MpvVideoHost? _videoHost;
     private readonly TaskCompletionSource<nint> _handleTcs = new();
     private TextBlock? _loadingText;
     private readonly Dictionary<string, Border> _trackBorders = new();
@@ -82,9 +82,10 @@ public sealed class TiledPlaybackWindow : Window
         // from the lavfi graph renders here. mvp + xstack tile
         // every source into this surface, so we get one
         // synchronized view of everything.
-        _videoHost = new MpvVideoHost();
-        _videoHost.HandleCreated += h => _handleTcs.TrySetResult(h);
-        _videoHost.HandleDestroyed += () => _handleTcs.TrySetCanceled();
+        var host = new MpvVideoHost();
+        host.HandleCreated += h => _handleTcs.TrySetResult(h);
+        host.HandleDestroyed += () => _handleTcs.TrySetCanceled();
+        _videoHost = host;
 
         // Track strip below the video: one clickable row per
         // source, shows badge + label, click to mute.
@@ -121,7 +122,7 @@ public sealed class TiledPlaybackWindow : Window
         }
 
         var videoPanel = new Panel();
-        videoPanel.Children.Add(_videoHost);
+        videoPanel.Children.Add(host);
 
         // Loading overlay.
         _loadingText = new TextBlock
