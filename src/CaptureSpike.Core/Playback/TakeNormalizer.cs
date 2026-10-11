@@ -79,6 +79,14 @@ public static class TakeNormalizer
         // that started exactly at maxOffset keeps its full first
         // data. After trim, all files' content aligns.
         var maxOffsetMs = await ResolveMaxOffsetMsAsync(take);
+        // Diagnostic: surface the computed max offset in the
+        // status line so the user can see what value the code
+        // decided on. Helps confirm the right sources went into
+        // the max calculation (e.g. a stale ManualOffsetMs on
+        // one source wouldn't lower the max below the actual
+        // recorder-detected offset).
+        progress?.Invoke("", null,
+            $"Normalize plan: trim {maxOffsetMs:F0}ms (max offset), pad to {targetSeconds:F2}s (longest input).");
 
         foreach (var src in take.Sources)
         {
