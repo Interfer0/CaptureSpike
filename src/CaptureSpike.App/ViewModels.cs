@@ -1944,12 +1944,21 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             var changed = false;
             foreach (var src in take.Sources)
             {
-                if (!src.File.Contains(".normalized.", StringComparison.Ordinal))
-                    continue;
-                // 'foo.normalized.wav' -> 'foo.wav'. Replace just
-                // the .normalized segment so the extension is
-                // preserved.
-                var originalName = src.File.Replace(".normalized.", ".", StringComparison.Ordinal);
+                // 'NORM-foo.wav' -> 'foo.wav' (strip the
+                // NORM- prefix). Old naming used '.normalized.'
+                // which we also recognize for backward
+                // compatibility with previously-normalized
+                // takes.
+                string? originalName = null;
+                if (src.File.StartsWith("NORM-", StringComparison.Ordinal))
+                {
+                    originalName = src.File.Substring("NORM-".Length);
+                }
+                else if (src.File.Contains(".normalized.", StringComparison.Ordinal))
+                {
+                    originalName = src.File.Replace(".normalized.", ".", StringComparison.Ordinal);
+                }
+                if (originalName is null) continue;
                 var originalPath = Path.Combine(takeDir, originalName);
                 if (!File.Exists(originalPath))
                 {
@@ -1959,14 +1968,16 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                 src.File = originalName;
                 changed = true;
             }
-            // Delete any .normalized.* files on disk that aren't
-            // referenced by the take any more.
+            // Delete any .normalized.* or NORM-* files on disk
+            // that aren't referenced by the take any more.
             if (Directory.Exists(takeDir))
             {
                 foreach (var f in Directory.EnumerateFiles(takeDir))
                 {
                     var name = Path.GetFileName(f);
-                    if (name.Contains(".normalized.", StringComparison.Ordinal)
+                    var isNormVariant = name.Contains(".normalized.", StringComparison.Ordinal)
+                        || name.StartsWith("NORM-", StringComparison.Ordinal);
+                    if (isNormVariant
                         && !take.Sources.Any(s => s.File.Equals(name, StringComparison.OrdinalIgnoreCase)))
                     {
                         try { File.Delete(f); } catch { }

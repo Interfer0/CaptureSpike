@@ -89,46 +89,43 @@ public static class TakeNormalizer
         // For audio, it's the first time the audio exceeds the
         // silence threshold, measured from the file's own t=0
         // and translated back to take-time using EffectiveOffsetMs.
-        // Compute the trim anchor from file durations. The
-        // user's key insight (paraphrased): "if the audio
-        // files all end at the same time and one is 1s
-        // shorter, that means that one started 1s later —
-        // pad the start of the longer one, don't trim the
-        // short one." This is much more reliable than
-        // silencedetect, which has noise-floor problems
-        // (quiet speech can be misclassified, leading to
-        // trimming the actual content).
+        // Compute the trim anchor from per-source file
+        // analysis. The user's insight: "if a source ends
+        // with dead space, that's the part that needs
+        // trimming, not the beginning." We probe each file
+        // for (duration, lastNonSilentMs). The anchor is
+        // the LATEST lastNonSilentMs across the take — that
+        // take-time is where "actual sound" ends for the
+        // longest-lasting source. Every other file's last
+        // sound must align with the same take-time, so we
+        // chop off the trailing silence from each file by
+        // (thisDuration - thisLastNonSilentMs).
         //
-        // For each source we probe its duration. The
-        // longest-duration file is the "anchor" — it started
-        // first (or equivalently, was capturing the longest).
-        // Every other file's first sample corresponds to a
-        // take-time of (maxDuration - thisDuration) ms after
-        // the anchor's first sample. We trim each file by
-        // (maxDuration - thisDuration) so every file's t=0
-        // lines up with the same take-time.
-        //
-        // Special case: if the user manually applied offsets
-        // to a source (ManualOffsetMs), that override is
-        // ignored here. The user's record-time intent is
-        // that all sources start when record begins, so
-        // durations are the source of truth.
-        var perSourceDurationMs = await ProbePerSourceDurationAsync(ffmpeg, take, takeDir, ct);
-        var maxDurationMs = perSourceDurationMs.Values.DefaultIfEmpty(0).Max();
-        // Diagnostic: surface the per-source durations and
-        // the implied trim anchor so the user can see what
-        // was detected.
+        // This is more reliable than the previous
+        // duration-only approach because it handles files
+        // that ended early (e.g. a mic that was unplugged
+        // 5 minutes before the user pressed stop, leaving
+        // 5 minutes of trailing silence).
+        var perSourceEnd = await ProbePerSourceEndAsync(ffmpeg, take, takeDir, ct);
+        // Diagnostic: per-source trim amounts.
         foreach (var src in take.Sources)
         {
-            if (perSourceDurationMs.TryGetValue(src.Id, out var dur))
+            if (perSourceEnd.TryGetValue(src.Id, out var info))
             {
-                var trim = maxDurationMs - dur;
+                var trimEndMs = info.DurationMs - info.LastNonSilentMs;
                 progress?.Invoke(src.Id, null,
-                    $"Duration: {dur / 1000.0:F2}s; trim {trim:F0}ms to align with longest source.");
+                    $"Duration: {info.DurationMs / 1000.0:F2}s; last sound at {info.LastNonSilentMs / 1000.0:F2}s; trim {trimEndMs:F0}ms of trailing silence.");
             }
         }
+        // The new target is the latest lastNonSilentMs
+        // (the take-time at which all sources' actual
+        // content ends). Sources whose last non-silent is
+        // earlier get their trailing silence trimmed.
+        var maxLastNonSilentMs = perSourceEnd.Values
+            .Select(v => v.LastNonSilentMs > 0 ? v.LastNonSilentMs : v.DurationMs)
+            .DefaultIfEmpty(0).Max();
         progress?.Invoke("", null,
-            $"Normalize plan: trim each source to align with the longest ({maxDurationMs / 1000.0:F2}s), pad to {targetSeconds:F2}s.");
+            $"Normalize plan: trim trailing silence; target last-sound time {maxLastNonSilentMs / 1000.0:F2}s, pad to {targetSeconds:F2}s.");
 
         foreach (var src in take.Sources)
         {
@@ -141,18 +138,24 @@ public static class TakeNormalizer
             }
 
             // Skip already-normalized files (idempotent: running twice is a no-op).
-            if (src.File.Contains(".normalized."))
+            if (src.File.Contains(".normalized.") ||
+                Path.GetFileName(src.File).StartsWith("NORM-", StringComparison.Ordinal))
             {
                 updated.Add(src);
                 progress?.Invoke(src.Id, 1.0, $"{src.File} is already normalized; skipping.");
                 continue;
             }
 
-            // Build the output path: <basename>.normalized<ext>.
+            // Build the output path: NORM-<basename><ext>. The
+            // NORM- prefix sorts to the top in Resolve's file
+            // browser, making it easy to select only the
+            // normalized variants of a take. The original
+            // file is left untouched so the user can
+            // un-normalize to restore the unprocessed take.
             var dir = Path.GetDirectoryName(inputPath) ?? takeDir;
             var name = Path.GetFileNameWithoutExtension(inputPath);
             var ext = Path.GetExtension(inputPath);
-            var outputPath = Path.Combine(dir, $"{name}.normalized{ext}");
+            var outputPath = Path.Combine(dir, $"NORM-{name}{ext}");
 
             // Same path for input and output? shouldn't happen, but bail safely.
             if (string.Equals(inputPath, outputPath, StringComparison.OrdinalIgnoreCase))
@@ -163,30 +166,37 @@ public static class TakeNormalizer
 
             try
             {
-                // Per-source trim: how much of THIS file's
-                // beginning we drop so its first sample lines
-                // up with the take's anchor (the longest
-                // file's first sample). Trim is
-                // (maxDuration - thisDuration). The anchor
-                // file (the longest) gets no trim; shorter
-                // files are already shorter by exactly the
-                // right amount.
-                var sourceDurationMs = perSourceDurationMs.TryGetValue(src.Id, out var d)
-                    ? d : 0;
-                var trimMs = Math.Max(0, maxDurationMs - sourceDurationMs);
-                if (trimMs < 0.5)
+                // Per-source trim: chop off trailing silence so
+                // each file ends at its own last audible sample.
+                // A file that has (duration - lastNonSilentMs)
+                // of trailing silence is the common case — a mic
+                // left running after the user stopped talking,
+                // or a screen recording that captured 5 minutes
+                // of desktop after the take ended.
+                var trimEndMs = perSourceEnd.TryGetValue(src.Id, out var info)
+                    ? Math.Max(0, info.DurationMs - info.LastNonSilentMs)
+                    : 0;
+                if (trimEndMs < 0.5)
                 {
-                    // The file's duration matches the anchor.
-                    // Just copy as-is to .normalized.
+                    // No trailing silence detected. Just copy
+                    // the file as-is to .NORM-.
                     progress?.Invoke(src.Id, 0.0,
-                        $"{src.File} no trim needed; copying to .normalized.");
+                        $"{src.File} no trim needed; copying to NORM-.");
                     File.Copy(inputPath, outputPath, overwrite: true);
                 }
                 else
                 {
+                    // Trim the END of the file. We can't use
+                    // BuildTrimArgs (which trims the start). For
+                    // end-trim, we re-encode with -t to set the
+                    // output duration to (thisDuration -
+                    // trimEndMs). The new duration becomes
+                    // `info.LastNonSilentMs` (the time of the
+                    // last audible sample).
+                    var newDurationSec = (info.DurationMs - trimEndMs) / 1000.0;
                     progress?.Invoke(src.Id, 0.0,
-                        $"Trimming {trimMs:F0}ms from {src.File} (align to take's longest source).");
-                    var args = BuildTrimArgs(inputPath, outputPath, trimMs / 1000.0,
+                        $"Trimming {trimEndMs:F0}ms of trailing silence from {src.File} (last sound at {info.LastNonSilentMs / 1000.0:F2}s).");
+                    var args = BuildEndTrimArgs(inputPath, outputPath, newDurationSec,
                         src.Kind.IsVideo());
                     var exitCode = await RunFfmpegAsync(ffmpeg, args, ct);
                     if (exitCode != 0)
@@ -334,6 +344,46 @@ public static class TakeNormalizer
             "-i", input,
             "-c", "copy",
             "-avoid_negative_ts", "make_zero",
+            output,
+        };
+    }
+
+    /// <summary>
+    /// Trim the END of a file by setting the output duration
+    /// to <paramref name="durationSec"/>. Used to chop off
+    /// trailing silence detected via silencedetect. -t stops
+    /// the output at the requested duration. For audio-only
+    /// files we can stream-copy; for video we re-encode to
+    /// land exactly on the last audible sample.
+    /// </summary>
+    private static string[] BuildEndTrimArgs(string input, string output, double durationSec,
+        bool isVideo)
+    {
+        var secStr = FormatSeconds(durationSec);
+        if (isVideo)
+        {
+            // Re-encode so the output ends exactly at the
+            // last audible sample. -t is an output option so
+            // it applies after the decoder/encoder pipeline,
+            // not as a stream-copy shortcut.
+            return new[]
+            {
+                "-y",
+                "-i", input,
+                "-t", secStr,
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                output,
+            };
+        }
+        // Audio-only: -c copy is exact.
+        return new[]
+        {
+            "-y",
+            "-i", input,
+            "-t", secStr,
+            "-c", "copy",
             output,
         };
     }
@@ -584,16 +634,23 @@ public static class TakeNormalizer
     }
 
     /// <summary>
-    /// Probe each take source's media file and return its
-    /// duration in milliseconds. Used as the trim anchor:
-    /// the longest file is the one that captured the most
-    /// take-time, so every other file is shorter by exactly
-    /// the right amount to align with it.
+    /// Probe each take source's media file and return:
+    ///   - duration: total file length in ms.
+    ///   - lastNonSilentMs: time (ms from file t=0) of the
+    ///     last sample above the silence threshold, or
+    ///     duration if the file is all sound.
+    /// Used to compute the trim anchor at the END of each
+    /// file. The user's insight: "if a source ends with dead
+    /// space, that's the part that needs trimming, not the
+    /// beginning." A file whose last sound is 5 minutes
+    /// before its actual end has 5 minutes of trailing
+    /// silence we should drop.
     /// </summary>
-    private static async Task<Dictionary<string, double>> ProbePerSourceDurationAsync(
+    private static async Task<Dictionary<string, (double DurationMs, double LastNonSilentMs)>>
+        ProbePerSourceEndAsync(
         string ffmpeg, Take take, string takeDir, CancellationToken ct)
     {
-        var result = new Dictionary<string, double>(take.Sources.Count);
+        var result = new Dictionary<string, (double, double)>(take.Sources.Count);
         foreach (var src in take.Sources)
         {
             ct.ThrowIfCancellationRequested();
@@ -601,17 +658,98 @@ public static class TakeNormalizer
             if (!File.Exists(path)) continue;
             try
             {
-                var seconds = await ProbeDurationAsync(ffmpeg, path, ct).ConfigureAwait(false);
-                result[src.Id] = seconds * 1000.0;
+                var dur = await ProbeDurationAsync(ffmpeg, path, ct).ConfigureAwait(false);
+                var durMs = dur * 1000.0;
+                // For video, last non-silent = end of file
+                // (videos don't have a notion of "silence";
+                // every frame is content).
+                double lastNonSilentMs;
+                if (src.Kind.IsVideo())
+                {
+                    lastNonSilentMs = durMs;
+                }
+                else
+                {
+                    lastNonSilentMs = await ProbeLastNonSilentAsync(ffmpeg, path, ct)
+                        .ConfigureAwait(false);
+                }
+                result[src.Id] = (durMs, lastNonSilentMs);
             }
             catch
             {
-                // Skip on probe failure; the per-source
-                // trim falls back to 0 (no trim), so this
-                // file just doesn't get aligned.
+                // Skip on probe failure.
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// Run ffmpeg with silencedetect to find the LAST
+    /// non-silent timestamp (in ms, from file t=0). Returns
+    /// 0 if the entire file is silent (rare; we then trim
+    /// everything). Returns the file duration (caller's job
+    /// to substitute dur) if detection fails.
+    /// </summary>
+    private static async Task<double> ProbeLastNonSilentAsync(
+        string ffmpeg, string path, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpeg,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-hide_banner");
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(path);
+        psi.ArgumentList.Add("-af");
+        psi.ArgumentList.Add("silencedetect=noise=-30dB:d=0.05");
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("null");
+        psi.ArgumentList.Add("-");
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Could not start ffmpeg.");
+        var stderr = new StringBuilder();
+        var stderrTask = Task.Run(async () =>
+        {
+            string? line;
+            while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) != null)
+                stderr.AppendLine(line);
+        }, ct);
+        try
+        {
+            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            try { await stderrTask.ConfigureAwait(false); } catch { }
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+        // silencedetect prints pairs of (silence_start,
+        // silence_end). silence_start = beginning of a
+        // silence run. silence_end = end of a silence run
+        // (= sound resumes). After the LAST silence_end the
+        // file is "sound" until the end. So the last non-
+        // silent time is the LAST silence_end value. If the
+        // file is all sound from t=0 (no silence_end line),
+        // the last non-silent time is the file duration —
+        // we return 0 and the caller uses duration as
+        // fallback.
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            stderr.ToString(), @"silence_end:\s*(\d+(?:\.\d+)?)");
+        if (matches.Count > 0)
+        {
+            var last = matches[matches.Count - 1];
+            if (double.TryParse(last.Groups[1].Value,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var seconds))
+                return seconds * 1000.0;
+        }
+        return 0;
     }
 
     /// <summary>
