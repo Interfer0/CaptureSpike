@@ -115,17 +115,13 @@ public sealed class FilterGraphBuilderTests
     public void BuildTakeGraph_UsesFileIndexLabels_AndTilesTwoColumns()
     {
         // The single-mpv tiled take player uses
-        // --lavfi-complex=GRAPH. mpv exposes each input file's
-        // streams as [0:v], [1:v], [2:v] etc., so the graph
-        // MUST address inputs by file index, not by custom
-        // labels. xstack tiles into a 2-column grid.
-        // The TiledTakePlayer passes files in the take's
-        // source order; BuildTakeGraph walks allVideos and
-        // allAudios in their own sequences and labels them
-        // by their position in that sequence. If the take has
-        // [screen, cam, mic, sys], the file list is
-        // [screen, cam, mic, sys] in that order, mpv labels
-        // video sources 0/1 and audio sources 2/3.
+        // --lavfi-complex=GRAPH. mpv labels each input file's
+        // streams sequentially by stream type: vid1, vid2, ...
+        // for video, and aid1, aid2, ... for audio. The graph
+        // must address inputs by these labels and produce
+        // output streams labelled [vo] (video-out) and [ao]
+        // (audio-out); mpv's playback chain init looks for
+        // these specific labels.
         var sources = new List<TakeSource>
         {
             new() { Id = "screen", Kind = SourceKind.Screen, File = "s.mkv", OffsetMs = 100 },
@@ -134,23 +130,20 @@ public sealed class FilterGraphBuilderTests
             new() { Id = "sys", Kind = SourceKind.SystemAudio, File = "sa.wav", OffsetMs = 80 },
         };
         var graph = FilterGraphBuilder.BuildTakeGraph(sources);
-        // Video inputs: [0:v] and [1:v] (screen and cam are
-        // the only video sources; mic and sys are audio-only
-        // and don't appear in the video graph). They are
-        // scaled to 640x360 cells. Offsets are normalized by
-        // the smallest (mic @ 30ms): screen 100-30=70ms, cam
+        // Video inputs are vid1 (screen) and vid2 (cam).
+        // They are scaled to 640x360 cells. Offsets normalized
+        // by smallest (mic @ 30ms): screen 100-30=70ms, cam
         // 50-30=20ms.
-        Assert.Contains("[0:v]setpts=PTS+0.070/TB,scale=640:360[vp0]", graph);
-        Assert.Contains("[1:v]setpts=PTS+0.020/TB,scale=640:360[vp1]", graph);
-        // xstack tiles them in 2 columns: vp0 at (0,0), vp1 at (640,0)
-        Assert.Contains("xstack=inputs=2:layout=0_0|640_0[v]", graph);
-        // Audio: file-index labels. Audio files come AFTER
-        // video files in the file list passed to mpv, so
-        // [2:a] is the first audio (mic) and [3:a] is the
-        // second (sys). Mic @ 30ms-30ms=0ms, sys @ 80ms-30ms=50ms.
-        Assert.Contains("[2:a]adelay=delays=0:all=1,aresample=48000[ao0]", graph);
-        Assert.Contains("[3:a]adelay=delays=50:all=1,aresample=48000[ao1]", graph);
-        Assert.Contains("amix=inputs=2:normalize=0[a]", graph);
+        Assert.Contains("[vid1]setpts=PTS+0.070/TB,scale=640:360[vp0]", graph);
+        Assert.Contains("[vid2]setpts=PTS+0.020/TB,scale=640:360[vp1]", graph);
+        // xstack tiles them in 2 columns, output [vo].
+        Assert.Contains("xstack=inputs=2:layout=0_0|640_0[vo]", graph);
+        // Audio inputs are aid1 (mic) and aid2 (sys). Mic is
+        // at offset 0 (30-30), sys is at 50ms (80-30). Output
+        // [ao].
+        Assert.Contains("[aid1]adelay=delays=0:all=1,aresample=48000[ao0]", graph);
+        Assert.Contains("[aid2]adelay=delays=50:all=1,aresample=48000[ao1]", graph);
+        Assert.Contains("amix=inputs=2:normalize=0[ao]", graph);
     }
 
     [Fact]

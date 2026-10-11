@@ -99,59 +99,55 @@ public static class FilterGraphBuilder
         var allVideos = live.Where(s => s.Kind.IsVideo()).ToList();
         var allAudios = live.Where(s => s.Kind.IsAudio()).ToList();
 
-        // mpv's --lavfi-complex=GRAPH exposes each input file's
-        // streams by FILE POSITION: [0:v], [1:v], etc. for the
-        // first file's video, second file's video, etc. The
-        // TiledTakePlayer passes files to mpv in the order
-        // [video0, video1, ..., audio0, audio1, ...] so the
-        // graph can label videos by their video-list index
-        // and audios by their audio-list offset.
+        // mpv's --lavfi-complex=GRAPH has its own input label
+        // scheme that is DIFFERENT from ffmpeg's. mpv labels
+        // each input file's streams sequentially by stream
+        // type: vid1, vid2, ... for video (in the order
+        // files are listed), and aid1, aid2, ... for audio
+        // (in the order files are listed, separately).
+        // An audio-only file gets an aid label but no vid
+        // label. The graph must address inputs by these
+        // labels, NOT by [0:v], [1:a] like ffmpeg does.
         //
-        // Video indices: 0..N-1 (videos go first in the file
-        // list). Audio indices: N..N+M-1 where N = videos.Count
-        // and M = audios.Count.
+        // The TiledTakePlayer passes files in the order
+        // [video0, video1, ..., audio0, audio1, ...] so:
+        //   video0.mkv -> vid1
+        //   video1.mkv -> vid2
+        //   audio0.wav -> aid1 (no vid, because no video stream)
+        //   audio1.wav -> aid2
         //
-        // ffmpeg's lavfi rejects graphs where a referenced
-        // stream doesn't exist on the file (e.g. [0:a] on a
-        // video-only file). For every file, we provide BOTH
-        // [i:v] and [i:a] — using the file's stream when
-        // present, and a synthesized source filter (anullsrc
-        // for audio, color for video) when it's not. Note
-        // that anullsrc and color are SOURCE filters, so
-        // they must NOT have an input label — writing
-        // `[0:a]anullsrc=...` would try to take the audio
-        // stream of file 0 (which doesn't exist) and feed
-        // it through anullsrc, which is exactly the error
-        // we're trying to avoid. The correct syntax is
-        // standalone: `anullsrc=...[label]`.
+        // Output labels must be [vo] for video and [ao] for
+        // audio. mpv's playback chain init looks for these
+        // specific labels to know what streams to set up —
+        // using [v]/[a] makes mpv think there are no output
+        // streams and it produces no file-loaded event.
         //
-        // The synthesized streams are LABELED (e.g.
-        // [ias0], [ivs1]) but never consumed by downstream
-        // filters — they're there to make ffmpeg happy
-        // about the graph's stream topology. The real
-        // streams (file's [i:v] for video, [i:a] for
-        // audio) are what the xstack and amix filters
-        // consume.
-        // All-video file count N; all-audio file count M.
-        // Total files = N + M.
-        // File order = [v0, v1, ..., vN-1, a0, a1, ..., aM-1]
+        // The graph also synthesizes missing streams: anullsrc
+        // for video files that have no audio, color for audio
+        // files that have no video. These synthesized streams
+        // have arbitrary labels ([ias0], [ivs1]) and are NOT
+        // consumed by xstack/amix — they're there to make
+        // ffmpeg happy about the graph's stream topology.
+        // (Confirmed via the mpv source: see
+        // github.com/mpv-player/mpv/pull/5965 — the playback
+        // chain init looks for [vo]/[ao] specifically, and
+        // a graph with [v]/[a] outputs produces no playback
+        // stream.)
         var totalFiles = allVideos.Count + allAudios.Count;
         for (var i = 0; i < totalFiles; i++)
         {
             var isVideo = i < allVideos.Count;
             if (isVideo)
             {
-                // Video file: [i:v] is the real video, [i:a]
-                // doesn't exist on the file. anullsrc as a
-                // source filter generates silent audio.
+                // Video file: real stream is vid{fileIndex+1}.
+                // No real audio; synthesize silent.
                 sb.Append(CultureInfo.InvariantCulture,
                     $"anullsrc=channel_layout=stereo:sample_rate=48000[ias{i}];");
             }
             else
             {
-                // Audio file: [i:a] is the real audio, [i:v]
-                // doesn't exist on the file. color as a
-                // source filter generates black video.
+                // Audio file: real stream is aid{audioOrdinal+1}.
+                // No real video; synthesize black.
                 sb.Append(CultureInfo.InvariantCulture,
                     $"color=size=640x360:rate=30:color=black[ivs{i}];");
             }
@@ -160,12 +156,14 @@ public static class FilterGraphBuilder
         {
             const int cellW = 640;
             const int cellH = 360;
+            // vid1, vid2, ... for video files in order.
             for (var i = 0; i < allVideos.Count; i++)
             {
                 var v = allVideos[i];
                 var ms = v.OffsetMs - minOffsetMs;
+                var inputLabel = $"vid{i + 1}";
                 sb.Append(CultureInfo.InvariantCulture,
-                    $"[{i}:v]setpts=PTS+{Sec(ms)}/TB,scale={cellW}:{cellH}[{PLabel(i)}];");
+                    $"[{inputLabel}]setpts=PTS+{Sec(ms)}/TB,scale={cellW}:{cellH}[{PLabel(i)}];");
             }
             // Stack the cells: xstack=inputs=N:layout=0_0|w0_0|w0_h0|...
             // We use the explicit grid by giving each cell its
@@ -181,30 +179,33 @@ public static class FilterGraphBuilder
                 layoutSb.Append(CultureInfo.InvariantCulture, $"{col * cellW}_{row * cellH}");
             }
             var inputs = string.Join("", Enumerable.Range(0, allVideos.Count).Select(i => $"[{PLabel(i)}]"));
+            // Output label is [vo] (mpv's required video-out).
             sb.Append(CultureInfo.InvariantCulture,
-                $"{inputs}xstack=inputs={allVideos.Count}:layout={layoutSb}[v];");
+                $"{inputs}xstack=inputs={allVideos.Count}:layout={layoutSb}[vo];");
         }
 
-        // Audio indices: N..N+M-1 (audios come after videos in
-        // the file list, so [N:a] is the first audio file).
+        // Audio: aid1, aid2, ... for audio files in order.
+        // mpv numbers aid separately from vid: the first
+        // audio file in the file list is aid1 even if there
+        // are video files before it.
         if (allAudios.Count > 0)
         {
-            var videoCount = allVideos.Count;
             for (var i = 0; i < allAudios.Count; i++)
             {
                 var a = allAudios[i];
-                var fileIndex = videoCount + i;
                 var ms = a.OffsetMs - minOffsetMs;
+                var inputLabel = $"aid{i + 1}";
                 sb.Append(CultureInfo.InvariantCulture,
-                    $"[{fileIndex}:a]adelay=delays={ms:F0}:all=1,aresample=48000[{AOutLabel(i)}];");
+                    $"[{inputLabel}]adelay=delays={ms:F0}:all=1,aresample=48000[{AOutLabel(i)}];");
             }
             if (allAudios.Count == 1)
-                sb.Append(CultureInfo.InvariantCulture, $"[{AOutLabel(0)}]anull[a];");
+                // Output label is [ao] (mpv's required audio-out).
+                sb.Append(CultureInfo.InvariantCulture, $"[{AOutLabel(0)}]anull[ao];");
             else
             {
                 var inputs = string.Join("", Enumerable.Range(0, allAudios.Count).Select(i => $"[{AOutLabel(i)}]"));
                 sb.Append(CultureInfo.InvariantCulture,
-                    $"{inputs}amix=inputs={allAudios.Count}:normalize=0[a];");
+                    $"{inputs}amix=inputs={allAudios.Count}:normalize=0[ao];");
             }
         }
 
@@ -212,7 +213,7 @@ public static class FilterGraphBuilder
         // a black frame. Without this mpv errors with "no video".
         if (allVideos.Count == 0)
         {
-            sb.Append("color=black:size=640x360:rate=30[v];");
+            sb.Append("color=black:size=640x360:rate=30[vo];");
         }
 
         return sb.ToString().TrimEnd(';');
