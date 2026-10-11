@@ -163,14 +163,19 @@ public static class TakeNormalizer
                 {
                     progress?.Invoke(src.Id, 0.9,
                         $"Aligning length: {inputDuration:F2}s → {targetSeconds:F2}s.");
+                    // Log the input audio format BEFORE the pad so
+                    // we can confirm the pad preserved it.
+                    var inputFmt = await ProbeAudioFormatAsync(ffmpeg, inputPath, ct);
+                    progress?.Invoke(src.Id, 0.85,
+                        $"Input format: {inputFmt}.");
                     await PadToDurationAsync(ffmpeg, outputPath, targetSeconds, ct);
-                    // Diagnostic: confirm the pad actually hit the
-                    // target. If it didn't (e.g. apad=whole_dur
-                    // was rejected by this ffmpeg build and the
-                    // pad silently produced the trimmed length),
-                    // log the actual result so the user can see
-                    // which source drifted and by how much.
+                    // Diagnostic: confirm the pad hit the target
+                    // AND preserved the input's bit rate. If the
+                    // output format differs, surface that too.
                     var afterDuration = await ProbeDurationAsync(ffmpeg, outputPath, ct);
+                    var outputFmt = await ProbeAudioFormatAsync(ffmpeg, outputPath, ct);
+                    progress?.Invoke(src.Id, 0.95,
+                        $"Output format: {outputFmt}.");
                     if (Math.Abs(afterDuration - targetSeconds) > 0.05)
                     {
                         progress?.Invoke(src.Id, 0.95,
@@ -381,6 +386,68 @@ public static class TakeNormalizer
     }
 
     /// <summary>
+    /// Probe a file's first audio stream and return a short
+    /// human-readable description of the format (sample rate,
+    /// channel count, codec, bit rate). Used to verify the pad
+    /// re-encode preserved the input's bit rate. Returns
+    /// "unknown" on failure.
+    /// </summary>
+    private static async Task<string> ProbeAudioFormatAsync(string ffmpeg, string input, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpeg,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(input);
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("null");
+        psi.ArgumentList.Add("-");
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Could not start ffmpeg.");
+        var stderr = new StringBuilder();
+        var stderrTask = Task.Run(async () =>
+        {
+            string? line;
+            while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) != null)
+                stderr.AppendLine(line);
+        }, ct);
+        try
+        {
+            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            try { await stderrTask.ConfigureAwait(false); } catch { }
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+        // Find the FIRST Audio: stream line and report its
+        // format fields. ffprobe-style output:
+        //   Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 48000 Hz, 2 channels, s16, 1536 kb/s
+        var audioLine = stderr.ToString().Split('\n')
+            .FirstOrDefault(l => l.Contains("Audio:", StringComparison.Ordinal));
+        if (audioLine is null) return "no audio stream";
+        // Extract just the format fields. Drop the codec tag like
+        // ([1][0][0][0] / 0x0001) so the line is easy to read.
+        var m = System.Text.RegularExpressions.Regex.Match(audioLine, @"Audio:\s*([^,]+),\s*(\d+)\s*Hz,\s*([^,]+),\s*(\d+)\s*kb/s");
+        if (m.Success)
+        {
+            // 1=codec (e.g. "pcm_s16le"), 2=sample rate, 3=channels, 4=bit rate kb/s
+            return $"{m.Groups[1].Value.Trim()}, {m.Groups[2].Value}Hz, {m.Groups[3].Value.Trim()}, {m.Groups[4].Value}kb/s";
+        }
+        // Fallback: return a trimmed slice of the original line.
+        return audioLine.Trim().Length > 200
+            ? audioLine.Trim()[..200] + "…"
+            : audioLine.Trim();
+    }
+
+    /// <summary>
     /// Probe every source file in the take and return the longest
     /// input duration. That's the pad target for every source in
     /// the take — the longer ones are kept as-is, the shorter ones
@@ -474,7 +541,22 @@ public static class TakeNormalizer
         }, ct);
         await probe.WaitForExitAsync(ct).ConfigureAwait(false);
         try { await probeTask.ConfigureAwait(false); } catch { }
-        var hasVideo = probeStderr.ToString().Contains("Video:", StringComparison.Ordinal);
+        var probeOutput = probeStderr.ToString();
+        var hasVideo = probeOutput.Contains("Video:", StringComparison.Ordinal);
+        // Extract the input's sample rate and channel count so the
+        // pad re-encode preserves the original bit rate. Without
+        // this, some ffmpeg builds (notably on Windows) halve the
+        // sample rate or bit depth, dropping the bit rate to half.
+        int? inputSampleRate = null;
+        int? inputChannels = null;
+        var srMatch = System.Text.RegularExpressions.Regex.Match(
+            probeOutput, @"(\d+)\s*Hz");
+        if (srMatch.Success && int.TryParse(srMatch.Groups[1].Value, out var sr))
+            inputSampleRate = sr;
+        var chMatch = System.Text.RegularExpressions.Regex.Match(
+            probeOutput, @"Hz\s*,\s*(\d+)\s*channels");
+        if (chMatch.Success && int.TryParse(chMatch.Groups[1].Value, out var ch))
+            inputChannels = ch;
 
         var args = new List<string> { "-y", "-i", path };
         // Audio: pad to target. apad's whole_dur pads if shorter,
@@ -492,9 +574,16 @@ public static class TakeNormalizer
         }
         // Truncate to the target in case of any overshoot.
         args.Add("-t"); args.Add(secStr);
-        // Match input codec: pcm for wav. Don't specify a video
-        // codec for audio-only files (we'd hit "video encoder not
-        // found" or similar when there's no video stream).
+        // Match the input's audio format so the pad re-encode
+        // doesn't silently halve the bit rate. Force the same
+        // sample rate and channel count as the input; the codec
+        // stays pcm_s16le (16-bit). If the input was 24-bit or
+        // 32-bit float, this downgrades to 16-bit, which is a
+        // quality decision (we can revisit if the user records
+        // >16-bit audio). For the common 16-bit case the bit
+        // rate is preserved exactly.
+        if (inputSampleRate is not null) { args.Add("-ar"); args.Add(inputSampleRate.Value.ToString(CultureInfo.InvariantCulture)); }
+        if (inputChannels is not null) { args.Add("-ac"); args.Add(inputChannels.Value.ToString(CultureInfo.InvariantCulture)); }
         args.Add("-c:a"); args.Add("pcm_s16le");
         args.Add(tempPath);
 
