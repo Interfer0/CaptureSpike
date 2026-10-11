@@ -290,7 +290,13 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         };
         psi.ArgumentList.Add("--no-config");
         psi.ArgumentList.Add("--no-terminal");
-        psi.ArgumentList.Add("--msg-level=all=no");
+        // Suppress noisy info/warn logs but keep status=v so
+        // startup failures (lavfi graph errors, missing
+        // inputs, etc.) are visible in stderr. The previous
+        // --msg-level=all=no hid every error and the user
+        // only saw "Pipe is broken" when mpv died — they
+        // couldn't tell WHY the graph failed.
+        psi.ArgumentList.Add("--msg-level=all=warn,status=v");
         psi.ArgumentList.Add($"--input-ipc-server={ipcArg}");
         if (graph is not null)
             psi.ArgumentList.Add($"--lavfi-complex={graph}");
@@ -375,6 +381,25 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
             await StopInternalAsync().ConfigureAwait(false);
             throw new InvalidOperationException(
                 $"mpv exited during startup (code {process.ExitCode}).{(err.Length > 0 ? " mpv said: " + err[^Math.Min(err.Length, 500)..] : "")}");
+        }
+        // Probe: send a real IPC command. If the graph
+        // failed (mpv is about to die or has died), the
+        // command throws and we surface the stderr.
+        try
+        {
+            using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            probeCts.CancelAfter(TimeSpan.FromSeconds(3));
+            await _ipc!.CommandAsync(["get_property", "time-pos"], probeCts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            var err = _stderr.ToString().Trim();
+            await StopInternalAsync().ConfigureAwait(false);
+            if (err.Length > 0)
+                throw new InvalidOperationException(
+                    $"mpv rejected the startup graph. {ex.GetType().Name}: {ex.Message} mpv said: {err[^Math.Min(err.Length, 1000)..]}",
+                    ex);
+            throw;
         }
         _loaded = true;
     }
