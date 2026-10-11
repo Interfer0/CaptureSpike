@@ -889,6 +889,24 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         set => SetField(ref _isLogVisible, value);
     }
 
+    // Drives the log panel's height. Bound two-way to the
+    // DockPanel's Height so the GridSplitter can actually
+    // resize it (the previous hard-coded Height="150" made
+    // the splitter decorative). Default 150; clamped to
+    // [80, 0.7 * window height] so the user can drag the
+    // splitter all the way up without crushing the buttons
+    // and all the way down without hiding the main content.
+    private double _logPanelHeight = 150;
+    public double LogPanelHeight
+    {
+        get => _logPanelHeight;
+        set
+        {
+            var clamped = Math.Max(80, Math.Min(value, 600));
+            SetField(ref _logPanelHeight, clamped);
+        }
+    }
+
     private bool _isSourcesVisible = true;
     public bool IsSourcesVisible
     {

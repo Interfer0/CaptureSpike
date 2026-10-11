@@ -62,8 +62,15 @@
       <TextBlock Text="{Binding Status}" FontSize="15" Opacity="0.8" />
     </Border>
 
-    <!-- Log output: drag the splitter above it to show more lines -->
-    <DockPanel DockPanel.Dock="Bottom" IsVisible="{Binding IsLogVisible}" Height="150">
+    <!-- Log output: drag the splitter above it to show more lines.
+         The panel height is bound to LogPanelHeight so the
+         GridSplitter can actually drive the resize. MinHeight
+         keeps the button row usable even when the user drags
+         the splitter all the way up. -->
+    <DockPanel DockPanel.Dock="Bottom"
+                IsVisible="{Binding IsLogVisible}"
+                Height="{Binding LogPanelHeight, Mode=TwoWay}"
+                MinHeight="80">
       <DockPanel DockPanel.Dock="Top" Margin="8,4,8,2">
         <Button DockPanel.Dock="Right" Classes="plain" Content="Clear"
                 Command="{Binding ClearLogCommand}" FontSize="13"
