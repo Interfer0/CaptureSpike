@@ -911,8 +911,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         DeleteTakeCommand = new RelayCommand(() => Mutate(DeleteTake), () => HasProject && SelectedTake is not null && !IsRecording);
         ToggleFavoriteCommand = new RelayCommand(() => Mutate(ToggleFavorite), () => HasProject && SelectedTake is not null);
         ToggleRecordCommand = new RelayCommand(ToggleRecordAsync,
-            () => HasProject && !_starting && !HasBlockingDeviceIssue &&
-                  (IsRecording || SelectedScene is not null));
+            () => HasProject && !_starting && (IsRecording || SelectedScene is not null));
         _playerTimer.Tick += (_, _) => UpdatePlayerState();
         PlayerPlayPauseCommand = new RelayCommand(TogglePlayerPlayPauseAsync,
             () => _player is not null && !IsRecording);
@@ -1931,13 +1930,17 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             return;
         }
         if (SelectedScene is null) return;
+        // Note: a 'missing' device here is a soft warning, not a
+        // blocker. The detection can transiently misreport a
+        // device as missing (e.g. another app briefly grabbed the
+        // mic, the user's Bluetooth device is reconnecting) and
+        // the user knows what they're doing. Hard-block only on
+        // something the user can't work around, like no project
+        // loaded. The recording will fail with a clear ffmpeg
+        // error if the device really is gone, and the user can
+        // pick a different one in the panel.
         if (HasBlockingDeviceIssue)
-        {
-            // Safety net in case the button is enabled by a stale
-            // CanExecute before RecomputeBlockingDeviceIssue catches up.
-            Status = "Can't record: a source device is missing. Pick a connected device or remove the source from this scene.";
-            return;
-        }
+            Status = "Warning: a source device looks missing — recording will still try. Pick a connected device or remove the source if it fails.";
         await StartRecordingAsync();
     }
 

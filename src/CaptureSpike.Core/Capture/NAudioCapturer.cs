@@ -86,8 +86,16 @@ public sealed class NAudioCapturer : ISourceCapturer
         }
         catch (Exception ex) when (ex is not CaptureException)
         {
+            // 0x88890008 = AUDCLNT_E_DEVICE_IN_USE. The mic is
+            // exclusively held by another app (Zoom, Discord, OBS,
+            // browser tab). ffmpeg/directshow can't get it. Tell
+            // the user the cause — without this the raw HRESULT
+            // is just noise.
+            var hint = ex.Message.Contains("0x88890008")
+                ? " — the device is in use by another application. Close Zoom/Discord/OBS and try again."
+                : "";
             throw new CaptureException(SourceId,
-                $"Could not open audio device '{_deviceId ?? "default"}': {ex.Message}");
+                $"Could not open audio device '{_deviceId ?? "default"}': {ex.Message}{hint}");
         }
         _capture = capture;
         _writer = new WaveFileWriter(OutputFile, capture.WaveFormat);
