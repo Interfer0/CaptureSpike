@@ -1386,14 +1386,18 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     private void ReloadPalette()
     {
         PaletteSources.Clear();
-        if (_store is null) return;
-        // The Sources panel reads directly from the current project's
-        // own Project.Sources — that's the file the user edits, with
-        // the device/label/badge picks the user made. We don't look
-        // up devices in the global palette here, because for the user
-        // the project's own file is the source of truth: the dropdown
-        // shows the device the user picked, period.
-        foreach (var p in _store.Project.Sources)
+        // The "Available sources" panel reads from the GLOBAL palette
+        // (palette.json) — the user's master catalog. It is independent
+        // of which project is open: opening a different project does
+        // NOT change this panel. The panel changes ONLY when the user
+        // edits it (via "+ Add", delete, or device pick) or when the
+        // app starts (the global is loaded once at startup).
+        //
+        // The current project's Project.Sources is a separate list of
+        // imported sources (the ones the project has brought in from
+        // the master for use in its scenes). It is NOT what this panel
+        // shows.
+        foreach (var p in _palette.Sources)
         {
             // Pass a copy of the entry so the VM can mutate its
             // own Badge mid-edit without surprising the user with
@@ -1434,26 +1438,25 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     }
 
     /// <summary>
-    /// Persists the user's edits to a project source. ONLY the
-    /// project's own Project.Sources entry is touched. The global
-    /// palette.json is the user's startup catalog and is NEVER
-    /// modified by opening or editing a project — it changes only
-    /// when the user explicitly uses the "+ Add Source" or delete
-    /// actions. Without this rule, opening a project would silently
-    /// overwrite the user's catalog.
+    /// Persists the user's edits to an entry in the "Available
+    /// sources" panel. The panel is bound to the GLOBAL palette
+    /// (palette.json), so this writes the device/label/badge back
+    /// to the global entry and saves palette.json. The project
+    /// file is NOT touched — the project has its own import list
+    /// (Project.Sources) and editing the master does not change
+    /// what the project has imported.
     /// </summary>
     private void SavePaletteSource(string paletteId, PaletteSourceViewModel vm)
     {
-        if (_store is null) return;
-        var projectEntry = _store.Project.Sources.FirstOrDefault(s => s.Id == paletteId);
-        if (projectEntry is null) return;
+        var globalEntry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
+        if (globalEntry is null) return;
         DebugPalette($"save: paletteId={paletteId} device={vm.Source.Device ?? "<null>"} badge={vm.Source.Badge ?? "<null>"}");
         var changed = false;
-        if (projectEntry.Device != vm.Source.Device) { projectEntry.Device = vm.Source.Device; changed = true; }
-        if (projectEntry.Badge != vm.Source.Badge) { projectEntry.Badge = vm.Source.Badge; changed = true; }
-        if (projectEntry.Label != vm.Source.Label) { projectEntry.Label = vm.Source.Label; changed = true; }
+        if (globalEntry.Device != vm.Source.Device) { globalEntry.Device = vm.Source.Device; changed = true; }
+        if (globalEntry.Badge != vm.Source.Badge) { globalEntry.Badge = vm.Source.Badge; changed = true; }
+        if (globalEntry.Label != vm.Source.Label) { globalEntry.Label = vm.Source.Label; changed = true; }
         if (!changed) return;
-        try { _store.SaveProject(); }
+        try { _palette.Save(); }
         catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
     }
 
@@ -1838,7 +1841,6 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
 
     private async void AddPaletteSourceAsync()
     {
-        if (_store is null) return;
         if (Avalonia.Application.Current?.ApplicationLifetime
             is not IClassicDesktopStyleApplicationLifetime desktop) return;
         var dialog = new AddSourceWindow();
@@ -1846,14 +1848,12 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (result is null) return;
         try
         {
-            // Two-step add: the new kind lands in the global palette
-            // (palette.json, in the CaptureSpike folder next to the
-            // projects) AND in this project's own Project.Sources.
-            // The global is the master catalog — adding there makes
-            // the new kind available to every project on next open.
-            // The project entry is what the "Available sources"
-            // panel reads immediately so the user sees it without
-            // having to reopen.
+            // Add ONLY to the global palette. The project is not
+            // touched at all — the project has its own import list
+            // (Project.Sources) that the user manages via the scene's
+            // "+ Add" picker. Adding a kind to the master makes it
+            // available to import into any project; the project
+            // remains independent of the master.
             if (!_palette.Contains(result.Id))
             {
                 _palette.Add(new ProjectSource
@@ -1862,15 +1862,6 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                     Badge = result.Badge, Device = result.Device,
                 });
                 _palette.Save();
-            }
-            if (!_store.Project.Sources.Any(s => s.Id == result.Id))
-            {
-                _store.Project.Sources.Add(new ProjectSource
-                {
-                    Id = result.Id, Kind = result.Kind, Label = result.Label,
-                    Badge = result.Badge, Device = result.Device,
-                });
-                _store.SaveProject();
             }
             Mutate(ReloadPalette);
             Status = $"Added source \"{result.Label}\" to the palette.";
@@ -1883,20 +1874,19 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
 
     private async void DeletePaletteSource(PaletteSourceViewModel vm)
     {
-        if (_store is null || IsRecording) return;
+        if (IsRecording) return;
         if (!await ConfirmAsync("Delete source",
-                $"Delete source \"{vm.Label}\" from the palette? It will be removed from all scenes in every project. This cannot be undone."))
+                $"Delete source \"{vm.Label}\" from the palette? It will be removed from the available sources list. This cannot be undone."))
             return;
         try
         {
             var id = vm.Source.Id;
-            // Drop from the global kinds registry and from this
-            // project's palette. Other projects have their own
-            // copies on disk; they get cleaned up on next open.
+            // Drop from the global palette only. The project is not
+            // touched. Any project that has imported this source
+            // keeps its reference; the user can clean up references
+            // by editing the project's scenes.
             _palette.Remove(id);
             _palette.Save();
-            _store.Project.Sources.RemoveAll(s => s.Id == id);
-            _store.SaveProject();
             // Strip from the in-memory scenes the UI is holding for the
             // current project; otherwise the dangling reference stays
             // enabled and breaks the next recording. Other projects

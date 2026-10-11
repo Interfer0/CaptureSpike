@@ -40,15 +40,13 @@ public sealed class ProjectStore
     {
         Directory.CreateDirectory(projectDir);
         Directory.CreateDirectory(Path.Combine(projectDir, "scenes"));
-        // New projects seed their available-sources list from the
-        // global palette (palette.json) so the "Available sources"
-        // panel isn't empty and the user's previous device picks
-        // carry over to the new project. Each entry gets the
-        // kind/label/badge/device from the global. New projects
-        // start fully populated and ready to use.
+        // New projects start with an empty Project.Sources. The
+        // available-sources panel is bound to the GLOBAL palette
+        // (palette.json), so the new project doesn't need its own
+        // list to be populated. The user imports sources into the
+        // project via the scene's "+ Add" picker when needed.
         var store = new ProjectStore(projectDir,
             new Project { Name = name, NamingVersion = 1 });
-        store.EnsureProjectSources();
         store.SaveProject();
         return store;
     }
@@ -64,6 +62,11 @@ public sealed class ProjectStore
         // each scene.json, and a saved scene with empty sourceId would
         // be mistaken for "already migrated" by MigrateLegacyScene.
         store.EnsurePalette();
+        // No-op kept for clarity: opening a project must never
+        // touch the global palette or seed/clear Project.Sources.
+        // The user's "Available sources" is the global palette;
+        // Project.Sources is a per-project import list that the
+        // project owner manages.
         store.EnsureProjectSources();
         if (project.NamingVersion < 1)
         {
@@ -75,75 +78,37 @@ public sealed class ProjectStore
     }
 
     /// <summary>
-    /// Ensures the project has a usable <see cref="Project.Sources"/>
-    /// list when opened. Two cases:
-    ///   1. The project has its own entries — leave them exactly
-    ///      alone. Do NOT touch the global palette, do NOT add new
-    ///      kinds from the global, do NOT save the project. Opening
-    ///      a project must be a pure read; the user's available
-    ///      sources catalog is only changed by explicit user actions
-    ///      ("+ Add", device pick, delete).
-    ///   2. The project has no entries (a brand-new project or one
-    ///      from before the palette existed) — seed it from the
-    ///      global catalog. This is a one-time bootstrap that runs
-    ///      when the project is FIRST created or FIRST opened with
-    ///      an empty sources list; it never runs again on subsequent
-    ///      opens.
+    /// Intentionally a no-op. The project's <see cref="Project.Sources"/>
+    /// is the per-project import list — the user manages it explicitly
+    /// via the scene's "+ Add" picker. Opening or creating a project
+    /// must NEVER touch the global palette (the user's master catalog)
+    /// or seed/clear Project.Sources automatically. The "Available
+    /// sources" panel reads from the global palette; the project's
+    /// import list is independent.
     /// </summary>
     private void EnsureProjectSources()
     {
-        if (Project.Sources.Count > 0)
-        {
-            // The project already has its own catalog. Do nothing —
-            // do not reconcile with the global palette, do not save.
-            // The user's "Available sources" are whatever this file
-            // says, period.
-            return;
-        }
-        // Empty project — seed from the global registry so the
-        // project inherits the user's catalog (kinds + devices).
-        // Falls back to a clean default palette if the global
-        // file is missing.
-        var registry = GlobalPalette.Load();
-        if (registry.Sources.Count > 0)
-        {
-            Project.Sources = registry.Sources
-                .Select(k => new ProjectSource
-                {
-                    Id = k.Id, Kind = k.Kind, Label = k.Label,
-                    Badge = k.Badge, Device = k.Device,
-                })
-                .ToList();
-        }
-        else
-        {
-            Project.Sources = Project.DefaultPalette();
-        }
-        SaveProject();
+        // No-op. The user's "Available sources" is the global palette.
+        // Project.Sources is a per-project import list. They are
+        // independent, and the project does not modify the global.
     }
 
     /// <summary>
-    /// Projects written before the source palette get one: the default
-    /// palette, plus any custom devices their scenes used. Their scenes are
-    /// rewritten in the new reference format.
+    /// Migrates legacy scenes to the new reference format. Does
+    /// NOT seed Project.Sources — the project's import list is
+    /// managed by the user via the scene's "+ Add" picker, not
+    /// by automatic code. New projects start with an empty
+    /// Project.Sources; the "Available sources" panel reads from
+    /// the global palette, not the project's imports.
     /// </summary>
     private void EnsurePalette()
     {
         var dirty = false;
-        if (Project.Sources.Count == 0)
-        {
-            Project.Sources = Project.DefaultPalette();
-            dirty = true;
-        }
-
         if (Directory.Exists(ScenesDir))
         {
             foreach (var dir in Directory.GetDirectories(ScenesDir))
                 dirty |= MigrateLegacyScene(Path.GetFileName(dir));
         }
-
-        // Don't rewrite project.json when nothing changed — avoids a
-        // pointless write (and its failure modes) on every startup.
         if (dirty) SaveProject();
     }
 
