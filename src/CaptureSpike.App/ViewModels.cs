@@ -1382,10 +1382,53 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         AppSettings.LastProjectDir = dir;
         ProjectName = _store.Project.Name;
         ReloadScenes();
+        // If a scene was saved with a source id that no longer
+        // exists in the palette (the user deleted the kind, or
+        // it was a legacy entry that didn't migrate), the
+        // Recorder would fail with "references a source that no
+        // longer exists" on the next Record. Prune those refs
+        // here, save the cleaned scenes, and surface a status
+        // message so the user knows what happened.
+        var pruned = PruneDanglingSceneSources();
+        if (pruned > 0)
+        {
+            Status = $"Cleaned {pruned} stale source reference(s) from scenes.";
+            RefreshSceneDetails();
+        }
         Status = $"Project: {dir}";
         Raise(nameof(HasProject));
         Raise(nameof(ProjectFolderText));
         RaiseCommandStates();
+    }
+
+    /// <summary>
+    /// Removes any scene-source references whose id is not in
+    /// either the project's own palette or the global palette.
+    /// Returns the total number of refs removed across all
+    /// scenes. Mutates and saves the scenes that had dangling
+    /// refs.
+    /// </summary>
+    private int PruneDanglingSceneSources()
+    {
+        if (_store is null) return 0;
+        var global = _palette.Sources;
+        var known = _store.Project.Sources
+            .Select(s => s.Id)
+            .Concat(global.Select(s => s.Id))
+            .ToHashSet();
+        var total = 0;
+        foreach (var svm in Scenes)
+        {
+            var before = svm.Scene.Sources.Count;
+            svm.Scene.Sources.RemoveAll(ss => !known.Contains(ss.SourceId));
+            var removed = before - svm.Scene.Sources.Count;
+            if (removed > 0)
+            {
+                _store.SaveScene(svm.Scene);
+                total += removed;
+            }
+        }
+        return total;
     }
 
     public string ProjectFolderText =>
@@ -1921,19 +1964,20 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         try
         {
             var id = vm.Source.Id;
-            // Drop from the global palette only. The project is not
-            // touched. Any project that has imported this source
-            // keeps its reference; the user can clean up references
-            // by editing the project's scenes.
+            // Drop from the global palette. Also strip dangling
+            // refs from the current project's scenes and SAVE
+            // those scenes — otherwise the dangling reference
+            // stays in scene.json and breaks recording on the
+            // next open.
             _palette.Remove(id);
             _palette.Save();
-            // Strip from the in-memory scenes the UI is holding for the
-            // current project; otherwise the dangling reference stays
-            // enabled and breaks the next recording. Other projects
-            // have their own scene state in memory; they'll be cleaned
-            // up next time they open.
             foreach (var svm in Scenes)
+            {
+                var before = svm.Scene.Sources.Count;
                 svm.Scene.Sources.RemoveAll(s => s.SourceId == id);
+                if (svm.Scene.Sources.Count != before)
+                    _store?.SaveScene(svm.Scene);
+            }
             ReloadPalette();
             RefreshSceneSources();
             Status = $"Deleted source \"{vm.Label}\"";
