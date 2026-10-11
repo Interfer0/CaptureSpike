@@ -963,7 +963,8 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     // splitters between columns to resize; the widths
     // are bound two-way to these properties so the
     // resize persists across the session. Defaults
-    // match the previous hard-coded 260/680 split.
+    // Keep the initial layout compact enough to leave room
+    // for the take workspace on smaller displays.
     private double _leftColumnWidth = 260;
     public double LeftColumnWidth
     {
@@ -977,15 +978,15 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         }
     }
 
-    private double _rightColumnWidth = 680;
+    private double _rightColumnWidth = 420;
     public double RightColumnWidth
     {
         get => _rightColumnWidth;
         set
         {
-            // Min 280 so the notes panel stays readable;
+            // Min 240 so the notes panel stays usable;
             // no hard max — the middle column auto-shrinks.
-            var clamped = Math.Max(280, Math.Min(value, 2000));
+            var clamped = Math.Max(240, Math.Min(value, 2000));
             SetField(ref _rightColumnWidth, clamped);
         }
     }

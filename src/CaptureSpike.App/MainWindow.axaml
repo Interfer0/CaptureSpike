@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:app="clr-namespace:CaptureSpike.App"
         x:Class="CaptureSpike.App.MainWindow"
-        Title="CaptureSpike" Width="1180" Height="720" MinWidth="960" MinHeight="600">
+        Title="CaptureSpike" Width="1180" Height="720" MinWidth="760" MinHeight="600">
   <Window.Styles>
     <Style Selector="Border.badge">
       <Setter Property="CornerRadius" Value="3" />
@@ -91,7 +91,14 @@
     <GridSplitter DockPanel.Dock="Bottom" Height="5" HorizontalAlignment="Stretch"
                   ResizeDirection="Rows" IsVisible="{Binding IsLogVisible}" />
 
-    <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto" Margin="8">
+    <Grid Margin="8" ClipToBounds="True">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="5" />
+        <ColumnDefinition Width="*" MinWidth="0" />
+        <ColumnDefinition Width="5" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
       <!-- The three main panels (left=palette, middle=take
            workspace, right=notes) are user-resizable. Two
            GridSplitters between them let the user drag to
@@ -186,7 +193,7 @@
       <GridSplitter Grid.Column="1" Width="5"
                     HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                     ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
-      <Grid Grid.Column="2" Margin="0,0,8,0"
+      <Grid Grid.Column="2" MinWidth="0" ClipToBounds="True" Margin="0,0,8,0"
             RowDefinitions="Auto,Auto,Auto,Auto,2*">
         <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,4">
           <TextBlock Text="{Binding TakeHeaderText}" FontWeight="Bold" FontSize="17" />
@@ -342,81 +349,93 @@
       <GridSplitter Grid.Column="3" Width="5"
                     HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                     ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
-      <DockPanel Grid.Column="4" Width="{Binding RightColumnWidth, Mode=TwoWay}"
-                 MinWidth="280">
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8"
+      <Grid Grid.Column="4" Width="{Binding RightColumnWidth, Mode=TwoWay}"
+            MinWidth="240" RowDefinitions="Auto,Auto,*,5,*,5,*">
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8"
                     Margin="0,0,0,4">
           <TextBlock Text="{Binding SelectedScene.Title}" FontWeight="Bold" FontSize="17" />
           <TextBlock Text="{Binding SceneNumberText}" Opacity="0.6"
                      VerticalAlignment="Center" />
         </StackPanel>
-        <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,8">
+        <StackPanel Grid.Row="1" Spacing="4" Margin="0,0,0,8">
           <TextBlock Text="Title" FontSize="15" Opacity="0.7" />
           <TextBox Text="{Binding SelectedScene.Title, Mode=TwoWay}" />
         </StackPanel>
 
-        <TextBlock DockPanel.Dock="Top" Text="Sources in scene"
-                   FontSize="15" FontWeight="Bold" Margin="0,0,0,4" />
-        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
-          <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddSceneSourceCommand}" />
-          <ComboBox ItemsSource="{Binding AvailablePaletteSources}"
-                    SelectedItem="{Binding SelectedPaletteSourceToAdd}"
-                    HorizontalAlignment="Stretch" Margin="0,0,4,0"
-                    PlaceholderText="Add a source…">
-            <ComboBox.ItemTemplate>
-              <DataTemplate>
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                  <Border Classes="badge">
-                    <TextBlock Text="{Binding Badge}" />
-                  </Border>
-                  <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
-                </StackPanel>
-              </DataTemplate>
-            </ComboBox.ItemTemplate>
-          </ComboBox>
-        </DockPanel>
-        <ListBox DockPanel.Dock="Top" ItemsSource="{Binding SceneSources}" MaxHeight="320">
-          <ListBox.ItemTemplate>
-            <DataTemplate>
-              <DockPanel>
-                <Button DockPanel.Dock="Right" Classes="plain" Content="×"
-                        Command="{Binding RemoveCommand}"
-                        ToolTip.Tip="Take out of this scene" />
-                <Button Command="{Binding ToggleCommand}" Classes="plain"
-                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
-                        ToolTip.Tip="Click to turn off for the next take">
-                  <StackPanel Spacing="1">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                      <TextBlock Text="{Binding Dot}" VerticalAlignment="Center" />
-                      <Border Classes="badge">
-                        <TextBlock Text="{Binding Badge}" />
-                      </Border>
-                      <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
-                    </StackPanel>
-                    <TextBlock Text="{Binding DeviceLabel}" FontSize="14" Opacity="0.6"
-                               Margin="22,0,0,0" />
+        <Grid Grid.Row="2" MinHeight="80" RowDefinitions="Auto,Auto,*,Auto">
+          <TextBlock Grid.Row="0" Text="Sources in scene"
+                     FontSize="15" FontWeight="Bold" Margin="0,0,0,4" />
+          <DockPanel Grid.Row="1" Margin="0,0,0,4">
+            <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddSceneSourceCommand}" />
+            <ComboBox ItemsSource="{Binding AvailablePaletteSources}"
+                      SelectedItem="{Binding SelectedPaletteSourceToAdd}"
+                      HorizontalAlignment="Stretch" Margin="0,0,4,0"
+                      PlaceholderText="Add a source…">
+              <ComboBox.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Border Classes="badge">
+                      <TextBlock Text="{Binding Badge}" />
+                    </Border>
+                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
                   </StackPanel>
-                </Button>
-              </DockPanel>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
-        <TextBlock DockPanel.Dock="Top" FontSize="14" Opacity="0.5" TextWrapping="Wrap"
-                   Margin="0,0,0,8"
-                   Text="Click a source to turn it off for the next take. × takes it out of this scene." />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+          </DockPanel>
+          <ListBox Grid.Row="2" ItemsSource="{Binding SceneSources}"
+                   ScrollViewer.VerticalScrollBarVisibility="Auto">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <DockPanel>
+                  <Button DockPanel.Dock="Right" Classes="plain" Content="×"
+                          Command="{Binding RemoveCommand}"
+                          ToolTip.Tip="Take out of this scene" />
+                  <Button Command="{Binding ToggleCommand}" Classes="plain"
+                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                          ToolTip.Tip="Click to turn off for the next take">
+                    <StackPanel Spacing="1">
+                      <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="{Binding Dot}" VerticalAlignment="Center" />
+                        <Border Classes="badge">
+                          <TextBlock Text="{Binding Badge}" />
+                        </Border>
+                        <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                      </StackPanel>
+                      <TextBlock Text="{Binding DeviceLabel}" FontSize="14" Opacity="0.6"
+                                 Margin="22,0,0,0" />
+                    </StackPanel>
+                  </Button>
+                </DockPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <TextBlock Grid.Row="3" FontSize="14" Opacity="0.5" TextWrapping="Wrap"
+                     Margin="0,4,0,8"
+                     Text="Click a source to turn it off for the next take. × takes it out of this scene." />
+        </Grid>
 
-        <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,4">
-          <Button Content="{Binding RecordButtonText}" Command="{Binding ToggleRecordCommand}"
-                  FontSize="19" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Center" Padding="8" />
-          <TextBlock Text="{Binding RecordingElapsed}" FontFamily="Monospace" FontSize="17"
-                     HorizontalAlignment="Center" IsVisible="{Binding IsRecording}" />
-        </StackPanel>
-        <TextBlock DockPanel.Dock="Top" Text="{Binding NextTakeText}" FontSize="15"
-                   Opacity="0.6" HorizontalAlignment="Center" Margin="0,0,0,4" />
-        <TextBlock DockPanel.Dock="Top" FontSize="14" Opacity="0.5" TextWrapping="Wrap"
-                   HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,8"
-                   Text="The window minimizes during the countdown. Stop from the tray icon." />
+        <GridSplitter Grid.Row="3" Height="5" HorizontalAlignment="Stretch"
+                      ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" />
+
+        <ScrollViewer Grid.Row="4" MinHeight="70"
+                      VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="4" Margin="0,4">
+            <Button Content="{Binding RecordButtonText}" Command="{Binding ToggleRecordCommand}"
+                    FontSize="19" HorizontalAlignment="Stretch"
+                    HorizontalContentAlignment="Center" Padding="8" />
+            <TextBlock Text="{Binding RecordingElapsed}" FontFamily="Monospace" FontSize="17"
+                       HorizontalAlignment="Center" IsVisible="{Binding IsRecording}" />
+            <TextBlock Text="{Binding NextTakeText}" FontSize="15"
+                       Opacity="0.6" HorizontalAlignment="Center" Margin="0,0,0,4" />
+            <TextBlock FontSize="14" Opacity="0.5" TextWrapping="Wrap"
+                       HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,8"
+                       Text="The window minimizes during the countdown. Stop from the tray icon." />
+          </StackPanel>
+        </ScrollViewer>
+
+        <GridSplitter Grid.Row="5" Height="5" HorizontalAlignment="Stretch"
+                      ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" />
 
         <!-- Script & notes: plain text editor. Scene.Notes is plain text;
              the user can paste markdown or any other text. There's no
@@ -425,21 +444,21 @@
              The MarkdownParser/Serializer in CaptureSpike.Core remains
              available for any future markdown bridge (e.g., exporting
              scripts in a known format). -->
-        <DockPanel DockPanel.Dock="Top" LastChildFill="True" Margin="0,0,0,4">
-          <DockPanel DockPanel.Dock="Top">
+        <Grid Grid.Row="6" MinHeight="80" RowDefinitions="Auto,*" Margin="0,4,0,0">
+          <DockPanel Grid.Row="0">
             <TextBlock Text="Notes" FontSize="15" Opacity="0.7" />
             <TextBlock DockPanel.Dock="Right"
                        Text="{Binding SelectedScene.WordCountText}"
                        FontSize="14" Opacity="0.6" />
           </DockPanel>
-          <TextBox Margin="0,4,0,0" MinHeight="120"
+          <TextBox Grid.Row="1" Margin="0,4,0,0" MinHeight="40"
                    Text="{Binding SelectedScene.Notes, Mode=TwoWay}"
                    AcceptsReturn="True" TextWrapping="Wrap"
                    FontFamily="Consolas, Menlo, monospace"
                    ScrollViewer.VerticalScrollBarVisibility="Auto" />
-        </DockPanel>
+        </Grid>
 
-      </DockPanel>
+      </Grid>
     </Grid>
   </DockPanel>
 </Window>
