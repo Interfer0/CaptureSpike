@@ -67,6 +67,19 @@ public static class TakeNormalizer
         // shorter ones to match — no fabrication, no truncation.
         var targetSeconds = await ResolveTargetDurationAsync(ffmpeg, take, takeDir, ct);
 
+        // Also probe the max effective offset across the take.
+        // The user's offsets are "milliseconds after the take's
+        // t0 when this source's first data arrived" — a positive
+        // value means the source started a few hundred ms into the
+        // take (or the first data was silence). For the content of
+        // every normalized file to play in sync, we trim each file
+        // to start at the SAME take-time — the latest first-data
+        // across the take. A file that started earlier (smaller
+        // offset) loses that much extra silence to the trim. A file
+        // that started exactly at maxOffset keeps its full first
+        // data. After trim, all files' content aligns.
+        var maxOffsetMs = await ResolveMaxOffsetMsAsync(take);
+
         foreach (var src in take.Sources)
         {
             ct.ThrowIfCancellationRequested();
@@ -98,39 +111,37 @@ public static class TakeNormalizer
                 continue;
             }
 
-            var effectiveMs = src.EffectiveOffsetMs;
             try
             {
-                if (Math.Abs(effectiveMs) < 0.5)
+                // Trim the file so its content starts at the same
+                // take-time across every source in the take. The
+                // amount trimmed is the MAX offset across the take
+                // (not this source's own offset). A source that
+                // started earlier (smaller offset) loses that much
+                // extra silence/no-data to the trim; a source that
+                // started exactly at maxOffset keeps its full first
+                // data. After trim, every file's t=0 corresponds to
+                // the same take-time, and the player can play from
+                // t=0 with no per-source seek — all content aligns.
+                var trimMs = maxOffsetMs;
+                if (trimMs < 0.5)
                 {
-                    // Effectively zero. Just copy the file as-is to .normalized.
+                    // maxOffset is 0 (or all sources are missing).
+                    // Just copy the file as-is to .normalized.
                     progress?.Invoke(src.Id, 0.0,
-                        $"{src.File} offset is 0; copying to .normalized.");
+                        $"{src.File} no trim needed; copying to .normalized.");
                     File.Copy(inputPath, outputPath, overwrite: true);
                 }
-                else if (effectiveMs > 0)
+                else
                 {
-                    // Trim the start: ffmpeg -ss <secs> -i input -c copy output
                     progress?.Invoke(src.Id, 0.0,
-                        $"Trimming {effectiveMs:F0}ms from {src.File}.");
-                    var args = BuildTrimArgs(inputPath, outputPath, effectiveMs / 1000.0,
+                        $"Trimming {trimMs:F0}ms from {src.File} (align to take's max offset).");
+                    var args = BuildTrimArgs(inputPath, outputPath, trimMs / 1000.0,
                         src.Kind.IsVideo());
                     var exitCode = await RunFfmpegAsync(ffmpeg, args, ct);
                     if (exitCode != 0)
                         throw new InvalidOperationException(
                             $"ffmpeg trim exited with code {exitCode} for {src.Id}.");
-                }
-                else
-                {
-                    // Prepend: |effectiveMs| of silence/black at the start.
-                    var secs = -effectiveMs / 1000.0;
-                    progress?.Invoke(src.Id, 0.0,
-                        $"Prepending {secs * 1000:F0}ms to {src.File}.");
-                    var args = BuildPrependArgs(inputPath, outputPath, secs);
-                    var exitCode = await RunFfmpegAsync(ffmpeg, args, ct);
-                    if (exitCode != 0)
-                        throw new InvalidOperationException(
-                            $"ffmpeg prepend exited with code {exitCode} for {src.Id}.");
                 }
 
                 // Pad/trim the .normalized output to the take's
@@ -389,6 +400,23 @@ public static class TakeNormalizer
             }
         }
         return max;
+    }
+
+    /// <summary>
+    /// Return the largest EffectiveOffsetMs across the take's
+    /// sources. Used as the common trim amount so the content of
+    /// every normalized file corresponds to the same take-time
+    /// window. If all sources are missing, returns 0.
+    /// </summary>
+    private static Task<double> ResolveMaxOffsetMsAsync(Take take)
+    {
+        double max = 0;
+        foreach (var src in take.Sources)
+        {
+            var o = src.EffectiveOffsetMs;
+            if (o > max) max = o;
+        }
+        return Task.FromResult(max);
     }
 
     /// <summary>
