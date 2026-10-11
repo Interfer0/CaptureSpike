@@ -362,6 +362,15 @@ public sealed class PaletteSourceViewModel : ObservableObject
             catch { ffmpeg = "ffmpeg"; } // let the OS resolve it; failures -> empty list
             var kind = Source.Kind;
             var found = await Task.Run(() => DeviceEnumeration.GetDevices(kind, ffmpeg));
+            // CRITICAL: clear _selectedDevice BEFORE clearing Devices.
+            // When Devices is cleared, the ComboBox's SelectedItem
+            // becomes null and the two-way binding fires the setter
+            // with null. The setter would then write null to
+            // Source.Device and trigger a save — wiping the user's
+            // saved device. Pre-nulling the backing field makes the
+            // setter a no-op (SetField sees null == null) so the
+            // ComboBox's selection-change doesn't touch the source.
+            _selectedDevice = null;
             Devices.Clear();
             Devices.Add(DefaultOption);
             foreach (var d in found) Devices.Add(d);
@@ -372,6 +381,9 @@ public sealed class PaletteSourceViewModel : ObservableObject
                 match = new DeviceOption(current, $"{current} (not connected)");
                 Devices.Add(match);
             }
+            // Set the backing field directly (no setter) so we
+            // don't recursively trigger the same save path. The
+            // Raise below pushes the new selection to the ComboBox.
             _selectedDevice = match ?? DefaultOption;
             Raise(nameof(SelectedDevice));
             Raise(nameof(DeviceDisplay));
