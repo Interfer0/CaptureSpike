@@ -67,26 +67,54 @@ public static class TakeNormalizer
         // shorter ones to match — no fabrication, no truncation.
         var targetSeconds = await ResolveTargetDurationAsync(ffmpeg, take, takeDir, ct);
 
-        // Also probe the max effective offset across the take.
-        // The user's offsets are "milliseconds after the take's
-        // t0 when this source's first data arrived" — a positive
-        // value means the source started a few hundred ms into the
-        // take (or the first data was silence). For the content of
-        // every normalized file to play in sync, we trim each file
-        // to start at the SAME take-time — the latest first-data
-        // across the take. A file that started earlier (smaller
-        // offset) loses that much extra silence to the trim. A file
-        // that started exactly at maxOffset keeps its full first
-        // data. After trim, all files' content aligns.
-        var maxOffsetMs = await ResolveMaxOffsetMsAsync(take);
-        // Diagnostic: surface the computed max offset in the
-        // status line so the user can see what value the code
-        // decided on. Helps confirm the right sources went into
-        // the max calculation (e.g. a stale ManualOffsetMs on
-        // one source wouldn't lower the max below the actual
-        // recorder-detected offset).
+        // Compute the trim anchor: the take-time at which every
+        // normalized file should begin. We start with the take's
+        // record-time offsets (EffectiveOffsetMs) and then refine
+        // for audio sources by detecting the first NON-SILENT
+        // sample, not just the first-data time. The recorder's
+        // first-data event fires on the first audio buffer
+        // callback — which on WASAPI happens within a few ms of
+        // capture start but well before the user starts talking.
+        // Without this refinement, an audio file that opened
+        // with 800ms of room-tone silence would still be trimmed
+        // to start at its first-data time, leaving a visible
+        // 800ms gap between sources after normalize. With the
+        // first-non-silent detection, the trim anchor is the
+        // latest "actual sound" across the take — every file's
+        // t=0 lines up with real audio content.
+        //
+        // Returns the per-source first-non-silent offset
+        // (in ms, relative to the take's t0). For video, this is
+        // just EffectiveOffsetMs (cameras don't buffer silence).
+        // For audio, it's the first time the audio exceeds the
+        // silence threshold, measured from the file's own t=0
+        // and translated back to take-time using EffectiveOffsetMs.
+        var perSourceFirstNonSilentMs = await ResolveFirstNonSilentMsAsync(ffmpeg, take, takeDir, ct);
+        var maxFirstNonSilentMs = perSourceFirstNonSilentMs.Values.DefaultIfEmpty(0).Max();
+        // Diagnostic: surface the per-source first-non-silent
+        // times so the user can see what each source was
+        // detected at, and what the trim anchor ended up being.
+        // Helps confirm the right sources went into the max
+        // calculation (e.g. a source whose first-non-silent is
+        // 0 because the file is all silence shouldn't lower
+        // the max).
+        foreach (var src in take.Sources)
+        {
+            if (perSourceFirstNonSilentMs.TryGetValue(src.Id, out var ms))
+            {
+                progress?.Invoke(src.Id, null,
+                    $"First-non-silent: {ms:F0}ms (record-time offset was {src.EffectiveOffsetMs:F0}ms).");
+            }
+        }
+        // Diagnostic: surface the computed max so the user can
+        // see what value the code decided on.
         progress?.Invoke("", null,
-            $"Normalize plan: trim {maxOffsetMs:F0}ms (max offset), pad to {targetSeconds:F2}s (longest input).");
+            $"Normalize plan: trim {maxFirstNonSilentMs:F0}ms (max first-non-silent), pad to {targetSeconds:F2}s (longest input).");
+        // maxOffsetMs (the old variable) is replaced by
+        // maxFirstNonSilentMs in the per-source trim below. The
+        // old field stays as maxOffsetMs so the rest of the
+        // function is unchanged.
+        var maxOffsetMs = maxFirstNonSilentMs;
 
         foreach (var src in take.Sources)
         {
@@ -539,6 +567,135 @@ public static class TakeNormalizer
             if (o > max) max = o;
         }
         return Task.FromResult(max);
+    }
+
+    /// <summary>
+    /// Per-source first-non-silent offset (in ms, relative to
+    /// the take's t0). For video, returns EffectiveOffsetMs
+    /// (cameras don't buffer silence — first frame IS first
+    /// data). For audio, runs ffmpeg's silencedetect filter to
+    /// find the first time the audio exceeds a noise floor, then
+    /// translates that to take-time using the take's t0 and the
+    /// source's EffectiveOffsetMs. The result is the take-time
+    /// at which "actual sound" begins for each source. The
+    /// maximum of these is the trim anchor: every normalized
+    /// file is trimmed back to that take-time, so all files'
+    /// t=0 lines up with real audio content (not first-data
+    /// silence).
+    /// </summary>
+    private static async Task<Dictionary<string, double>> ResolveFirstNonSilentMsAsync(
+        string ffmpeg, Take take, string takeDir, CancellationToken ct)
+    {
+        var result = new Dictionary<string, double>(take.Sources.Count);
+        foreach (var src in take.Sources)
+        {
+            ct.ThrowIfCancellationRequested();
+            // Video: first frame is first data. No refinement.
+            if (src.Kind.IsVideo())
+            {
+                result[src.Id] = src.EffectiveOffsetMs;
+                continue;
+            }
+            // Audio: detect first non-silent sample in the file.
+            var path = Path.Combine(takeDir, src.File);
+            if (!File.Exists(path))
+            {
+                result[src.Id] = src.EffectiveOffsetMs;
+                continue;
+            }
+            try
+            {
+                var firstNonSilentFileMs = await ProbeFirstNonSilentAsync(ffmpeg, path, ct)
+                    .ConfigureAwait(false);
+                // Translate file-time to take-time:
+                //   take-time = file-time + (take.t0 - source.firstDataAt)
+                //            = file-time + EffectiveOffsetMs
+                //   Wait, EffectiveOffsetMs is (firstDataAt - t0), so
+                //   a POSITIVE offset means the source started AFTER t0.
+                //   file-time 0 corresponds to take-time EffectiveOffsetMs.
+                //   So take-time = file-time + EffectiveOffsetMs.
+                var takeTimeMs = firstNonSilentFileMs + src.EffectiveOffsetMs;
+                result[src.Id] = takeTimeMs;
+            }
+            catch
+            {
+                // On failure, fall back to the record-time offset.
+                // Better to normalize at a slightly-wrong anchor
+                // than to fail the whole take.
+                result[src.Id] = src.EffectiveOffsetMs;
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Run ffmpeg with silencedetect to find the first
+    /// non-silent timestamp (in ms, from file t=0). Returns 0
+    /// if the entire file is silent or detection fails — that's
+    /// the right answer for "no audible sound" since we want the
+    /// file to start at its first-data time in that case.
+    /// </summary>
+    private static async Task<double> ProbeFirstNonSilentAsync(
+        string ffmpeg, string path, CancellationToken ct)
+    {
+        // silencedetect flags:
+        //   noise=-30dB  — anything quieter than -30dB is "silence".
+        //                    -30dB is conservative enough to catch
+        //                    breathing and room tone but not so
+        //                    aggressive it flags quiet speech.
+        //   d=0.05       — minimum 50ms of non-silence to count
+        //                    as a sound (suppresses sub-frame
+        //                    blips from noise floor).
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpeg,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-hide_banner");
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(path);
+        psi.ArgumentList.Add("-af");
+        psi.ArgumentList.Add("silencedetect=noise=-30dB:d=0.05");
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("null");
+        psi.ArgumentList.Add("-");
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Could not start ffmpeg.");
+        var stderr = new StringBuilder();
+        var stderrTask = Task.Run(async () =>
+        {
+            string? line;
+            while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) != null)
+                stderr.AppendLine(line);
+        }, ct);
+        try
+        {
+            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            try { await stderrTask.ConfigureAwait(false); } catch { }
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+        // silencedetect prints lines like:
+        //   [silencedetect @ 0x...] silence_start: 0.123
+        //   [silencedetect @ 0x...] silence_end: 1.234 | silence_duration: 1.111
+        //   [silencedetect @ 0x...] silence_start: 5.678
+        // The first silence_end is the first non-silent time.
+        // If there's no silence_end (file is all sound from t=0),
+        // the first non-silent time is 0.
+        var m = System.Text.RegularExpressions.Regex.Match(
+            stderr.ToString(), @"silence_end:\s*(\d+(?:\.\d+)?)");
+        if (m.Success && double.TryParse(m.Groups[1].Value,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var seconds))
+            return seconds * 1000.0;
+        return 0;
     }
 
     /// <summary>
