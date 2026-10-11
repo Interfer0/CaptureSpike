@@ -117,6 +117,14 @@ internal static class AppSettings
         /// don't count. Default 0.05s (50ms). Range
         /// 0.01..1.0.</summary>
         public double? SilenceMinDurationSec { get; set; }
+        [JsonPropertyName("leftColumnWidth")]
+        public double? LeftColumnWidth { get; set; }
+        [JsonPropertyName("rightColumnWidth")]
+        public double? RightColumnWidth { get; set; }
+        [JsonPropertyName("logPanelHeight")]
+        public double? LogPanelHeight { get; set; }
+        [JsonPropertyName("isNotesExpanded")]
+        public bool IsNotesExpanded { get; set; }
     }
 
     private static SettingsData Load()
@@ -205,6 +213,51 @@ internal static class AppSettings
             var clamped = Math.Max(0.01, Math.Min(1.0, value));
             var d = Load(); d.SilenceMinDurationSec = clamped; Save(d);
         }
+    }
+
+    /// <summary>Persisted left column width (sources palette).</summary>
+    public static double LeftColumnWidth
+    {
+        get => Load().LeftColumnWidth ?? 260;
+        set
+        {
+            // Clamp to the same range the column allows in
+            // XAML so a value loaded from settings can never
+            // put the splitter into an invalid state.
+            var clamped = Math.Max(160, Math.Min(1000, value));
+            var d = Load(); d.LeftColumnWidth = clamped; Save(d);
+        }
+    }
+
+    /// <summary>Persisted right column width (script & notes).</summary>
+    public static double RightColumnWidth
+    {
+        get => Load().RightColumnWidth ?? 680;
+        set
+        {
+            var clamped = Math.Max(280, Math.Min(2000, value));
+            var d = Load(); d.RightColumnWidth = clamped; Save(d);
+        }
+    }
+
+    /// <summary>Persisted log panel height (bottom dock).</summary>
+    public static double LogPanelHeight
+    {
+        get => Load().LogPanelHeight ?? 150;
+        set
+        {
+            var clamped = Math.Max(80, Math.Min(600, value));
+            var d = Load(); d.LogPanelHeight = clamped; Save(d);
+        }
+    }
+
+    /// <summary>Whether the notes expander in the right column
+    /// was open at the last save. Restored on next launch so
+    /// the user's workflow (with or without notes) persists.</summary>
+    public static bool IsNotesExpanded
+    {
+        get => Load().IsNotesExpanded;
+        set { var d = Load(); d.IsNotesExpanded = value; Save(d); }
     }
 
     /// <summary>
@@ -948,14 +1001,15 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     // [80, 0.7 * window height] so the user can drag the
     // splitter all the way up without crushing the buttons
     // and all the way down without hiding the main content.
-    private double _logPanelHeight = 150;
+    private double _logPanelHeight = AppSettings.LogPanelHeight;
     public double LogPanelHeight
     {
         get => _logPanelHeight;
         set
         {
             var clamped = Math.Max(80, Math.Min(value, 600));
-            SetField(ref _logPanelHeight, clamped);
+            if (SetField(ref _logPanelHeight, clamped))
+                AppSettings.LogPanelHeight = clamped;
         }
     }
 
@@ -965,7 +1019,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     // resize persists across the session. Defaults
     // Keep the initial layout compact enough to leave room
     // for the take workspace on smaller displays.
-    private double _leftColumnWidth = 260;
+    private double _leftColumnWidth = AppSettings.LeftColumnWidth;
     public double LeftColumnWidth
     {
         get => _leftColumnWidth;
@@ -974,11 +1028,12 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             // Min 160 so the palette stays usable; no
             // hard max — the middle column auto-shrinks.
             var clamped = Math.Max(160, Math.Min(value, 1000));
-            SetField(ref _leftColumnWidth, clamped);
+            if (SetField(ref _leftColumnWidth, clamped))
+                AppSettings.LeftColumnWidth = clamped;
         }
     }
 
-    private double _rightColumnWidth = 420;
+    private double _rightColumnWidth = AppSettings.RightColumnWidth;
     public double RightColumnWidth
     {
         get => _rightColumnWidth;
@@ -987,7 +1042,23 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             // Min 240 so the notes panel stays usable;
             // no hard max — the middle column auto-shrinks.
             var clamped = Math.Max(240, Math.Min(value, 2000));
-            SetField(ref _rightColumnWidth, clamped);
+            if (SetField(ref _rightColumnWidth, clamped))
+                AppSettings.RightColumnWidth = clamped;
+        }
+    }
+
+    private bool _isNotesExpanded = AppSettings.IsNotesExpanded;
+    /// <summary>Whether the notes expander in the right
+    /// column is currently open. Persisted across
+    /// sessions so the user's workflow (with or
+    /// without notes) is restored on next launch.</summary>
+    public bool IsNotesExpanded
+    {
+        get => _isNotesExpanded;
+        set
+        {
+            if (SetField(ref _isNotesExpanded, value))
+                AppSettings.IsNotesExpanded = value;
         }
     }
 
