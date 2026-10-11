@@ -300,6 +300,11 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         psi.ArgumentList.Add($"--input-ipc-server={ipcArg}");
         if (graph is not null)
             psi.ArgumentList.Add($"--lavfi-complex={graph}");
+        // Log the lavfi graph so it's visible in the user-facing
+        // log when the graph is rejected. The user previously
+        // only saw "Pipe is broken" with no graph context.
+        if (graph is not null)
+            AppLog.Current?.WriteLine($"[mpv] --lavfi-complex={graph}");
         psi.ArgumentList.Add(KeepOpen ? "--keep-open=yes" : "--keep-open=no");
         psi.ArgumentList.Add("--osd-level=0");
         psi.ArgumentList.Add(startPaused ? "--pause" : "--no-pause");
@@ -335,8 +340,14 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         _fileLoadedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         ipc.EventReceived += OnMpvEvent;
 
-        // Wait for mpv to finish loading the file before sending commands.
-        // (Sending observe_property too early can hang if mpv isn't ready.)
+        // Wait for mpv to finish loading the file. If the
+        // lavfi graph fails (wrong stream labels, missing
+        // inputs, etc.), file-loaded never fires. After
+        // 10s we treat that as a fatal error and surface
+        // mpv's stderr so the user can see why the graph
+        // was rejected. The previous "continue anyway" path
+        // left mpv in a broken state where every later IPC
+        // command returned "Pipe is broken" with no context.
         try
         {
             using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -345,8 +356,15 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
         {
-            // Continue anyway; the file may have loaded without the event,
-            // or polling will cover us.
+            var err = _stderr.ToString().Trim();
+            await StopInternalAsync().ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"mpv did not load any streams within 10s. "
+                + (graph is not null ? "Likely the lavfi graph was rejected. " : "")
+                + (err.Length > 0
+                    ? "mpv said: " + err[^Math.Min(err.Length, 1500)..]
+                    : "(no stderr output)"),
+                ex);
         }
 
         // Event-driven position tracking (mpv-recommended): mpv pushes the

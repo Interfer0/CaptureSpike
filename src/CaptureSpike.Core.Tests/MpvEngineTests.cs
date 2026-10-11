@@ -35,6 +35,19 @@ public sealed class MpvPlaybackEngineTests
             f.write((json.dumps({'error': 'success', 'data': data, 'request_id': rid}) + '\n').encode())
             f.flush()
 
+        def emit_event(event, data=None):
+            ev = {'event': event}
+            if data is not None:
+                ev['data'] = data
+            f.write((json.dumps(ev) + '\n').encode())
+            f.flush()
+
+        # Send file-loaded right after the client connects so
+        # the engine's startup wait completes. Without this
+        # the engine treats the missing event as a graph
+        # failure (the new fatal-timeout behavior).
+        emit_event('file-loaded')
+
         while True:
             line = f.readline()
             if not line:
