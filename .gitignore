@@ -6,3 +6,10 @@ tools/*/
 # Decoded app icon (generated from .b64 at build time)
 src/CaptureSpike.App/Assets/capturespike-icon.png
 src/CaptureSpike.App/Assets/capturespike-icon.ico
+
+# Build outputs
+dist/
+*.zip
+
+# User data files (not source)
+palette.json
