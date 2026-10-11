@@ -994,6 +994,12 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         // ordering clean and lets device detection run before the
         // user can interact.
         ReloadPalette();
+        // Diagnostic: show what was loaded so a wrong file path or
+        // missing device is visible in the log, not just on screen.
+        var palettePath = GlobalPalette.FilePath;
+        Log($"[palette] loaded {_palette.Sources.Count} sources from {palettePath}");
+        foreach (var s in _palette.Sources)
+            Log($"[palette]   {s.Id} kind={s.Kind} device={(s.Device ?? "<null>")} badge=\"{s.Badge}\"");
         var last = AppSettings.LastProjectDir;
         if (last is not null && Directory.Exists(last))
             OpenProject(last);
@@ -1471,8 +1477,10 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
     }
 
-    // Diagnostic logging for palette save debugging. Off by default;
-    // set CAPTURESPIKE_PALETTE_TRACE=1 in the environment to enable.
+    // Diagnostic logging for palette load/save. Enable with
+    // CAPTURESPIKE_PALETTE_TRACE=1 in the environment. Always
+    // trace the file path Load() reads from, since a wrong
+    // path silently drops the user's devices.
     private static bool PaletteTraceEnabled =>
         System.Environment.GetEnvironmentVariable("CAPTURESPIKE_PALETTE_TRACE") == "1";
     private void DebugPalette(string msg)
