@@ -220,13 +220,6 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         psi.ArgumentList.Add("--no-config");
         psi.ArgumentList.Add("--no-terminal");
         psi.ArgumentList.Add("--msg-level=all=no");
-        // Sync to the display refresh rate. mpv's default
-        // ('audio') syncs video to the audio clock, but each
-        // mpv instance has its OWN audio clock, so the
-        // instances drift relative to each other. With
-        // 'display' all instances sync to the same display
-        // clock and stay in sync.
-        psi.ArgumentList.Add("--video-sync=display");
         psi.ArgumentList.Add($"--input-ipc-server={ipcArg}");
         if (graph is not null)
             psi.ArgumentList.Add($"--lavfi-complex={graph}");
