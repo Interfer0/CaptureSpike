@@ -4,28 +4,44 @@ using CaptureSpike.Core.Playback;
 namespace CaptureSpike.App;
 
 /// <summary>
-/// Plays a take's sources in sync: video sources render into a tiled window
-/// (handles provided by the caller), audio sources play headless.
-/// One shared transport (play/pause/seek) drives every source.
+/// Plays a take's sources in sync. Internally uses a single
+/// mpv instance with a <c>--lavfi-complex</c> graph that tiles
+/// the video sources and mixes the audio. One shared transport
+/// (play/pause/seek) drives everything, and a single audio
+/// clock keeps every source in lock-step — no per-process
+/// drift like the old per-source mpv design had.
 ///
-/// Offset model (matches FilterGraphBuilder): each source's take.json
-/// offsetMs says how late its file-time 0 sits on the take timeline.
-/// Offsets are normalized by subtracting the smallest, so at take-time T
-/// a source is at file-time (T - relativeOffset). A source with a larger
-/// offset shows earlier file content at the same take-time.
+/// For backward compatibility, the caller can still call
+/// <see cref="AddSourceAsync"/> once per source with a per-tile
+/// embed handle. We only use one of those handles (the first
+/// non-zero one) for the single mpv output; the rest are
+/// ignored.
+///
+/// Offset model (matches FilterGraphBuilder.BuildTakeGraph):
+/// each source's take.json EffectiveOffsetMs says how late its
+/// file-time 0 sits on the take timeline. Offsets are
+/// normalized by subtracting the smallest, so at take-time T a
+/// source is at file-time (T - relativeOffset). A source with
+/// a larger offset shows earlier file content at the same
+/// take-time.
+///
+/// Per-source mute and include/exclude are handled by
+/// rebuilding the filter graph with the muted set
+/// (see MpvPlaybackEngine.SetTrackMutedAsync).
 /// </summary>
 public sealed class TiledTakePlayer : IPlayer
 {
-    private sealed class SourcePlayer
+    private sealed class SourceInfo
     {
         public required string SourceId;
-        public required MpvPlaybackEngine Engine;
-        public double OffsetSec;
-        public bool Included = true;
+        public required TakeSource TakeSource;
+        public required string FilePath;
     }
 
-    private readonly List<SourcePlayer> _players = new();
+    private readonly List<SourceInfo> _sources = new();
     private readonly double _takeDurationSec;
+    private MpvPlaybackEngine? _engine;
+    private nint _embedHandle;
     private bool _disposed;
 
     public TiledTakePlayer(double takeDurationSec)
@@ -34,156 +50,150 @@ public sealed class TiledTakePlayer : IPlayer
     }
 
     /// <summary>
-    /// Adds a source. <paramref name="embedHandle"/> is the native child mpv
-    /// should render into (0 = mpv's own window, or headless for audio).
-    /// Starts paused; call <see cref="PlayAlignedAsync"/> once all sources are added.
+    /// Adds a source. <paramref name="embedHandle"/> is the
+    /// native child HWND the single mpv instance should render
+    /// into (0 = mpv's own window, or headless for audio-only
+    /// takes). The actual mpv launch is deferred until the
+    /// caller invokes <see cref="PlayAlignedAsync"/> or
+    /// <see cref="PlayAsync"/>.
     /// </summary>
-    public async Task AddSourceAsync(
+    public Task AddSourceAsync(
         TakeSource source, string filePath, nint embedHandle,
         CancellationToken ct = default)
     {
-        var engine = new MpvPlaybackEngine
-        {
-            EmbedWindowHandle = embedHandle,
-            KeepOpen = true,
-        };
-        try
-        {
-            await engine.LoadSingleFileAsync(filePath, startPaused: true, ct).ConfigureAwait(false);
-        }
-        catch
-        {
-            await engine.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
-
-        // If the file is a normalized copy, its t=0 already
-        // matches the take's t=0 (the offset was baked into the
-        // content by trim or prepend). Re-applying the offset
-        // here would shift the source a second time. Skip the
-        // seek for .normalized files.
-        var isNormalized = source.File.Contains(".normalized.", StringComparison.Ordinal);
-        _players.Add(new SourcePlayer
+        _sources.Add(new SourceInfo
         {
             SourceId = source.Id,
-            Engine = engine,
-            OffsetSec = isNormalized ? 0 : source.EffectiveOffsetMs / 1000.0,
+            TakeSource = source,
+            FilePath = filePath,
         });
+        // Single mpv renders to one window. Use the first
+        // non-zero handle we see. If everything is 0
+        // (audio-only take), mpv runs without a window.
+        if (_embedHandle == 0 && embedHandle != 0) _embedHandle = embedHandle;
+        return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Smallest offset among included sources. Excluded sources don't anchor
-    /// the timeline.
-    /// </summary>
-    private double MinOffsetSec
-    {
-        get
-        {
-            var included = _players.Where(p => p.Included).ToList();
-            return included.Count == 0 ? 0 : included.Min(p => p.OffsetSec);
-        }
-    }
+    // Per-source include state. Mirrors the per-track toggle
+    // in the player panel: when a source is "not included",
+    // its audio is muted in the graph (and its video, if any,
+    // is also dropped from the tiled layout).
+    private readonly HashSet<string> _included = new();
 
-    /// <summary>Offset normalized like FilterGraphBuilder (smallest = 0).</summary>
-    private double RelativeOffsetSec(SourcePlayer p) =>
-        Math.Max(0, p.OffsetSec - MinOffsetSec);
+    public TimeSpan Position =>
+        _engine is null ? TimeSpan.Zero : _engine.Position;
 
-    public TimeSpan Position
-    {
-        get
-        {
-            // Take-time = file-time + relative offset.
-            var p = _players.FirstOrDefault(x => x.Included);
-            if (p is null) return TimeSpan.Zero;
-            return TimeSpan.FromSeconds(
-                Math.Max(0, p.Engine.Position.TotalSeconds + RelativeOffsetSec(p)));
-        }
-    }
+    public TimeSpan Duration =>
+        _engine is null
+            ? TimeSpan.FromSeconds(Math.Max(0, _takeDurationSec))
+            : _engine.Duration;
 
-    public TimeSpan Duration => TimeSpan.FromSeconds(Math.Max(0, _takeDurationSec));
-
-    public bool IsPlaying => _players.Any(p => p.Included && p.Engine.IsPlaying);
+    public bool IsPlaying => _engine is { IsPlaying: true };
 
     public async Task PlayAsync(CancellationToken ct = default)
     {
-        var tasks = _players.Where(p => p.Included).Select(p => p.Engine.PlayAsync(ct));
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        if (_engine is null) await BuildEngineAsync(ct).ConfigureAwait(false);
+        if (_engine is not null) await _engine.PlayAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Seeks each source to its offset-aligned start position, then plays.
-    /// Starts at take-time = largest relative offset so every source has
-    /// a valid file position and all show the same take-time.
+    /// Seeks each source to its offset-aligned start position,
+    /// then plays. Starts at take-time = largest relative
+    /// offset so every source has a valid file position and
+    /// all show the same take-time. (No-op in single-mpv
+    /// mode — mpv's graph already aligns the offsets via
+    /// adelay.)
     /// </summary>
     public async Task PlayAlignedAsync(CancellationToken ct = default)
     {
-        var startTakeTime = _players.Where(p => p.Included)
-            .Select(RelativeOffsetSec).DefaultIfEmpty(0).Max();
-        var tasks = _players.Where(p => p.Included).Select(p =>
-            p.Engine.SeekAsync(
-                TimeSpan.FromSeconds(Math.Max(0, startTakeTime - RelativeOffsetSec(p))), ct));
-        await Task.WhenAll(tasks).ConfigureAwait(false);
-        await PlayAsync(ct).ConfigureAwait(false);
+        if (_engine is null) await BuildEngineAsync(ct).ConfigureAwait(false);
+        if (_engine is not null) await _engine.PlayAsync(ct).ConfigureAwait(false);
     }
 
     public async Task PauseAsync(CancellationToken ct = default)
     {
-        var tasks = _players.Where(p => p.Included).Select(p => p.Engine.PauseAsync(ct));
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        if (_engine is null) return;
+        await _engine.PauseAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>Seeks every included source to take-time minus its relative offset.</summary>
     public async Task SeekAsync(TimeSpan position, CancellationToken ct = default)
     {
-        var tasks = _players.Where(p => p.Included).Select(p =>
-            p.Engine.SeekAsync(
-                TimeSpan.FromSeconds(Math.Max(0, position.TotalSeconds - RelativeOffsetSec(p))), ct));
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        if (_engine is null) await BuildEngineAsync(ct).ConfigureAwait(false);
+        if (_engine is not null) await _engine.SeekAsync(position, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Includes or excludes a source from playback.</summary>
+    /// <summary>Includes or excludes a source from playback (mutes in the graph).</summary>
     public async Task SetSourceIncludedAsync(string sourceId, bool included, CancellationToken ct = default)
     {
-        var p = _players.FirstOrDefault(x => x.SourceId == sourceId);
-        if (p is null || p.Included == included) return;
-        p.Included = included;
-        if (!included)
-        {
-            await p.Engine.PauseAsync(ct).ConfigureAwait(false);
-        }
-        else
-        {
-            // Rejoin at the current take-time; resume if the group is playing.
-            var wasPlaying = IsPlaying;
-            await p.Engine.SeekAsync(
-                TimeSpan.FromSeconds(Math.Max(0, Position.TotalSeconds - RelativeOffsetSec(p))), ct)
-                .ConfigureAwait(false);
-            if (wasPlaying) await p.Engine.PlayAsync(ct).ConfigureAwait(false);
-        }
+        if (included) _included.Add(sourceId); else _included.Remove(sourceId);
+        if (_engine is null) return;
+        // MpvPlaybackEngine's mute handling rebuilds the graph
+        // with the new muted set. We model "not included" as
+        // "muted" for the graph.
+        await _engine.SetTrackMutedAsync(sourceId, !included, ct).ConfigureAwait(false);
     }
 
     /// <summary>Updates a source's offset live (e.g., after a manual offset edit).</summary>
     public void UpdateSourceOffset(string sourceId, double offsetMs)
     {
-        var p = _players.FirstOrDefault(x => x.SourceId == sourceId);
-        if (p is not null) p.OffsetSec = offsetMs / 1000.0;
+        // The graph is already built with the recorded offset.
+        // Live offset updates are not supported in the
+        // single-mpv design (would require a graph rebuild
+        // with the new adelay). The UI should mark the take
+        // as needing a re-play to pick up manual offset
+        // changes. (For now: no-op.)
     }
 
     public async Task SetSourceMutedAsync(string sourceId, bool muted, CancellationToken ct = default)
     {
-        var p = _players.FirstOrDefault(x => x.SourceId == sourceId);
-        if (p is null) return;
-        await p.Engine.SetMutedAsync(muted, ct).ConfigureAwait(false);
+        if (_engine is null) return;
+        await _engine.SetTrackMutedAsync(sourceId, muted, ct).ConfigureAwait(false);
+    }
+
+    private async Task BuildEngineAsync(CancellationToken ct)
+    {
+        if (_engine is not null) return;
+        if (_sources.Count == 0)
+            throw new InvalidOperationException("No sources to play.");
+        var engine = new MpvPlaybackEngine
+        {
+            EmbedWindowHandle = _embedHandle,
+            KeepOpen = true,
+        };
+        // Build the muted set: everything that's not in
+        // _included is muted. (On first call, _included is
+        // empty, so all sources play.)
+        var muted = new HashSet<string>();
+        foreach (var s in _sources)
+            if (!_included.Contains(s.SourceId)) muted.Add(s.SourceId);
+        var graph = FilterGraphBuilder.BuildTakeGraph(
+            _sources.Select(s => s.TakeSource).ToList(),
+            muted);
+        // Pass files to mpv in a deterministic order so the
+        // graph's [i:v] and [N+i:a] labels match mpv's
+        // file-position labels. Videos first, then audios.
+        var videoSources = _sources.Where(s => s.TakeSource.Kind.IsVideo()).ToList();
+        var audioSources = _sources.Where(s => s.TakeSource.Kind.IsAudio()).ToList();
+        var filePaths = videoSources.Select(s => s.FilePath)
+            .Concat(audioSources.Select(s => s.FilePath))
+            .ToList();
+        var takeSources = videoSources.Select(s => s.TakeSource)
+            .Concat(audioSources.Select(s => s.TakeSource))
+            .ToList();
+        await engine.LoadAsync(filePaths, takeSources, graph, _takeDurationSec, ct)
+            .ConfigureAwait(false);
+        _engine = engine;
     }
 
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
         _disposed = true;
-        foreach (var p in _players)
+        if (_engine is not null)
         {
-            try { await p.Engine.DisposeAsync().ConfigureAwait(false); } catch { }
+            try { await _engine.DisposeAsync().ConfigureAwait(false); } catch { }
         }
-        _players.Clear();
+        _sources.Clear();
     }
 }

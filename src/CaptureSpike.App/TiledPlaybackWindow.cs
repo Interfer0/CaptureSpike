@@ -6,7 +6,7 @@ using Avalonia.Media;
 
 namespace CaptureSpike.App;
 
-/// <summary>Info for one tile in <see cref="TiledPlaybackWindow"/>.</summary>
+/// <summary>Info for one source in <see cref="TiledPlaybackWindow"/>.</summary>
 public sealed record TileSourceInfo(
     string SourceId,
     string Label,
@@ -15,22 +15,23 @@ public sealed record TileSourceInfo(
     bool IsVideo);
 
 /// <summary>
-/// One window showing all of a take's sources in a tile grid.
-/// Video tiles host an embedded mpv; audio tiles show the filename and
-/// toggle mute on click.
+/// One window for playing a take. Internally the single-mpv
+/// player renders every source's video and audio into one
+/// lavfi graph (xstack + amix) and outputs to a single
+/// <see cref="MpvVideoHost"/> that fills the content area.
+/// That gives the user one synchronized video surface
+/// showing every source tiled, with one audio stream mixed
+/// from every audio source — no per-process drift.
 ///
-/// Theme: all brushes come from the application theme dictionaries
-/// (see App.axaml ThemeKeys). The window reads them at construction
-/// and again whenever the theme changes, via RefreshThemeBrushes().
+/// A track strip at the bottom shows each source's
+/// label/badge with a click-to-mute button so the user can
+/// still mute individual tracks.
+///
+/// Theme: brushes come from the application theme dictionaries
+/// (see App.axaml ThemeKeys).
 /// </summary>
 public sealed class TiledPlaybackWindow : Window
 {
-    /// <summary>
-    /// Resolves a theme brush by key. Returns a sensible fallback if the
-    /// key is missing (e.g. running in the XAML designer without the
-    /// full resource tree). Falls back to a black brush since the tiles
-    /// are always over video content where black is rarely wrong.
-    /// </summary>
     private static IBrush Brush(string key) =>
         Avalonia.Application.Current?.FindResource(key) as IBrush
         ?? new SolidColorBrush(Color.FromRgb(0, 0, 0));
@@ -38,37 +39,31 @@ public sealed class TiledPlaybackWindow : Window
     private static ISolidColorBrush SolidBrush(string key, Color fallback) =>
         Avalonia.Application.Current?.FindResource(key) as ISolidColorBrush
         ?? new SolidColorBrush(fallback);
-    private sealed class Tile
-    {
-        public required string SourceId;
-        public required Border Border;
-        public required TaskCompletionSource<nint> HandleTcs;
-        public TextBlock? MuteGlyph;
-        public TextBlock? MuteLabel;
-        public Panel? AudioPanel;
-    }
 
-    private readonly List<Tile> _tiles = new();
-    private readonly Action<string> _onAudioTileClicked;
+    private readonly List<TileSourceInfo> _sources;
+    private readonly Action<string> _onTrackClicked;
+    private readonly MpvVideoHost _videoHost;
+    private readonly TaskCompletionSource<nint> _handleTcs = new();
     private TextBlock? _loadingText;
+    private readonly Dictionary<string, Border> _trackBorders = new();
     private PlayerTransportBar? _transport;
 
     public TiledPlaybackWindow(
         string title,
         IReadOnlyList<TileSourceInfo> sources,
-        Action<string> onAudioTileClicked,
+        Action<string> onTrackClicked,
         ITransportHost? transport = null)
     {
-        _onAudioTileClicked = onAudioTileClicked;
+        _sources = sources.ToList();
+        _onTrackClicked = onTrackClicked;
         Title = title;
+        // Sized to match a 2-cell xstack cell (1280x720) so the
+        // single mpv output shows each 640x360 cell clearly.
+        // When there are more sources xstack auto-extends the
+        // output canvas; the window keeps its base size and
+        // mpv scales the tiled composition to fit.
         Width = 1280;
-        Height = 720;
-        // Linux/X11 quirk: a freshly-created Avalonia Window opened via
-        // Show() without an explicit WindowStartupLocation often lands
-        // behind the focused window and stays there until clicked. Set
-        // CenterOwner so the WMs we ship to (GNOME/Mutter, Xfwm, KWin)
-        // place it visibly, and ShowActivated = true so it grabs
-        // focus on creation. The popup isn't modal — owner = null is fine.
+        Height = 760;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ShowActivated = true;
 
@@ -83,142 +78,52 @@ public sealed class TiledPlaybackWindow : Window
             return;
         }
 
-        var cols = (int)Math.Ceiling(Math.Sqrt(sources.Count));
-        var rows = (int)Math.Ceiling(sources.Count / (double)cols);
+        // Single big mpv host: the entire tiled composition
+        // from the lavfi graph renders here. mvp + xstack tile
+        // every source into this surface, so we get one
+        // synchronized view of everything.
+        _videoHost = new MpvVideoHost();
+        _videoHost.HandleCreated += h => _handleTcs.TrySetResult(h);
+        _videoHost.HandleDestroyed += () => _handleTcs.TrySetCanceled();
 
-        var grid = new Grid();
-        for (var c = 0; c < cols; c++)
-            grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
-        for (var r = 0; r < rows; r++)
-            grid.RowDefinitions.Add(new RowDefinition(GridLength.Star));
-
-        for (var i = 0; i < sources.Count; i++)
+        // Track strip below the video: one clickable row per
+        // source, shows badge + label, click to mute.
+        var tracksPanel = new StackPanel
         {
-            var src = sources[i];
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 4),
+        };
+        foreach (var src in sources)
+        {
+            var badge = src.Badge;
+            var label = src.Label;
             var border = new Border
             {
                 BorderThickness = new Thickness(1),
                 BorderBrush = Brush(ThemeKeys.TileBorder),
                 Background = Brush(ThemeKeys.MutedTile),
-            };
-
-            var tcs = new TaskCompletionSource<nint>();
-            TextBlock? muteGlyph = null;
-
-            if (src.IsVideo)
-            {
-                var host = new MpvVideoHost();
-                host.HandleCreated += h => tcs.TrySetResult(h);
-                host.HandleDestroyed += () => tcs.TrySetCanceled();
-
-                var caption = new TextBlock
+                Padding = new Thickness(8, 4),
+                CornerRadius = new CornerRadius(4),
+                Cursor = new Cursor(StandardCursorType.Hand),
+                Child = new TextBlock
                 {
-                    Text = $"{src.Badge} · {src.Label}",
+                    Text = string.IsNullOrEmpty(badge) ? label : $"{badge} · {label}",
                     FontSize = 13,
-                    Padding = new Thickness(6, 2),
-                    // Caption sits on top of arbitrary video frames, so it
-                    // keeps a fixed semi-transparent dark scrim and white
-                    // text regardless of theme.
-                    Background = new SolidColorBrush(Color.FromArgb(160, 0, 0, 0)),
-                    Foreground = Brushes.White,
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    VerticalAlignment = VerticalAlignment.Top,
-                };
-
-                var panel = new Panel();
-                panel.Children.Add(host);
-                panel.Children.Add(caption);
-                border.Child = panel;
-                // Video tile: TCS completes when the native handle is created.
-                _tiles.Add(new Tile
-                {
-                    SourceId = src.SourceId,
-                    Border = border,
-                    HandleTcs = tcs,
-                });
-            }
-            else
-            {
-                // Audio tile: filename + mute state, click to toggle mute.
-                muteGlyph = new TextBlock
-                {
-                    Text = "🔊",
-                    FontSize = 32,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                };
-                var labelBlock = new TextBlock
-                {
-                    Text = $"{src.Badge} · {src.Label}",
-                    FontSize = 16,
-                    FontWeight = FontWeight.Bold,
                     Foreground = SolidBrush(ThemeKeys.BadgeForeground, Color.FromRgb(240, 240, 240)),
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                };
-                var fileBlock = new TextBlock
-                {
-                    Text = src.FileName,
-                    FontSize = 13,
-                    FontFamily = new FontFamily("Monospace"),
-                    // Same as labels, slightly faded via Opacity rather than alpha.
-                    Foreground = SolidBrush(ThemeKeys.BadgeForeground, Color.FromRgb(160, 160, 160)),
-                    Opacity = 0.7,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                };
-                var muteLabel = new TextBlock
-                {
-                    Text = "",
-                    FontSize = 12,
-                    FontWeight = FontWeight.Bold,
-                    Foreground = Brushes.Red,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                };
-                var hint = new TextBlock
-                {
-                    Text = "click to mute",
-                    FontSize = 11,
-                    Foreground = SolidBrush(ThemeKeys.BadgeForeground, Color.FromRgb(160, 160, 160)),
-                    Opacity = 0.7,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                };
-                var stack = new StackPanel
-                {
-                    Spacing = 6,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                stack.Children.Add(muteGlyph);
-                stack.Children.Add(labelBlock);
-                stack.Children.Add(fileBlock);
-                stack.Children.Add(muteLabel);
-                stack.Children.Add(hint);
-                var audioPanel = new Panel { Background = Brush(ThemeKeys.MutedTile) };
-                audioPanel.Children.Add(stack);
-                border.Child = audioPanel;
-                border.Cursor = new Cursor(StandardCursorType.Hand);
-
-                var capturedId = src.SourceId;
-                border.PointerPressed += (_, _) => _onAudioTileClicked(capturedId);
-                tcs.TrySetResult(nint.Zero);
-
-                _tiles.Add(new Tile
-                {
-                    SourceId = src.SourceId,
-                    Border = border,
-                    HandleTcs = tcs,
-                    MuteGlyph = muteGlyph,
-                    MuteLabel = muteLabel,
-                    AudioPanel = audioPanel,
-                });
-            }
-
-            Grid.SetRow(border, i / cols);
-            Grid.SetColumn(border, i % cols);
-            grid.Children.Add(border);
+                },
+            };
+            var capturedId = src.SourceId;
+            border.PointerPressed += (_, _) => _onTrackClicked(capturedId);
+            _trackBorders[src.SourceId] = border;
+            tracksPanel.Children.Add(border);
         }
 
-        // Loading overlay (hidden when SetLoadingComplete is called). Fixed dark
-        // scrim with white text — same rationale as the video-tile caption
-        // (always visible, regardless of theme).
+        var videoPanel = new Panel();
+        videoPanel.Children.Add(_videoHost);
+
+        // Loading overlay.
         _loadingText = new TextBlock
         {
             Text = "⏳ Loading sources...",
@@ -229,74 +134,79 @@ public sealed class TiledPlaybackWindow : Window
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        var root = new Panel();
-        root.Children.Add(grid);
-        root.Children.Add(_loadingText);
+        videoPanel.Children.Add(_loadingText);
 
+        var dock = new DockPanel();
         if (transport is not null)
         {
-            // Dock the transport at the bottom of the window; the tile
-            // grid stretches to fill the rest.
-            var dock = new DockPanel();
             _transport = new PlayerTransportBar();
             _transport.Attach(transport);
             DockPanel.SetDock(_transport, Dock.Bottom);
             dock.Children.Add(_transport);
-            dock.Children.Add(root);
-            Content = dock;
         }
-        else
+        var tracksRow = new Border
         {
-            Content = root;
-        }
+            Background = Brush(ThemeKeys.MutedTile),
+            Padding = new Thickness(8, 4),
+            Child = tracksPanel,
+        };
+        DockPanel.SetDock(tracksRow, Dock.Bottom);
+        dock.Children.Add(tracksRow);
+        dock.Children.Add(videoPanel);
+        Content = dock;
     }
 
-    /// <summary>Handles for each tile's native child, in tile order. 0 = no video / embedding failed.</summary>
+    /// <summary>
+    /// Returns a single dictionary whose only key is the first
+    /// video source's id and whose value is the single mpv
+    /// host's native handle. Audio sources map to handle 0.
+    /// The single-mpv engine uses the first non-zero handle
+    /// for its embed target; the rest are ignored. Kept as a
+    /// dictionary so the caller doesn't need to know about
+    /// the single-mpv design.
+    /// </summary>
     public async Task<Dictionary<string, nint>> WaitForHandlesAsync(TimeSpan timeout)
     {
-        var result = new Dictionary<string, nint>();
-        foreach (var tile in _tiles)
+        nint handle = 0;
+        try
         {
-            nint handle = 0;
-            try
-            {
-                handle = await tile.HandleTcs.Task.WaitAsync(timeout).ConfigureAwait(false);
-            }
-            catch (Exception) { /* embedding failed; mpv uses its own window */ }
-            result[tile.SourceId] = handle;
+            handle = await _handleTcs.Task.WaitAsync(timeout).ConfigureAwait(false);
+        }
+        catch (Exception) { /* embedding failed; mpv uses its own window */ }
+        var result = new Dictionary<string, nint>();
+        foreach (var src in _sources)
+        {
+            // Only the first video source's id maps to the
+            // actual embed handle. Everything else is 0
+            // (audio / ignored). The single-mpv engine
+            // internally uses the first non-zero value.
+            result[src.SourceId] = src.IsVideo && handle != 0 && !result.Any() ? handle : nint.Zero;
         }
         return result;
     }
 
-    /// <summary>Shows or hides a tile (used by the include/exclude toggle).</summary>
-    public void SetTileVisible(string sourceId, bool visible)
-    {
-        var tile = _tiles.FirstOrDefault(t => t.SourceId == sourceId);
-        if (tile is not null) tile.Border.IsVisible = visible;
-    }
-
-    /// <summary>Updates the mute visual on an audio tile (glyph + red MUTED banner).</summary>
+    /// <summary>Highlights / de-highlights a track row when it's muted.</summary>
     public void SetTileMuted(string sourceId, bool muted)
     {
-        var tile = _tiles.FirstOrDefault(t => t.SourceId == sourceId);
-        if (tile is null) return;
-        if (tile.MuteGlyph is not null)
-            tile.MuteGlyph.Text = muted ? "🔇" : "🔊";
-        if (tile.MuteLabel is not null)
-            tile.MuteLabel.Text = muted ? "MUTED" : "";
-        if (tile.AudioPanel is not null)
-            tile.AudioPanel.Background = muted
-                ? Brush(ThemeKeys.MutedTileMuted)
-                : Brush(ThemeKeys.MutedTile);
-        tile.Border.BorderBrush = muted
+        if (!_trackBorders.TryGetValue(sourceId, out var border)) return;
+        border.BorderBrush = muted
             ? Brush(ThemeKeys.TileBorderMuted)
             : Brush(ThemeKeys.TileBorder);
+        border.Opacity = muted ? 0.5 : 1.0;
     }
 
-    /// <summary>Hides the loading overlay once all sources are playing.</summary>
+    /// <summary>Compatibility shim with the old per-tile window API. No-op now.</summary>
+    public void SetTileVisible(string sourceId, bool visible)
+    {
+        // The single-mpv design doesn't have per-source tiles
+        // — including/excluding a source rebuilds the filter
+        // graph instead. The track strip stays visible so the
+        // user can re-include a source.
+    }
+
+    /// <summary>Hides the loading overlay once mpv is up and playing.</summary>
     public void SetLoadingComplete()
     {
-        if (_loadingText is not null)
-            _loadingText.IsVisible = false;
+        if (_loadingText is not null) _loadingText.IsVisible = false;
     }
 }

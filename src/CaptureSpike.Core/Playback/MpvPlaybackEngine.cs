@@ -84,6 +84,64 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
     }
 
     /// <summary>
+    /// Plays a take's sources through a single mpv instance with
+    /// a caller-supplied --lavfi-complex graph. One audio clock
+    /// for every source — no per-process drift. Used by the
+    /// tiled-take player.
+    /// </summary>
+    public async Task LoadAsync(
+        IReadOnlyList<string> sourceFilePaths,
+        IReadOnlyList<TakeSource> takeSources,
+        string lavfiGraph,
+        double takeDurationSeconds,
+        CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await StopInternalAsync().ConfigureAwait(false);
+            _project = null;
+            _scene = null;
+            _takeDir = null;
+            // We still need a Take-shaped object for the muted
+            // list / sources list. Use a synthetic take with the
+            // provided sources. DurationSeconds is used for the
+            // playhead. The fields the engine reads are Sources
+            // and DurationSeconds.
+            _take = new Take
+            {
+                Id = "tiled",
+                SceneId = "tiled",
+                Number = 0,
+                DurationSeconds = takeDurationSeconds,
+                Sources = takeSources.ToList(),
+            };
+            _singleFile = null;
+            _muted.Clear();
+            // Inject the caller's graph and the file paths into
+            // the launch path. We do this by re-using
+            // StartMpvAsync after temporarily stashing the graph
+            // on a field that StartMpvAsync reads.
+            _tiledGraph = lavfiGraph;
+            _tiledFiles = sourceFilePaths.ToList();
+            await StartMpvAsync(positionSec: 0, startPaused: false, ct).ConfigureAwait(false);
+            _tiledGraph = null;
+            _tiledFiles = null;
+            _loaded = true;
+        }
+        finally { _gate.Release(); }
+    }
+
+    // ----- begin "tiled" mode (single-mpv with caller graph) -----
+    // Set by LoadAsync(sourceFilePaths, takeSources, lavfiGraph, ...)
+    // immediately before StartMpvAsync. Read by StartMpvAsync
+    // instead of the project/scene/take-driven graph build.
+    private string? _tiledGraph;
+    private List<string>? _tiledFiles;
+    private bool IsTiledLaunch => _tiledGraph is not null && _tiledFiles is not null;
+    // ----- end "tiled" mode -----
+
+    /// <summary>
     /// Plays a single media file (e.g. one source's MP4/WAV from a take folder)
     /// without the take's filter graph. Muting does not apply in this mode.
     /// </summary>
@@ -172,7 +230,20 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
 
         List<string> files;
         string? graph = null;
-        if (_take is not null)
+        if (IsTiledLaunch)
+        {
+            // Tiled-take mode: use the caller's graph and file
+            // list. No project/scene/takeDir needed because the
+            // caller pre-built the graph from its own data.
+            files = _tiledFiles!;
+            graph = _tiledGraph;
+            // Verify all the source files exist before launching
+            // mpv (otherwise the lavfi graph fails mid-start).
+            var missing = files.FirstOrDefault(f => !File.Exists(f));
+            if (missing is not null)
+                throw new FileNotFoundException($"Take media file is missing: {missing}");
+        }
+        else if (_take is not null)
         {
             var take = _take;
             files = take.Sources.Select(s => Path.Combine(_takeDir!, s.File)).ToList();
