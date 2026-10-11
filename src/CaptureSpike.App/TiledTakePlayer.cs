@@ -57,11 +57,17 @@ public sealed class TiledTakePlayer : IPlayer
             throw;
         }
 
+        // If the file is a normalized copy, its t=0 already
+        // matches the take's t=0 (the offset was baked into the
+        // content by trim or prepend). Re-applying the offset
+        // here would shift the source a second time. Skip the
+        // seek for .normalized files.
+        var isNormalized = source.File.Contains(".normalized.", StringComparison.Ordinal);
         _players.Add(new SourcePlayer
         {
             SourceId = source.Id,
             Engine = engine,
-            OffsetSec = source.EffectiveOffsetMs / 1000.0,
+            OffsetSec = isNormalized ? 0 : source.EffectiveOffsetMs / 1000.0,
         });
     }
 

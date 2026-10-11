@@ -11,9 +11,13 @@ namespace CaptureSpike.Core.Playback;
 /// In other words: a take that was "screen +120ms, mic -50ms" becomes
 /// a take where screen.mkv starts 120ms later than the original
 /// (the first 120ms trimmed) and mic.wav has 50ms of silence
-/// prepended. After normalization, all per-source offsets reset to 0
-/// and the files are already aligned — playback no longer needs to
-/// seek each source independently.
+/// prepended. After normalization, the per-source OffsetMs and
+/// ManualOffsetMs in take.json are PRESERVED (not zeroed) — the
+/// offset is baked into the on-disk content, so re-applying it via
+/// the JSON would double the effect. The files are already
+/// aligned — playback no longer needs to
+/// seek each source independently. Unnormalizing (restoring the
+/// original File pointer) leaves the take exactly as it was.
 ///
 /// Output is written to "&lt;name&gt;.normalized.&lt;ext&gt;" alongside the
 /// original; the original is left untouched. <see cref="TakeSource.File"/>
@@ -148,14 +152,23 @@ public static class TakeNormalizer
                     throw new InvalidOperationException(
                         $"Normalized output is suspiciously small ({outputBytes} bytes).");
 
-                // Build a new TakeSource pointing at the new file with zeroed offsets.
+                // Build a new TakeSource pointing at the new file.
+                // IMPORTANT: keep the original OffsetMs and
+                // ManualOffsetMs. The on-disk content has the
+                // offset baked in (trimmed or prepended) so the
+                // effective t=0 of the file is now aligned with
+                // the take's t=0. We just don't repeat the offset
+                // in take.json. That way Unnormalize (which
+                // restores the original File pointer) leaves the
+                // take exactly as it was — the user doesn't have
+                // to re-apply any offsets.
                 updated.Add(new TakeSource
                 {
                     Id = src.Id,
                     Kind = src.Kind,
                     File = Path.GetFileName(outputPath),
-                    OffsetMs = 0,
-                    ManualOffsetMs = null,
+                    OffsetMs = src.OffsetMs,
+                    ManualOffsetMs = src.ManualOffsetMs,
                     Width = src.Width,
                     Height = src.Height,
                 });
