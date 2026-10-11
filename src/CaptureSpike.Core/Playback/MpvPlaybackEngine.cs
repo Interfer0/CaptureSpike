@@ -290,13 +290,15 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         };
         psi.ArgumentList.Add("--no-config");
         psi.ArgumentList.Add("--no-terminal");
-        // Suppress noisy info/warn logs but keep status=v so
-        // startup failures (lavfi graph errors, missing
-        // inputs, etc.) are visible in stderr. The previous
-        // --msg-level=all=no hid every error and the user
-        // only saw "Pipe is broken" when mpv died — they
-        // couldn't tell WHY the graph failed.
-        psi.ArgumentList.Add("--msg-level=all=warn,status=v");
+        // Verbose logging during startup so we can see graph
+        // parsing errors and stream resolution. The previous
+        // --msg-level=all=no hid every error. With
+        // --msg-level=all=info,status=v, lavfi and demuxer
+        // messages are visible (graph parse failures, stream
+        // not found, codec mismatches) but the chatty per-
+        // frame decoder output is suppressed. If startup
+        // succeeds we can drop the level via set_property.
+        psi.ArgumentList.Add("--msg-level=all=info,status=v");
         psi.ArgumentList.Add($"--input-ipc-server={ipcArg}");
         if (graph is not null)
             psi.ArgumentList.Add($"--lavfi-complex={graph}");
@@ -351,18 +353,32 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         try
         {
             using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            loadCts.CancelAfter(TimeSpan.FromSeconds(10));
+            // 30s gives slow mpv builds or slow Windows
+            // pipes (where the file-loaded event can take
+            // many seconds) room to settle. 10s was too
+            // aggressive and treated slow-but-valid graphs
+            // as failures.
+            loadCts.CancelAfter(TimeSpan.FromSeconds(30));
             await _fileLoadedTcs.Task.WaitAsync(loadCts.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
         {
             var err = _stderr.ToString().Trim();
             await StopInternalAsync().ConfigureAwait(false);
+            // Write mpv's stderr to the user-facing log so it
+            // persists across the timeout, even if the user
+            // doesn't see the exception message in time.
+            if (err.Length > 0)
+            {
+                AppLog.Current?.WriteLine("[mpv] stderr (captured before timeout):");
+                foreach (var line in err.Split('\n'))
+                    AppLog.Current?.WriteLine("  " + line.Trim());
+            }
             throw new InvalidOperationException(
-                $"mpv did not load any streams within 10s. "
+                $"mpv did not load any streams within 30s. "
                 + (graph is not null ? "Likely the lavfi graph was rejected. " : "")
                 + (err.Length > 0
-                    ? "mpv said: " + err[^Math.Min(err.Length, 1500)..]
+                    ? "mpv said: " + err[^Math.Min(err.Length, 2000)..]
                     : "(no stderr output)"),
                 ex);
         }
