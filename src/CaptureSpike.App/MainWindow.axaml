@@ -427,14 +427,12 @@
           <StackPanel Spacing="4" Margin="0,4">
             <Button Content="{Binding RecordButtonText}" Command="{Binding ToggleRecordCommand}"
                     FontSize="19" HorizontalAlignment="Stretch"
-                    HorizontalContentAlignment="Center" Padding="8" />
+                    HorizontalContentAlignment="Center" Padding="8"
+                    ToolTip.Tip="The window minimizes when you start recording. Stop from the tray icon." />
             <TextBlock Text="{Binding RecordingElapsed}" FontFamily="Monospace" FontSize="17"
                        HorizontalAlignment="Center" IsVisible="{Binding IsRecording}" />
             <TextBlock Text="{Binding NextTakeText}" FontSize="15"
                        Opacity="0.6" HorizontalAlignment="Center" Margin="0,0,0,4" />
-            <TextBlock FontSize="14" Opacity="0.5" TextWrapping="Wrap"
-                       HorizontalAlignment="Center" TextAlignment="Center" Margin="0,0,0,8"
-                       Text="The window minimizes during the countdown. Stop from the tray icon." />
           </StackPanel>
         </ScrollViewer>
 
