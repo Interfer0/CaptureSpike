@@ -110,6 +110,50 @@ public static class FilterGraphBuilder
         // Video indices: 0..N-1 (videos go first in the file
         // list). Audio indices: N..N+M-1 where N = videos.Count
         // and M = audios.Count.
+        //
+        // ffmpeg's lavfi rejects graphs where a referenced
+        // stream doesn't exist on the file (e.g. [0:a] on a
+        // video-only file). For every file, we provide BOTH
+        // [i:v] and [i:a] — using the file's stream when
+        // present, and a synthesized fallback (anullsrc for
+        // audio, color for video) when it's not. This way the
+        // graph always has both streams to feed downstream
+        // filters, and xstack/amix can take the real streams
+        // they need.
+        // All-video file count N; all-audio file count M.
+        // Total files = N + M.
+        // File order = [v0, v1, ..., vN-1, a0, a1, ..., aM-1]
+        // Stream labels:
+        //   video file at position i contributes [i:v] (real)
+        //                              and [i:a] (anullsrc, silent)
+        //   audio file at position N+j contributes [N+j:a] (real)
+        //                                 and [N+j:v] (color, black)
+        var totalFiles = allVideos.Count + allAudios.Count;
+        for (var i = 0; i < totalFiles; i++)
+        {
+            var isVideo = i < allVideos.Count;
+            // For every file: ensure both :v and :a exist.
+            // Use a re-labeled stream so downstream filters
+            // (xstack, amix) can pick the right one.
+            if (isVideo)
+            {
+                // Video file: [i:v] is the real video,
+                // [i:a] is silent. We label the silent
+                // stream as [ias{i}] so it's not picked up
+                // by amix unless we want it to be.
+                sb.Append(CultureInfo.InvariantCulture,
+                    $"[{i}:a]anullsrc=channel_layout=stereo:sample_rate=48000[ias{i}];");
+            }
+            else
+            {
+                // Audio file: [i:a] is the real audio,
+                // [i:v] is black. Label the black stream
+                // as [ivs{i}] (silent video) so it can be
+                // picked up by xstack if needed.
+                sb.Append(CultureInfo.InvariantCulture,
+                    $"[{i}:v]color=size=640x360:rate=30:color=black[ivs{i}];");
+            }
+        }
         if (allVideos.Count > 0)
         {
             const int cellW = 640;
