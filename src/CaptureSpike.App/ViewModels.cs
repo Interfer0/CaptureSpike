@@ -326,7 +326,15 @@ public sealed class PaletteSourceViewModel : ObservableObject
         private set
         {
             if (SetField(ref _detectionCompleted, value))
+            {
+                // DeviceDisplay depends on DetectionCompleted, so
+                // raising PropertyChanged for one without the other
+                // leaves the UI showing "Detecting devices…"
+                // forever on rows that read DeviceDisplay through
+                // another VM (e.g., SceneSourceViewModel).
                 Raise(nameof(IsDeviceMissing));
+                Raise(nameof(DeviceDisplay));
+            }
         }
     }
 
@@ -419,9 +427,30 @@ public sealed class SceneSourceViewModel(SceneSource sceneSource, ProjectSource 
     public string Dot => SceneSource.Enabled ? "🟢" : "⚪";
 
     private PaletteSourceViewModel? _paletteVm;
-    public void SetPaletteSource(PaletteSourceViewModel? vm) => _paletteVm = vm;
+    public void SetPaletteSource(PaletteSourceViewModel? vm)
+    {
+        if (_paletteVm is not null)
+            _paletteVm.PropertyChanged -= OnPalettePropertyChanged;
+        _paletteVm = vm;
+        if (_paletteVm is not null)
+            _paletteVm.PropertyChanged += OnPalettePropertyChanged;
+        // Push an initial update so the row reflects whatever the
+        // palette VM is showing right now (might be "Detecting
+        // devices…", the device name, or "Default" if no device).
+        Raise(nameof(DeviceLabel));
+    }
     public string DeviceLabel => _paletteVm?.DeviceDisplay ?? "Default";
     public void RaiseDeviceLabel() => Raise(nameof(DeviceLabel));
+    private void OnPalettePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        // The palette VM's DeviceDisplay is what we render. It
+        // changes on DetectionCompleted (Detecting devices… →
+        // device name) and on user device pick. Re-raise so the
+        // scene row re-reads.
+        if (e.PropertyName == nameof(PaletteSourceViewModel.DeviceDisplay)
+            || e.PropertyName == nameof(PaletteSourceViewModel.DetectionCompleted))
+            Raise(nameof(DeviceLabel));
+    }
 
     /// <summary>Assigned by MainViewModel after construction.</summary>
     public ICommand ToggleCommand { get; set; } = null!;
