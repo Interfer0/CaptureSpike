@@ -116,6 +116,22 @@ public static class TakeNormalizer
                             $"ffmpeg prepend exited with code {exitCode} for {src.Id}.");
                 }
 
+                // Pad/trim the .normalized output to match the input's
+                // natural length. Without this, a positive offset produces
+                // an output shorter than the input (e.g. trim 200ms off a
+                // 9s clip → 8.8s), which the user can't mux back into a
+                // 9s video. The original is left untouched so we can probe
+                // its duration even if the offset was applied to a file
+                // that no longer matches the original length.
+                var inputDuration = await ProbeDurationAsync(ffmpeg, inputPath, ct);
+                var normalizedDuration = await ProbeDurationAsync(ffmpeg, outputPath, ct);
+                if (Math.Abs(normalizedDuration - inputDuration) > 0.01)
+                {
+                    progress?.Invoke(src.Id, 0.9,
+                        $"Aligning length: {normalizedDuration:F2}s → {inputDuration:F2}s.");
+                    await PadToDurationAsync(ffmpeg, outputPath, inputDuration, ct);
+                }
+
                 // Sanity check: did ffmpeg actually produce a non-empty output?
                 var outputBytes = new FileInfo(outputPath).Length;
                 if (outputBytes < 100)
@@ -201,6 +217,107 @@ public static class TakeNormalizer
 
     private static string FormatSeconds(double seconds) =>
         seconds.ToString("0.000", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Run ffmpeg to read a file's duration, parse the "Duration: HH:MM:SS.MS"
+    /// line from stderr. Throws on failure or unparseable output. Used
+    /// to learn the input's natural length so the normalized output
+    /// can be padded/trimmed back to that length — otherwise trim
+    /// makes the output shorter than the video and the user can't
+    /// mux the files together.
+    /// </summary>
+    private static async Task<double> ProbeDurationAsync(string ffmpeg, string input, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpeg,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        // -i <input> -f null -  asks ffmpeg to demux the file and
+        // throw the result away, but still print the container's
+        // metadata to stderr.
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(input);
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("null");
+        psi.ArgumentList.Add("-");
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Could not start ffmpeg.");
+        var stderr = new StringBuilder();
+        var stderrTask = Task.Run(async () =>
+        {
+            string? line;
+            while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) != null)
+                stderr.AppendLine(line);
+        }, ct);
+        await process.WaitForExitAsync(ct).ConfigureAwait(false);
+        try { await stderrTask.ConfigureAwait(false); } catch { }
+        // Expect exit code 1 (ffmpeg "fails" to encode to /dev/null)
+        // but still prints the metadata. Don't check the exit code
+        // — what matters is the Duration line.
+
+        var m = System.Text.RegularExpressions.Regex.Match(
+            stderr.ToString(), @"Duration:\s*(\d+):(\d+):(\d+\.\d+)");
+        if (!m.Success)
+            throw new InvalidOperationException(
+                $"Could not parse duration from ffmpeg output for {input}.");
+        var hours = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+        var minutes = int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+        var seconds = double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+        return hours * 3600 + minutes * 60 + seconds;
+    }
+
+    /// <summary>
+    /// Pad/trim a file in place to exactly <paramref name="targetSeconds"/>.
+    /// Pads audio with silence (apad) and video with cloned last
+    /// frame (tpad); truncates with -t. Works for audio-only files
+    /// (apad only) and video files (both filters). Writes to a
+    /// temp file, then atomically moves into place.
+    /// </summary>
+    private static async Task PadToDurationAsync(string ffmpeg, string path, double targetSeconds, CancellationToken ct)
+    {
+        var tempPath = path + ".padtmp";
+        var secStr = FormatSeconds(targetSeconds);
+        var args = new[]
+        {
+            "-y", "-i", path,
+            // Audio pad: silence to the target duration. apad's
+            // whole_dur pads if shorter, no-op if longer. We then
+            // -t to truncate any overshoot (defensive — should be
+            // a no-op when whole_dur was set).
+            "-af", $"apad=whole_dur={secStr}",
+            // Video pad: tpad with clone stop mode fills any
+            // missing video with the last frame. For audio-only
+            // inputs the [0:v] filter is a no-op.
+            "-vf", $"tpad=stop_mode=clone:stop_duration={secStr}",
+            // Truncate to the target in case of any overshoot.
+            "-t", secStr,
+            // Match input codec family: pcm for wav, aac for
+            // mp4/mkv audio. Copy if the codec is already what
+            // we want.
+            "-c:a", "pcm_s16le",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
+            "-movflags", "+faststart",
+            tempPath,
+        };
+        try
+        {
+            var exitCode = await RunFfmpegAsync(ffmpeg, args, ct);
+            if (exitCode != 0)
+                throw new InvalidOperationException(
+                    $"ffmpeg pad exited with code {exitCode}.");
+            File.Move(tempPath, path, overwrite: true);
+        }
+        catch
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            throw;
+        }
+    }
 
     /// <summary>
     /// Run ffmpeg with the given args, capture stderr, return exit code.
