@@ -89,32 +89,46 @@ public static class TakeNormalizer
         // For audio, it's the first time the audio exceeds the
         // silence threshold, measured from the file's own t=0
         // and translated back to take-time using EffectiveOffsetMs.
-        var perSourceFirstNonSilentMs = await ResolveFirstNonSilentMsAsync(ffmpeg, take, takeDir, ct);
-        var maxFirstNonSilentMs = perSourceFirstNonSilentMs.Values.DefaultIfEmpty(0).Max();
-        // Diagnostic: surface the per-source first-non-silent
-        // times so the user can see what each source was
-        // detected at, and what the trim anchor ended up being.
+        // Compute the trim anchor from file durations. The
+        // user's key insight (paraphrased): "if the audio
+        // files all end at the same time and one is 1s
+        // shorter, that means that one started 1s later —
+        // pad the start of the longer one, don't trim the
+        // short one." This is much more reliable than
+        // silencedetect, which has noise-floor problems
+        // (quiet speech can be misclassified, leading to
+        // trimming the actual content).
+        //
+        // For each source we probe its duration. The
+        // longest-duration file is the "anchor" — it started
+        // first (or equivalently, was capturing the longest).
+        // Every other file's first sample corresponds to a
+        // take-time of (maxDuration - thisDuration) ms after
+        // the anchor's first sample. We trim each file by
+        // (maxDuration - thisDuration) so every file's t=0
+        // lines up with the same take-time.
+        //
+        // Special case: if the user manually applied offsets
+        // to a source (ManualOffsetMs), that override is
+        // ignored here. The user's record-time intent is
+        // that all sources start when record begins, so
+        // durations are the source of truth.
+        var perSourceDurationMs = await ProbePerSourceDurationAsync(ffmpeg, take, takeDir, ct);
+        var maxDurationMs = perSourceDurationMs.Values.DefaultIfEmpty(0).Max();
+        // Diagnostic: surface the per-source durations and
+        // the implied trim anchor so the user can see what
+        // was detected.
         foreach (var src in take.Sources)
         {
-            if (perSourceFirstNonSilentMs.TryGetValue(src.Id, out var ms))
+            if (perSourceDurationMs.TryGetValue(src.Id, out var dur))
             {
+                var trim = maxDurationMs - dur;
                 progress?.Invoke(src.Id, null,
-                    $"First-non-silent: {ms:F0}ms (record-time offset was {src.EffectiveOffsetMs:F0}ms).");
+                    $"Duration: {dur / 1000.0:F2}s; trim {trim:F0}ms to align with longest source.");
             }
         }
-        // Diagnostic: surface the computed max so the user can
-        // see what value the code decided on.
         progress?.Invoke("", null,
-            $"Normalize plan: trim to take-time {maxFirstNonSilentMs:F0}ms (max first-non-silent), pad to {targetSeconds:F2}s (longest input).");
-        // We no longer pre-compute a single trim value here.
-        // Each source's trim is computed per-source from its own
-        // first-non-silent time: a source whose first sound is
-        // AT the anchor (e.g. the screen that started late and
-        // whose first frame IS the trim anchor) is not trimmed
-        // at all. A source that started before the anchor (a
-        // mic with a few hundred ms of pre-anchor silence) is
-        // trimmed by (anchor - firstNonSilentMs) so its first
-        // sound lines up with the anchor.
+            $"Normalize plan: trim each source to align with the longest ({maxDurationMs / 1000.0:F2}s), pad to {targetSeconds:F2}s.");
 
         foreach (var src in take.Sources)
         {
@@ -150,24 +164,20 @@ public static class TakeNormalizer
             try
             {
                 // Per-source trim: how much of THIS file's
-                // beginning we drop so that its first audible
-                // content lands at the take's trim anchor
-                // (maxFirstNonSilentMs). A source whose
-                // first-non-silent is BEFORE the anchor gets
-                // trimmed by (anchor - firstNonSilentMs). A
-                // source whose first-non-silent IS the anchor
-                // (e.g. the screen that started late and whose
-                // first frame is the anchor itself) is not
-                // trimmed at all — the trim amount is zero.
-                var sourceFirstNonSilentMs = perSourceFirstNonSilentMs.TryGetValue(src.Id, out var v)
-                    ? v : src.EffectiveOffsetMs;
-                var trimMs = Math.Max(0, maxFirstNonSilentMs - sourceFirstNonSilentMs);
+                // beginning we drop so its first sample lines
+                // up with the take's anchor (the longest
+                // file's first sample). Trim is
+                // (maxDuration - thisDuration). The anchor
+                // file (the longest) gets no trim; shorter
+                // files are already shorter by exactly the
+                // right amount.
+                var sourceDurationMs = perSourceDurationMs.TryGetValue(src.Id, out var d)
+                    ? d : 0;
+                var trimMs = Math.Max(0, maxDurationMs - sourceDurationMs);
                 if (trimMs < 0.5)
                 {
-                    // Either the source's first-non-silent is
-                    // already at the anchor, or all sources are
-                    // at offset 0. Either way, just copy the
-                    // file as-is to .normalized.
+                    // The file's duration matches the anchor.
+                    // Just copy as-is to .normalized.
                     progress?.Invoke(src.Id, 0.0,
                         $"{src.File} no trim needed; copying to .normalized.");
                     File.Copy(inputPath, outputPath, overwrite: true);
@@ -175,7 +185,7 @@ public static class TakeNormalizer
                 else
                 {
                     progress?.Invoke(src.Id, 0.0,
-                        $"Trimming {trimMs:F0}ms from {src.File} (align to take's max offset).");
+                        $"Trimming {trimMs:F0}ms from {src.File} (align to take's longest source).");
                     var args = BuildTrimArgs(inputPath, outputPath, trimMs / 1000.0,
                         src.Kind.IsVideo());
                     var exitCode = await RunFfmpegAsync(ffmpeg, args, ct);
@@ -574,132 +584,34 @@ public static class TakeNormalizer
     }
 
     /// <summary>
-    /// Per-source first-non-silent offset (in ms, relative to
-    /// the take's t0). For video, returns EffectiveOffsetMs
-    /// (cameras don't buffer silence — first frame IS first
-    /// data). For audio, runs ffmpeg's silencedetect filter to
-    /// find the first time the audio exceeds a noise floor, then
-    /// translates that to take-time using the take's t0 and the
-    /// source's EffectiveOffsetMs. The result is the take-time
-    /// at which "actual sound" begins for each source. The
-    /// maximum of these is the trim anchor: every normalized
-    /// file is trimmed back to that take-time, so all files'
-    /// t=0 lines up with real audio content (not first-data
-    /// silence).
+    /// Probe each take source's media file and return its
+    /// duration in milliseconds. Used as the trim anchor:
+    /// the longest file is the one that captured the most
+    /// take-time, so every other file is shorter by exactly
+    /// the right amount to align with it.
     /// </summary>
-    private static async Task<Dictionary<string, double>> ResolveFirstNonSilentMsAsync(
+    private static async Task<Dictionary<string, double>> ProbePerSourceDurationAsync(
         string ffmpeg, Take take, string takeDir, CancellationToken ct)
     {
         var result = new Dictionary<string, double>(take.Sources.Count);
         foreach (var src in take.Sources)
         {
             ct.ThrowIfCancellationRequested();
-            // Video: first frame is first data. No refinement.
-            if (src.Kind.IsVideo())
-            {
-                result[src.Id] = src.EffectiveOffsetMs;
-                continue;
-            }
-            // Audio: detect first non-silent sample in the file.
             var path = Path.Combine(takeDir, src.File);
-            if (!File.Exists(path))
-            {
-                result[src.Id] = src.EffectiveOffsetMs;
-                continue;
-            }
+            if (!File.Exists(path)) continue;
             try
             {
-                var firstNonSilentFileMs = await ProbeFirstNonSilentAsync(ffmpeg, path, ct)
-                    .ConfigureAwait(false);
-                // Translate file-time to take-time:
-                //   take-time = file-time + (take.t0 - source.firstDataAt)
-                //            = file-time + EffectiveOffsetMs
-                //   Wait, EffectiveOffsetMs is (firstDataAt - t0), so
-                //   a POSITIVE offset means the source started AFTER t0.
-                //   file-time 0 corresponds to take-time EffectiveOffsetMs.
-                //   So take-time = file-time + EffectiveOffsetMs.
-                var takeTimeMs = firstNonSilentFileMs + src.EffectiveOffsetMs;
-                result[src.Id] = takeTimeMs;
+                var seconds = await ProbeDurationAsync(ffmpeg, path, ct).ConfigureAwait(false);
+                result[src.Id] = seconds * 1000.0;
             }
             catch
             {
-                // On failure, fall back to the record-time offset.
-                // Better to normalize at a slightly-wrong anchor
-                // than to fail the whole take.
-                result[src.Id] = src.EffectiveOffsetMs;
+                // Skip on probe failure; the per-source
+                // trim falls back to 0 (no trim), so this
+                // file just doesn't get aligned.
             }
         }
         return result;
-    }
-
-    /// <summary>
-    /// Run ffmpeg with silencedetect to find the first
-    /// non-silent timestamp (in ms, from file t=0). Returns 0
-    /// if the entire file is silent or detection fails — that's
-    /// the right answer for "no audible sound" since we want the
-    /// file to start at its first-data time in that case.
-    /// </summary>
-    private static async Task<double> ProbeFirstNonSilentAsync(
-        string ffmpeg, string path, CancellationToken ct)
-    {
-        // silencedetect flags:
-        //   noise=-30dB  — anything quieter than -30dB is "silence".
-        //                    -30dB is conservative enough to catch
-        //                    breathing and room tone but not so
-        //                    aggressive it flags quiet speech.
-        //   d=0.05       — minimum 50ms of non-silence to count
-        //                    as a sound (suppresses sub-frame
-        //                    blips from noise floor).
-        var psi = new ProcessStartInfo
-        {
-            FileName = ffmpeg,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        psi.ArgumentList.Add("-hide_banner");
-        psi.ArgumentList.Add("-i");
-        psi.ArgumentList.Add(path);
-        psi.ArgumentList.Add("-af");
-        psi.ArgumentList.Add("silencedetect=noise=-30dB:d=0.05");
-        psi.ArgumentList.Add("-f");
-        psi.ArgumentList.Add("null");
-        psi.ArgumentList.Add("-");
-
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException("Could not start ffmpeg.");
-        var stderr = new StringBuilder();
-        var stderrTask = Task.Run(async () =>
-        {
-            string? line;
-            while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) != null)
-                stderr.AppendLine(line);
-        }, ct);
-        try
-        {
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
-            try { await stderrTask.ConfigureAwait(false); } catch { }
-        }
-        catch (OperationCanceledException)
-        {
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-            throw;
-        }
-        // silencedetect prints lines like:
-        //   [silencedetect @ 0x...] silence_start: 0.123
-        //   [silencedetect @ 0x...] silence_end: 1.234 | silence_duration: 1.111
-        //   [silencedetect @ 0x...] silence_start: 5.678
-        // The first silence_end is the first non-silent time.
-        // If there's no silence_end (file is all sound from t=0),
-        // the first non-silent time is 0.
-        var m = System.Text.RegularExpressions.Regex.Match(
-            stderr.ToString(), @"silence_end:\s*(\d+(?:\.\d+)?)");
-        if (m.Success && double.TryParse(m.Groups[1].Value,
-                System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var seconds))
-            return seconds * 1000.0;
-        return 0;
     }
 
     /// <summary>
