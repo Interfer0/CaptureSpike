@@ -45,18 +45,10 @@ public static class TakeNormalizer
     /// to the new file name and zeroes the offsets. Does not write take.json
     /// — the caller does that after merging the updated sources back.
     /// </summary>
-    /// <param name="silenceThresholdDb">dB below which audio is
-    /// considered silence. Default -30. Lower (more negative)
-    /// = stricter; higher (less negative) = more sensitive.</param>
-    /// <param name="silenceMinDurationSec">Minimum duration of
-    /// audio above the threshold before it counts as a sound
-    /// event. Default 0.05s.</param>
     public static async Task<Result> NormalizeAsync(
         string takeDir,
         Take take,
         ProgressReporter? progress = null,
-        double silenceThresholdDb = -30.0,
-        double silenceMinDurationSec = 0.05,
         CancellationToken ct = default)
     {
         var ffmpeg = ToolPaths.Resolve("ffmpeg");
@@ -126,10 +118,6 @@ public static class TakeNormalizer
         }
         progress?.Invoke("", null,
             $"Normalize plan: prepend silence so every source ends at the same wall-clock time (longest: {maxDurationMs / 1000.0:F2}s).");
-        // SilenceThresholdDb and SilenceMinDurationSec are
-        // accepted parameters but not used here — the user's
-        // latest direction is to skip the silence detector
-        // entirely. We still pass them through so the public
         // API doesn't change.
 
         foreach (var src in take.Sources)
