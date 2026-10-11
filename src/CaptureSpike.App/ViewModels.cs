@@ -107,6 +107,12 @@ internal static class AppSettings
         public double? RightColumnWidth { get; set; }
         [JsonPropertyName("logPanelHeight")]
         public double? LogPanelHeight { get; set; }
+        [JsonPropertyName("rightSourcesHeight")]
+        public string? RightSourcesHeight { get; set; }
+        [JsonPropertyName("rightRecordHeight")]
+        public string? RightRecordHeight { get; set; }
+        [JsonPropertyName("rightNotesHeight")]
+        public string? RightNotesHeight { get; set; }
         [JsonPropertyName("isNotesExpanded")]
         public bool IsNotesExpanded { get; set; }
     }
@@ -197,6 +203,55 @@ internal static class AppSettings
             var clamped = Math.Max(80, Math.Min(600, value));
             var d = Load(); d.LogPanelHeight = clamped; Save(d);
         }
+    }
+
+    public static GridLength RightSourcesHeight
+    {
+        get => ParseGridLength(Load().RightSourcesHeight);
+        set { var d = Load(); d.RightSourcesHeight = FormatGridLength(value); Save(d); }
+    }
+
+    public static GridLength RightRecordHeight
+    {
+        get => ParseGridLength(Load().RightRecordHeight);
+        set { var d = Load(); d.RightRecordHeight = FormatGridLength(value); Save(d); }
+    }
+
+    public static GridLength RightNotesHeight
+    {
+        get => ParseGridLength(Load().RightNotesHeight);
+        set { var d = Load(); d.RightNotesHeight = FormatGridLength(value); Save(d); }
+    }
+
+    private static GridLength ParseGridLength(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return new GridLength(1, GridUnitType.Star);
+        if (string.Equals(value, "Auto", StringComparison.OrdinalIgnoreCase))
+            return GridLength.Auto;
+        if (value.EndsWith('*'))
+        {
+            var weightText = value[..^1];
+            if (weightText.Length == 0)
+                return new GridLength(1, GridUnitType.Star);
+            if (double.TryParse(weightText, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var weight) &&
+                double.IsFinite(weight) && weight > 0)
+                return new GridLength(weight, GridUnitType.Star);
+            return new GridLength(1, GridUnitType.Star);
+        }
+        if (double.TryParse(value, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var pixels) &&
+            double.IsFinite(pixels) && pixels >= 0)
+            return new GridLength(pixels, GridUnitType.Pixel);
+        return new GridLength(1, GridUnitType.Star);
+    }
+
+    private static string FormatGridLength(GridLength value)
+    {
+        var number = value.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        if (value.IsAuto) return "Auto";
+        return value.IsStar ? number + "*" : number;
     }
 
     /// <summary>Whether the notes expander in the right column
@@ -992,6 +1047,39 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             var clamped = Math.Max(240, Math.Min(value, 2000));
             if (SetField(ref _rightColumnWidth, clamped))
                 AppSettings.RightColumnWidth = clamped;
+        }
+    }
+
+    private GridLength _rightSourcesHeight = AppSettings.RightSourcesHeight;
+    public GridLength RightSourcesHeight
+    {
+        get => _rightSourcesHeight;
+        set
+        {
+            if (SetField(ref _rightSourcesHeight, value))
+                AppSettings.RightSourcesHeight = value;
+        }
+    }
+
+    private GridLength _rightRecordHeight = AppSettings.RightRecordHeight;
+    public GridLength RightRecordHeight
+    {
+        get => _rightRecordHeight;
+        set
+        {
+            if (SetField(ref _rightRecordHeight, value))
+                AppSettings.RightRecordHeight = value;
+        }
+    }
+
+    private GridLength _rightNotesHeight = AppSettings.RightNotesHeight;
+    public GridLength RightNotesHeight
+    {
+        get => _rightNotesHeight;
+        set
+        {
+            if (SetField(ref _rightNotesHeight, value))
+                AppSettings.RightNotesHeight = value;
         }
     }
 

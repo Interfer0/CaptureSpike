@@ -96,17 +96,11 @@
         <ColumnDefinition Width="Auto" />
         <ColumnDefinition Width="5" />
         <ColumnDefinition Width="*" MinWidth="0" />
-        <ColumnDefinition Width="5" />
         <ColumnDefinition Width="Auto" />
       </Grid.ColumnDefinitions>
-      <!-- The three main panels (left=palette, middle=take
-           workspace, right=notes) are user-resizable. Two
-           GridSplitters between them let the user drag to
-           grow/shrink. The widths are bound two-way to
-           MainViewModel.LeftColumnWidth / RightColumnWidth
-           so the resize sticks across the session. The
-           middle column uses * so it auto-fills whatever
-           space is left. -->
+      <!-- The palette width is resizable; the take workspace
+           fills the remaining space before the fixed-width
+           scene panel. -->
       <Grid Grid.Column="0" Width="{Binding LeftColumnWidth, Mode=TwoWay}"
             MinWidth="160" Margin="0,0,0,0">
         <Grid.RowDefinitions>
@@ -346,11 +340,17 @@
       </Grid>
 
       <!-- Scene setup + record + Script & notes split-view -->
-      <GridSplitter Grid.Column="3" Width="5"
-                    HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                    ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
-      <Grid Grid.Column="4" Width="{Binding RightColumnWidth, Mode=TwoWay}"
-            MinWidth="240" RowDefinitions="Auto,Auto,*,5,*,5,*">
+      <Grid Grid.Column="3" Width="{Binding RightColumnWidth, Mode=TwoWay}"
+            MinWidth="240">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="{Binding RightSourcesHeight, Mode=TwoWay}" MinHeight="80" />
+          <RowDefinition Height="5" />
+          <RowDefinition Height="{Binding RightRecordHeight, Mode=TwoWay}" MinHeight="70" />
+          <RowDefinition Height="5" />
+          <RowDefinition Height="{Binding RightNotesHeight, Mode=TwoWay}" MinHeight="80" />
+        </Grid.RowDefinitions>
         <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8"
                     Margin="0,0,0,4">
           <TextBlock Text="{Binding SelectedScene.Title}" FontWeight="Bold" FontSize="17" />
