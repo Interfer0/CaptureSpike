@@ -987,6 +987,14 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     /// </summary>
     public async void StartupAsync()
     {
+        // The "Available sources" panel is built once at startup from
+        // the global palette. Project actions (open, create, delete)
+        // must NOT touch it — see ReloadScenes for the explicit
+        // no-`ReloadPalette` policy. Doing the build here (rather
+        // than in the MainViewModel ctor) keeps the window-shown
+        // ordering clean and lets device detection run before the
+        // user can interact.
+        ReloadPalette();
         var last = AppSettings.LastProjectDir;
         if (last is not null && Directory.Exists(last))
             OpenProject(last);

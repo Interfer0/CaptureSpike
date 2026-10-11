@@ -61,9 +61,23 @@ public sealed class GlobalPalette
         {
             var json = File.ReadAllText(path);
             var palette = System.Text.Json.JsonSerializer.Deserialize<GlobalPalette>(json);
-            if (palette is not null) return palette;
+            if (palette is not null)
+            {
+                // Defensive: a parsed palette with a null Sources
+                // (e.g. from "{}" or "{\"sources\":null}") would
+                // crash on first enumeration. Coerce to a real list.
+                palette.Sources ??= new List<ProjectSource>();
+                return palette;
+            }
         }
-        catch { /* fall through to default */ }
+        catch
+        {
+            // The file is corrupt (truncated mid-write, edited by
+            // hand, etc.). Don't crash the app — fall back to the
+            // default palette so the user can recover by re-adding
+            // their sources via "+ Add". The corrupt file is left
+            // on disk; the next Save() will overwrite it.
+        }
         return new GlobalPalette
         {
             Sources = new List<ProjectSource>(Project.DefaultPalette()),
@@ -80,7 +94,24 @@ public sealed class GlobalPalette
         var tmp = path + ".tmp";
         File.WriteAllText(tmp, System.Text.Json.JsonSerializer.Serialize(this,
             new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
-        File.Move(tmp, path, overwrite: true);
+        // File.Move with overwrite can fail on Windows when an
+        // indexer, antivirus, or another process has the target
+        // file open with a shared read lock. Retry with a tiny
+        // backoff — the lock is usually released in milliseconds,
+        // but a stuck antivirus scan can take a few seconds.
+        var attempts = 0;
+        while (true)
+        {
+            try
+            {
+                File.Move(tmp, path, overwrite: true);
+                return;
+            }
+            catch (IOException) when (attempts++ < 60)
+            {
+                Thread.Sleep(100);
+            }
+        }
     }
 
     /// <summary>True if a source with the given id is already in the palette.</summary>
