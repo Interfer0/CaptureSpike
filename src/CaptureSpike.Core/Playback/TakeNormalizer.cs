@@ -387,10 +387,10 @@ public static class TakeNormalizer
 
     /// <summary>
     /// Probe a file's first audio stream and return a short
-    /// human-readable description of the format (sample rate,
-    /// channel count, codec, bit rate). Used to verify the pad
-    /// re-encode preserved the input's bit rate. Returns
-    /// "unknown" on failure.
+    /// human-readable description of the format (codec, sample
+    /// rate, channel count, bit rate). Used to verify the pad
+    /// re-encode preserved the input's format. Returns
+    /// "no audio stream" if there's no audio.
     /// </summary>
     private static async Task<string> ProbeAudioFormatAsync(string ffmpeg, string input, CancellationToken ct)
     {
@@ -427,24 +427,71 @@ public static class TakeNormalizer
             try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
             throw;
         }
-        // Find the FIRST Audio: stream line and report its
-        // format fields. ffprobe-style output:
-        //   Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 48000 Hz, 2 channels, s16, 1536 kb/s
+        // ffprobe-style output:
+        //   Stream #0:0: Audio: pcm_f32le ([3][0][0][0] / 0x0003), 16000 Hz, mono, flt, 512 kb/s
         var audioLine = stderr.ToString().Split('\n')
             .FirstOrDefault(l => l.Contains("Audio:", StringComparison.Ordinal));
         if (audioLine is null) return "no audio stream";
-        // Extract just the format fields. Drop the codec tag like
-        // ([1][0][0][0] / 0x0001) so the line is easy to read.
-        var m = System.Text.RegularExpressions.Regex.Match(audioLine, @"Audio:\s*([^,]+),\s*(\d+)\s*Hz,\s*([^,]+),\s*(\d+)\s*kb/s");
-        if (m.Success)
-        {
-            // 1=codec (e.g. "pcm_s16le"), 2=sample rate, 3=channels, 4=bit rate kb/s
-            return $"{m.Groups[1].Value.Trim()}, {m.Groups[2].Value}Hz, {m.Groups[3].Value.Trim()}, {m.Groups[4].Value}kb/s";
-        }
-        // Fallback: return a trimmed slice of the original line.
         return audioLine.Trim().Length > 200
             ? audioLine.Trim()[..200] + "…"
             : audioLine.Trim();
+    }
+
+    /// <summary>
+    /// Probe a file's first audio stream and return the codec
+    /// name (e.g. "pcm_s16le", "pcm_f32le"). Returns
+    /// "pcm_s16le" as a safe default if the probe fails or
+    /// there's no audio.
+    /// </summary>
+    private static async Task<string> ProbeAudioCodecAsync(string ffmpeg, string input, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpeg,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(input);
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("null");
+        psi.ArgumentList.Add("-");
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Could not start ffmpeg.");
+        var stderr = new StringBuilder();
+        var stderrTask = Task.Run(async () =>
+        {
+            string? line;
+            while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) != null)
+                stderr.AppendLine(line);
+        }, ct);
+        try
+        {
+            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            try { await stderrTask.ConfigureAwait(false); } catch { }
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+        // The codec name is the first field after "Audio:" in the
+        // stream line, e.g. "Audio: pcm_f32le ([3][0][0][0] / 0x0003), 16000 Hz, ..."
+        var audioLine = stderr.ToString().Split('\n')
+            .FirstOrDefault(l => l.Contains("Audio:", StringComparison.Ordinal));
+        if (audioLine is null) return "pcm_s16le";
+        var m = System.Text.RegularExpressions.Regex.Match(audioLine, @"Audio:\s*(\S+)");
+        if (!m.Success) return "pcm_s16le";
+        // Strip the codec tag in parens ("pcm_s16le ([1][0][0][0] / 0x0001)")
+        // and any trailing comma so the codec name is clean.
+        var codec = m.Groups[1].Value.TrimEnd(',', ' ');
+        // ffprobe shows "pcm_f32le" for 32-bit float WAV. Other
+        // common values: pcm_s16le, pcm_s24le, pcm_s32le, mp3,
+        // aac, opus. Pass through whatever ffmpeg reports.
+        return codec;
     }
 
     /// <summary>
@@ -543,10 +590,12 @@ public static class TakeNormalizer
         try { await probeTask.ConfigureAwait(false); } catch { }
         var probeOutput = probeStderr.ToString();
         var hasVideo = probeOutput.Contains("Video:", StringComparison.Ordinal);
-        // Extract the input's sample rate and channel count so the
-        // pad re-encode preserves the original bit rate. Without
-        // this, some ffmpeg builds (notably on Windows) halve the
-        // sample rate or bit depth, dropping the bit rate to half.
+        // Extract the input's sample rate, channel count, and
+        // audio codec so the pad re-encode preserves the
+        // original bit depth and bit rate. The user's NAudio
+        // recordings come out as 32-bit float (pcm_f32le) on
+        // some Windows setups; if the pad hard-codes 16-bit
+        // (pcm_s16le) the bit rate is exactly halved.
         int? inputSampleRate = null;
         int? inputChannels = null;
         var srMatch = System.Text.RegularExpressions.Regex.Match(
@@ -557,6 +606,19 @@ public static class TakeNormalizer
             probeOutput, @"Hz\s*,\s*(\d+)\s*channels");
         if (chMatch.Success && int.TryParse(chMatch.Groups[1].Value, out var ch))
             inputChannels = ch;
+        var codecMatch = System.Text.RegularExpressions.Regex.Match(
+            probeOutput, @"Audio:\s*(\S+)");
+        // The first match is the codec name; trim trailing
+        // comma/space in case the codec tag had a parens block.
+        var inputCodec = codecMatch.Success
+            ? codecMatch.Groups[1].Value.TrimEnd(',', ' ').TrimEnd(')', ' ')
+            : "pcm_s16le";
+        // Strip the (rare) codec tag in parens that ffmpeg
+        // sometimes appends, e.g. "pcm_f32le ([3][0][0][0] /
+        // 0x0003)". If the codec name still has a '(' we just
+        // take the first token.
+        if (inputCodec.Contains('('))
+            inputCodec = inputCodec.Split('(')[0].Trim();
 
         var args = new List<string> { "-y", "-i", path };
         // Audio: pad to target. apad's whole_dur pads if shorter,
@@ -574,17 +636,16 @@ public static class TakeNormalizer
         }
         // Truncate to the target in case of any overshoot.
         args.Add("-t"); args.Add(secStr);
-        // Match the input's audio format so the pad re-encode
-        // doesn't silently halve the bit rate. Force the same
-        // sample rate and channel count as the input; the codec
-        // stays pcm_s16le (16-bit). If the input was 24-bit or
-        // 32-bit float, this downgrades to 16-bit, which is a
-        // quality decision (we can revisit if the user records
-        // >16-bit audio). For the common 16-bit case the bit
+        // Match the input's audio format (sample rate, channel
+        // count, AND codec) so the pad re-encode doesn't
+        // silently halve the bit rate by downgrading
+        // 32-bit float to 16-bit PCM. Force the same sample
+        // rate and channel count as the input; use the input's
+        // codec (typically pcm_s16le or pcm_f32le) so the bit
         // rate is preserved exactly.
         if (inputSampleRate is not null) { args.Add("-ar"); args.Add(inputSampleRate.Value.ToString(CultureInfo.InvariantCulture)); }
         if (inputChannels is not null) { args.Add("-ac"); args.Add(inputChannels.Value.ToString(CultureInfo.InvariantCulture)); }
-        args.Add("-c:a"); args.Add("pcm_s16le");
+        args.Add("-c:a"); args.Add(inputCodec);
         args.Add(tempPath);
 
         try
