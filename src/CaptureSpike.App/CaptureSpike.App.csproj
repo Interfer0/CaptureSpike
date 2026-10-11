@@ -16,9 +16,74 @@
          binaries not yet synced), the build falls back to the default icon. -->
   </PropertyGroup>
 
+  <!-- The base64-encoded PNG icon is decoded by the
+       DecodeAppIcon target above. It's gitignored after
+       decode so the working tree is clean, but the b64
+       stays in the repo so the icon survives a fresh
+       clone. -->
   <ItemGroup>
     <AvaloniaResource Include="Assets\capturespike-icon.png" Condition="Exists('Assets\capturespike-icon.png')" />
   </ItemGroup>
+
+  <!-- Linux desktop entry: copied into the publish
+       output. The .desktop file uses `Exec=dotnet
+       CaptureSpike.App.dll` because the publish output
+       is a portable folder; an installer (e.g. .deb) can
+       wrap the install but the file's relative paths
+       work for portable use. App stores (Flathub,
+       elementary, KDE Store) typically repackage this
+       .desktop with absolute paths and proper metadata. -->
+  <ItemGroup>
+    <Content Include="Assets\capturespike.desktop"
+             Link="capturespike.desktop"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest"
+             Visible="false" />
+  </ItemGroup>
+
+  <!-- Linux app icon: emit a per-size hicolor PNG into
+       the publish output so app stores can install
+       capturespike.png at
+         /usr/share/icons/hicolor/<size>/apps/capturespike.png
+       The icon is downscaled from the 512x512 source
+       using ffmpeg (already bundled in tools/linux-x64).
+       The target runs only when publishing for the Linux
+       TFM; the Windows TFM skips it. -->
+  <Target Name="EmitLinuxIcons" AfterTargets="Publish"
+          Condition="'$(TargetFramework)' == 'net10.0' And '$(OS)' != 'Windows_NT'">
+    <PropertyGroup>
+      <!-- Standard hicolor sizes that GNOME/KDE/XFCE all
+           look for in /usr/share/icons/hicolor. -->
+      <_LinuxIconSource>$(MSBuildProjectDirectory)/Assets/capturespike-icon.png</_LinuxIconSource>
+    </PropertyGroup>
+    <ItemGroup>
+      <_LinuxIconSize Include="16" />
+      <_LinuxIconSize Include="22" />
+      <_LinuxIconSize Include="24" />
+      <_LinuxIconSize Include="32" />
+      <_LinuxIconSize Include="48" />
+      <_LinuxIconSize Include="64" />
+      <_LinuxIconSize Include="128" />
+      <_LinuxIconSize Include="256" />
+      <_LinuxIconSize Include="512" />
+    </ItemGroup>
+    <!-- Make the per-size output directories. ffmpeg
+         can't create intermediate directories, so the
+         mkdir has to happen first. -->
+    <MakeDir Directories="$(PublishDir)/usr/share/icons/hicolor/16/apps;$(PublishDir)/usr/share/icons/hicolor/22/apps;$(PublishDir)/usr/share/icons/hicolor/24/apps;$(PublishDir)/usr/share/icons/hicolor/32/apps;$(PublishDir)/usr/share/icons/hicolor/48/apps;$(PublishDir)/usr/share/icons/hicolor/64/apps;$(PublishDir)/usr/share/icons/hicolor/128/apps;$(PublishDir)/usr/share/icons/hicolor/256/apps;$(PublishDir)/usr/share/icons/hicolor/512/apps" />
+    <!-- Emit one PNG per size. Each Exec runs once per
+         item; %(_LinuxIconSize.Identity) is the size
+         string. Use `ffmpeg` from PATH. App-store
+         installers should run this on the build server
+         where ffmpeg is available. -->
+    <Exec Command="ffmpeg -loglevel error -y -i &quot;$(_LinuxIconSource)&quot; -vf scale=%(_LinuxIconSize.Identity):%(_LinuxIconSize.Identity) &quot;$(PublishDir)/usr/share/icons/hicolor/%(_LinuxIconSize.Identity)/apps/capturespike.png&quot;" />
+    <!-- Drop the .desktop in the standard location so
+         app stores (Flathub, elementary, KDE Store) can
+         find it. Installers typically copy this to
+         /usr/share/applications/capturespike.desktop. -->
+    <Exec Command="mkdir -p $(PublishDir)/usr/share/applications" />
+    <Exec Command="cp $(MSBuildProjectDirectory)/Assets/capturespike.desktop $(PublishDir)/usr/share/applications/capturespike.desktop" />
+  </Target>
 
   <!-- Decode the base64-encoded icon (checked in as text since the push tool
        is text-only). Runs once; the PNG is gitignored after decoding. -->

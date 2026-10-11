@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=CaptureSpike
+GenericName=Multi-source recorder
+Comment=Record screen and audio from multiple sources in sync
+Exec=dotnet CaptureSpike.App.dll
+Icon=capturespike
+Terminal=false
+Categories=AudioVideo;Audio;Video;Recorder;
+Keywords=screen;recording;audio;video;capture;
+StartupNotify=true
+StartupWMClass=CaptureSpike
