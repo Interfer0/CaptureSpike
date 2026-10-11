@@ -403,13 +403,14 @@ public static class TakeNormalizer
     /// <summary>
     /// Build the ffmpeg args to prepend <paramref name="seconds"/>
     /// of silence (audio) and black (video) to the start of the
-    /// file. For video sources the black must match the input's
-    /// resolution (otherwise the concat would mismatch). We
-    /// probe the input's resolution via -i and pass it through
-    /// the color filter via a film-grain-free `color=size=WxH`.
+    /// file. Uses a single-input filter chain (`adelay` for
+    /// audio, `tpad` for video) so ffmpeg can process the file
+    /// in a single pass and terminates when the input ends —
+    /// no concat, no second input, no infinite source filters
+    /// that can hang the muxer.
     ///
-    /// For audio-only files we just generate a silent audio
-    /// track and concat it with the input's audio track.
+    /// For video sources the input's resolution is preserved
+    /// (tpad inherits the input's size, no up/down scale).
     /// </summary>
     private static string[] BuildPrependArgs(string input, string output, double seconds,
         bool isVideo)
@@ -417,47 +418,45 @@ public static class TakeNormalizer
         var secStr = FormatSeconds(seconds);
         if (isVideo)
         {
-            // Use a default resolution. We could probe the
-            // input first, but the existing video pass uses
-            // a fixed 1280x720 and the user has been
-            // working with that. If a different resolution
-            // is needed, we can probe in a follow-up.
+            // tpad adds frames at the start of the video. With
+            // start_duration, the prepended frames are the
+            // first frame cloned (so the output looks like a
+            // black hold at the start followed by the original
+            // video). color_mode=add isn't what we want; we
+            // want clone so the prepended frames match the
+            // input's first frame. start_mode=clone:0 clones
+            // the first input frame.
+            //
+            // For audio: adelay shifts the input audio by
+            // <seconds> ms. all=1 applies the same delay to
+            // every channel (no need to specify per-channel
+            // delays).
+            //
+            // -c:v libx264 re-encodes because tpad changes the
+            // number of frames; stream copy wouldn't work
+            // for the same reason. -c:a aac is fine since
+            // adelay just shifts the timeline, the codec
+            // output is unchanged.
             return new[]
             {
                 "-y",
-                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000", "-t", secStr,
-                "-f", "lavfi", "-i", "color=black:s=1280x720:r=30", "-t", secStr,
                 "-i", input,
-                "-filter_complex", "[1:v][2:v]concat=n=2:v=1:a=0[v];[0:a][2:a]concat=n=2:v=0:a=1[a]",
-                "-map", "[v]", "-map", "[a]",
+                "-vf", $"tpad=start_mode=clone:0:start_duration={secStr}",
+                "-af", $"adelay=delays={FormatAdelayMs(seconds)}:all=1",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
                 "-c:a", "aac",
-                "-shortest", // don't extend past input
+                "-shortest",
                 "-movflags", "+faststart",
                 output,
             };
         }
-        // Audio-only: delay the input by <prependSec> so its
-        // first sample lands at prependSec instead of 0. The
+        // Audio-only: delay the input by <seconds> so its
+        // first sample lands at seconds instead of 0. The
         // output is just the input with a prepended silence
         // region. No second input, no concat, no infinite
         // source filters — ffmpeg can process this in a
         // single pass and the output duration is exactly
-        // (prependSec + inputDuration).
-        //
-        // Why not the previous approach (concat anullsrc
-        // + input)? Two reasons:
-        // 1. ffmpeg's `concat` filter makes all inputs
-        //    the same duration, padding the shorter one.
-        //    Anullsrc is open-ended by default; -t on it
-        //    bounds it, but ffmpeg still waits for the
-        //    shortest input to "finish" before producing
-        //    output, and the silent source can hang the
-        //    muxer.
-        // 2. With -c:a pcm_s16le the bit rate matches
-        //    NAudio's output (the user's mic files are
-        //    pcm_f32le though — bit rate is preserved
-        //    separately by the pad pass).
+        // (seconds + inputDuration).
         return new[]
         {
             "-y",
