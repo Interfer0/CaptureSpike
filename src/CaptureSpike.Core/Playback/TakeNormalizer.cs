@@ -438,22 +438,25 @@ public static class TakeNormalizer
             };
         }
         // Audio-only: prepend silence. Concat the silent
-        // pre-roll with the input's audio. We need the
-        // output codec to match the input's so the bit
-        // rate is preserved; default to pcm_s16le since
-        // that's what NAudio produces on Windows.
-        // (We let ffmpeg auto-detect codec; the bit rate
-        // preservation in PadToDurationAsync is the
-        // authoritative path. For the prepend step we
-        // use pcm_s16le which matches NAudio's default.)
+        // pre-roll with the input's audio. Without
+        // `-shortest` and a `-t` bound on the silent
+        // source, ffmpeg's concat filter waits for BOTH
+        // inputs to "finish" — but the anullsrc is
+        // open-ended (infinite silence), so ffmpeg hangs.
+        // The previous version hung on the user's machine
+        // (per their log: "I keep hanging on the 930ms of
+        // silence"). -t <prependSec> on the silent input
+        // makes it finite, -shortest makes concat stop
+        // after the real input ends.
         return new[]
         {
             "-y",
-            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000", "-t", secStr,
+            "-f", "lavfi", "-i", $"anullsrc=channel_layout=stereo:sample_rate=48000", "-t", secStr,
             "-i", input,
             "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]",
             "-map", "[a]",
             "-c:a", "pcm_s16le",
+            "-shortest",
             output,
         };
     }
