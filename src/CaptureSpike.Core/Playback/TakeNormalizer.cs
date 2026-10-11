@@ -201,10 +201,15 @@ public static class TakeNormalizer
                         $"Prepending {prependMs:F0}ms of silence to {src.File} (to align with longest source).");
                     var args = BuildPrependArgs(inputPath, outputPath, prependSec,
                         src.Kind.IsVideo());
-                    var exitCode = await RunFfmpegAsync(ffmpeg, args, ct);
+                    var ffmpegError = new StringBuilder();
+                    var exitCode = await RunFfmpegAsync(ffmpeg, args, ct, ffmpegError);
                     if (exitCode != 0)
+                    {
+                        var output = ffmpegError.ToString();
+                        var lastLines = output.Length > 2000 ? output[^2000..] : output;
                         throw new InvalidOperationException(
-                            $"ffmpeg prepend exited with code {exitCode} for {src.Id}.");
+                            $"ffmpeg prepend exited with code {exitCode} for {src.Id}. Last ffmpeg output: {lastLines.Trim()}");
+                    }
                 }
 
                 // Pad/trim the .normalized output to the take's
@@ -437,7 +442,7 @@ public static class TakeNormalizer
         if (isVideo)
         {
             // tpad adds frames at the start of the video.
-            // start_mode=clone:0 clones the first input
+            // start_mode=clone clones the first input
             // frame for the prepended duration. The output
             // looks like a static hold of whatever was on
             // screen at the start of the recording followed
@@ -450,7 +455,7 @@ public static class TakeNormalizer
             {
                 "-y",
                 "-i", input,
-                "-vf", $"tpad=start_mode=clone:0:start_duration={secStr}",
+                "-vf", $"tpad=start_mode=clone:start_duration={secStr}",
             };
             if (hasAudio)
             {
@@ -472,8 +477,6 @@ public static class TakeNormalizer
                 args.Add("aac");
             }
             args.Add("-shortest");
-            args.Add("-movflags");
-            args.Add("+faststart");
             args.Add(output);
             return args.ToArray();
         }
@@ -1026,7 +1029,6 @@ public static class TakeNormalizer
             args.Add("-c:v"); args.Add("libx264");
             args.Add("-pix_fmt"); args.Add("yuv420p");
             args.Add("-preset"); args.Add("ultrafast");
-            args.Add("-movflags"); args.Add("+faststart");
         }
         // Truncate to the target in case of any overshoot.
         args.Add("-t"); args.Add(secStr);
