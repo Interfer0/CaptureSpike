@@ -363,8 +363,15 @@
         </StackPanel>
 
         <Grid Grid.Row="2" MinHeight="80" RowDefinitions="Auto,Auto,*,Auto">
-          <TextBlock Grid.Row="0" Text="Sources in scene"
-                     FontSize="15" FontWeight="Bold" Margin="0,0,0,4" />
+          <DockPanel Grid.Row="0" Margin="0,0,0,4" LastChildFill="False">
+            <TextBlock Text="Sources in scene"
+                       FontSize="15" FontWeight="Bold"
+                       VerticalAlignment="Center" />
+            <Button DockPanel.Dock="Right" Classes="plain" Content="ℹ"
+                    FontSize="14" Padding="4,0"
+                    VerticalAlignment="Center" Margin="4,0,0,0"
+                    ToolTip.Tip="Click a source to turn it off for the next take. × takes it out of this scene." />
+          </DockPanel>
           <DockPanel Grid.Row="1" Margin="0,0,0,4">
             <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddSceneSourceCommand}" />
             <ComboBox ItemsSource="{Binding AvailablePaletteSources}"
@@ -410,9 +417,6 @@
               </DataTemplate>
             </ListBox.ItemTemplate>
           </ListBox>
-          <TextBlock Grid.Row="3" FontSize="14" Opacity="0.5" TextWrapping="Wrap"
-                     Margin="0,4,0,8"
-                     Text="Click a source to turn it off for the next take. × takes it out of this scene." />
         </Grid>
 
         <GridSplitter Grid.Row="3" Height="5" HorizontalAlignment="Stretch"
