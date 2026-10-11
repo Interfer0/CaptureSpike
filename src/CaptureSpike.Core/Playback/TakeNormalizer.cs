@@ -113,7 +113,8 @@ public static class TakeNormalizer
                     // Trim the start: ffmpeg -ss <secs> -i input -c copy output
                     progress?.Invoke(src.Id, 0.0,
                         $"Trimming {effectiveMs:F0}ms from {src.File}.");
-                    var args = BuildTrimArgs(inputPath, outputPath, effectiveMs / 1000.0);
+                    var args = BuildTrimArgs(inputPath, outputPath, effectiveMs / 1000.0,
+                        src.Kind.IsVideo());
                     var exitCode = await RunFfmpegAsync(ffmpeg, args, ct);
                     if (exitCode != 0)
                         throw new InvalidOperationException(
@@ -214,17 +215,45 @@ public static class TakeNormalizer
     }
 
     /// <summary>
-    /// Fast trim using stream copy. -ss BEFORE -i = input seek (fast,
-    /// but may snap to keyframes; close enough for our purposes since
-    /// the offset was hand-tuned by the user).
+    /// Trim the start by exactly N seconds. For audio (no
+    /// keyframes) this is a stream copy and is fast and exact.
+    /// For video, -c copy with -ss before -i is a keyframe
+    /// snap (the output starts at the previous keyframe, not
+    /// exactly N seconds in — so the trimmed file is offset
+    /// from the requested position by up to one keyframe
+    /// interval). That offset is in the file's CONTENT, so the
+    /// player can't fix it by skipping the per-source seek —
+    /// the audio and video would still be desynced by that
+    /// amount. We re-encode the trimmed portion for video
+    /// files to get an exact cut. Slow but correct.
     /// </summary>
-    private static string[] BuildTrimArgs(string input, string output, double trimSeconds)
+    private static string[] BuildTrimArgs(string input, string output, double trimSeconds,
+        bool isVideo)
     {
+        var secStr = FormatSeconds(trimSeconds);
+        if (isVideo)
+        {
+            // -ss AFTER -i: output seek. ffmpeg decodes from the
+            // start, throws away frames until the seek point, and
+            // re-encodes from there. Exact, no keyframe snap.
+            // Default libx264 / aac re-encoding so the output
+            // mux is straightforward.
+            return new[]
+            {
+                "-y",
+                "-i", input,
+                "-ss", secStr,
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
+                "-c:a", "aac",
+                "-movflags", "+faststart",
+                output,
+            };
+        }
         // ffmpeg -y -ss <secs> -i <input> -c copy <output>
         return new[]
         {
             "-y",
-            "-ss", FormatSeconds(trimSeconds),
+            "-ss", secStr,
             "-i", input,
             "-c", "copy",
             "-avoid_negative_ts", "make_zero",
