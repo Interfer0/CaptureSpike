@@ -416,39 +416,66 @@ public static class TakeNormalizer
         bool isVideo)
     {
         var secStr = FormatSeconds(seconds);
+        // Probe the input for what streams it actually has.
+        // A screen recording typically has video only
+        // (no audio); a mic recording has audio only.
+        // Passing -af on a video-only input or -vf on an
+        // audio-only input is what ffmpeg was rejecting
+        // with exit code -22 (EINVAL) on Take 13's
+        // SC-Screen2. Probe first; only apply the filter
+        // that matches the actual stream.
+        var inputStreams = ProbeStreamsAsync(input).GetAwaiter().GetResult();
+        var hasVideo = inputStreams.HasVideo;
+        var hasAudio = inputStreams.HasAudio;
+        if (isVideo && !hasVideo && hasAudio)
+        {
+            // Caller asked for video path but the file is
+            // audio-only. Demote to audio path.
+            isVideo = false;
+        }
+
         if (isVideo)
         {
-            // tpad adds frames at the start of the video. With
-            // start_duration, the prepended frames are the
-            // first frame cloned (so the output looks like a
-            // black hold at the start followed by the original
-            // video). color_mode=add isn't what we want; we
-            // want clone so the prepended frames match the
-            // input's first frame. start_mode=clone:0 clones
-            // the first input frame.
+            // tpad adds frames at the start of the video.
+            // start_mode=clone:0 clones the first input
+            // frame for the prepended duration. The output
+            // looks like a static hold of whatever was on
+            // screen at the start of the recording followed
+            // by the original video.
             //
-            // For audio: adelay shifts the input audio by
-            // <seconds> ms. all=1 applies the same delay to
-            // every channel (no need to specify per-channel
-            // delays).
-            //
-            // -c:v libx264 re-encodes because tpad changes the
-            // number of frames; stream copy wouldn't work
-            // for the same reason. -c:a aac is fine since
-            // adelay just shifts the timeline, the codec
-            // output is unchanged.
-            return new[]
+            // -c:v libx264 re-encodes because tpad changes
+            // the number of frames; stream copy wouldn't
+            // work for the same reason.
+            var args = new List<string>
             {
                 "-y",
                 "-i", input,
                 "-vf", $"tpad=start_mode=clone:0:start_duration={secStr}",
-                "-af", $"adelay=delays={FormatAdelayMs(seconds)}:all=1",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
-                "-c:a", "aac",
-                "-shortest",
-                "-movflags", "+faststart",
-                output,
             };
+            if (hasAudio)
+            {
+                // adelay shifts the input audio by
+                // <seconds> ms. all=1 applies the same
+                // delay to every channel.
+                args.Add("-af");
+                args.Add($"adelay=delays={FormatAdelayMs(seconds)}:all=1");
+            }
+            args.Add("-c:v");
+            args.Add("libx264");
+            args.Add("-pix_fmt");
+            args.Add("yuv420p");
+            args.Add("-preset");
+            args.Add("ultrafast");
+            if (hasAudio)
+            {
+                args.Add("-c:a");
+                args.Add("aac");
+            }
+            args.Add("-shortest");
+            args.Add("-movflags");
+            args.Add("+faststart");
+            args.Add(output);
+            return args.ToArray();
         }
         // Audio-only: delay the input by <seconds> so its
         // first sample lands at seconds instead of 0. The
@@ -465,6 +492,71 @@ public static class TakeNormalizer
             "-c:a", "pcm_s16le",
             output,
         };
+    }
+
+    /// <summary>
+    /// Cache of stream detection results so we don't probe
+    /// the same file twice in a single normalize pass.
+    /// </summary>
+    private static readonly Dictionary<string, (bool HasVideo, bool HasAudio)> _streamProbeCache = new();
+
+    private static async Task<(bool HasVideo, bool HasAudio)> ProbeStreamsAsync(string input)
+    {
+        if (_streamProbeCache.TryGetValue(input, out var cached)) return cached;
+        // Probe with ffprobe — fast (just metadata, no decode).
+        // ffprobe isn't on the public ToolPaths API; ffmpeg's
+        // -i on a /dev/null output gives us a stderr dump we
+        // can parse. The alternative would be ffprobe
+        // (sharper parsing) but we already have ffmpeg in the
+        // path via ToolPaths. Use it with the existing
+        // ProbeDurationAsync pattern.
+        var ffmpeg = ToolPaths.Resolve("ffmpeg");
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpeg,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-hide_banner");
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(input);
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("null");
+        psi.ArgumentList.Add("-");
+        var (hasVideo, hasAudio) = (false, false);
+        try
+        {
+            using var process = Process.Start(psi)
+                ?? throw new InvalidOperationException("Could not start ffmpeg.");
+            var stderr = new StringBuilder();
+            var stderrTask = Task.Run(async () =>
+            {
+                string? line;
+                while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) != null)
+                    stderr.AppendLine(line);
+            });
+            // No cancellation here — stream probe is fast.
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            try { await stderrTask.ConfigureAwait(false); } catch { }
+            var s = stderr.ToString();
+            // ffmpeg's stderr for -i <file> -f null - looks like:
+            //   Stream #0:0: Video: h264 ...
+            //   Stream #0:1: Audio: pcm_s16le ...
+            hasVideo = s.Contains("Video:", StringComparison.Ordinal);
+            hasAudio = s.Contains("Audio:", StringComparison.Ordinal);
+        }
+        catch
+        {
+            // Probe failed. Default to assuming both — the
+            // downstream filter will error if that's wrong,
+            // and we'll surface it.
+            hasVideo = true;
+            hasAudio = true;
+        }
+        _streamProbeCache[input] = (hasVideo, hasAudio);
+        return (hasVideo, hasAudio);
     }
 
     /// <summary>
