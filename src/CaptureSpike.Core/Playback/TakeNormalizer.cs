@@ -144,6 +144,33 @@ public static class TakeNormalizer
                     progress?.Invoke(src.Id, 0.9,
                         $"Aligning length: {inputDuration:F2}s → {targetSeconds:F2}s.");
                     await PadToDurationAsync(ffmpeg, outputPath, targetSeconds, ct);
+                    // Diagnostic: confirm the pad actually hit the
+                    // target. If it didn't (e.g. apad=whole_dur
+                    // was rejected by this ffmpeg build and the
+                    // pad silently produced the trimmed length),
+                    // log the actual result so the user can see
+                    // which source drifted and by how much.
+                    var afterDuration = await ProbeDurationAsync(ffmpeg, outputPath, ct);
+                    if (Math.Abs(afterDuration - targetSeconds) > 0.05)
+                    {
+                        progress?.Invoke(src.Id, 0.95,
+                            $"Pad did not reach target: actual {afterDuration:F2}s, expected {targetSeconds:F2}s.");
+                    }
+                }
+                else
+                {
+                    // This source's input is already the longest
+                    // in the take — but the trim/prepend might
+                    // have made the output slightly different
+                    // (e.g. keyframe snap on video). Probe the
+                    // output and pad if it's short of the target.
+                    var afterDuration = await ProbeDurationAsync(ffmpeg, outputPath, ct);
+                    if (Math.Abs(afterDuration - targetSeconds) > 0.05)
+                    {
+                        progress?.Invoke(src.Id, 0.9,
+                            $"Aligning length (longest source): {afterDuration:F2}s → {targetSeconds:F2}s.");
+                        await PadToDurationAsync(ffmpeg, outputPath, targetSeconds, ct);
+                    }
                 }
 
                 // Sanity check: did ffmpeg actually produce a non-empty output?
