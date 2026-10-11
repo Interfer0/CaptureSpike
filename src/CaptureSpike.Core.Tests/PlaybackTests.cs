@@ -130,6 +130,8 @@ public sealed class FilterGraphBuilderTests
             new() { Id = "sys", Kind = SourceKind.SystemAudio, File = "sa.wav", OffsetMs = 80 },
         };
         var graph = FilterGraphBuilder.BuildTakeGraph(sources);
+        Assert.DoesNotContain("anullsrc", graph);
+        Assert.DoesNotContain("color=size=", graph);
         // Video inputs are vid1 (screen) and vid2 (cam).
         // They are scaled to 640x360 cells. Offsets normalized
         // by smallest (mic @ 30ms): screen 100-30=70ms, cam
@@ -156,7 +158,27 @@ public sealed class FilterGraphBuilderTests
         };
         var graph = FilterGraphBuilder.BuildTakeGraph(sources, new HashSet<string> { "mic" });
         Assert.DoesNotContain("adelay", graph);
-        Assert.Contains("xstack=inputs=1", graph);
+        Assert.DoesNotContain("xstack", graph);
+        Assert.DoesNotContain("anullsrc", graph);
+        Assert.DoesNotContain("color=size=", graph);
+        Assert.Contains("[vp0]null[vo]", graph);
+    }
+
+    [Fact]
+    public void BuildTakeGraph_KeepsAudioLabelsStableWhenMuted()
+    {
+        var sources = new List<TakeSource>
+        {
+            new() { Id = "screen", Kind = SourceKind.Screen, File = "s.mkv", OffsetMs = 100 },
+            new() { Id = "mic1", Kind = SourceKind.Microphone, File = "m1.wav", OffsetMs = 30 },
+            new() { Id = "mic2", Kind = SourceKind.Microphone, File = "m2.wav", OffsetMs = 80 },
+        };
+
+        var graph = FilterGraphBuilder.BuildTakeGraph(sources, new HashSet<string> { "mic1" });
+
+        Assert.DoesNotContain("[aid1]", graph);
+        Assert.Contains("[aid2]adelay=delays=50:all=1,aresample=48000[ao0]", graph);
+        Assert.Contains("[ao0]anull[ao]", graph);
     }
 }
 

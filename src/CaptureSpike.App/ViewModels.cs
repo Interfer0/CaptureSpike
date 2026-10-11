@@ -2650,26 +2650,38 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             Status = "Can't mute every track in the take.";
             return;
         }
+        // Reflect the user's action immediately; updating the graph is an
+        // asynchronous mpv operation and should not hold the row's visual state.
+        row.IsMuted = muting;
+        _tiledWindow?.SetTileMuted(row.SourceId, muting);
         try
         {
             await player.SetSourceMutedAsync(row.SourceId, muting);
-            row.IsMuted = muting;
-            _tiledWindow?.SetTileMuted(row.SourceId, muting);
         }
-        catch (Exception ex) { Status = $"Mute: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            row.IsMuted = !muting;
+            _tiledWindow?.SetTileMuted(row.SourceId, !muting);
+            Status = $"Mute: {ex.Message}";
+        }
     }
 
     private async void ToggleTrackIncludeAsync(PlayerTrackRow row)
     {
         if (_player is not TiledTakePlayer player) return;
         var including = !row.IsIncluded;
+        row.IsIncluded = including;
+        _tiledWindow?.SetTileVisible(row.SourceId, including);
         try
         {
             await player.SetSourceIncludedAsync(row.SourceId, including);
-            row.IsIncluded = including;
-            _tiledWindow?.SetTileVisible(row.SourceId, including);
         }
-        catch (Exception ex) { Status = $"Include: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            row.IsIncluded = !including;
+            _tiledWindow?.SetTileVisible(row.SourceId, !including);
+            Status = $"Include: {ex.Message}";
+        }
     }
 
 }

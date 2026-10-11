@@ -75,6 +75,8 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
             _scene = scene;
             _takeDir = takeDir;
             _take = take;
+            _tiledGraph = null;
+            _tiledFiles = null;
             _singleFile = null;
             _muted.Clear();
             await StartMpvAsync(positionSec: 0, startPaused: false, ct).ConfigureAwait(false);
@@ -94,6 +96,7 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         IReadOnlyList<TakeSource> takeSources,
         string lavfiGraph,
         double takeDurationSeconds,
+        ISet<string>? mutedSourceIds = null,
         CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
@@ -118,6 +121,8 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
             };
             _singleFile = null;
             _muted.Clear();
+            if (mutedSourceIds is not null)
+                _muted.UnionWith(mutedSourceIds);
             // Inject the caller's graph and the file paths into
             // the launch path. We do this by re-using
             // StartMpvAsync after temporarily stashing the graph
@@ -125,8 +130,6 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
             _tiledGraph = lavfiGraph;
             _tiledFiles = sourceFilePaths.ToList();
             await StartMpvAsync(positionSec: 0, startPaused: false, ct).ConfigureAwait(false);
-            _tiledGraph = null;
-            _tiledFiles = null;
             _loaded = true;
         }
         finally { _gate.Release(); }
@@ -155,6 +158,8 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
             _scene = null;
             _takeDir = null;
             _take = null;
+            _tiledGraph = null;
+            _tiledFiles = null;
             _singleFile = filePath;
             _singleFileDurationSec = 0;
             _muted.Clear();
@@ -190,11 +195,33 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         try
         {
             if (_take is null) return;
+            var wasMuted = _muted.Contains(sourceId);
             if (muted) _muted.Add(sourceId); else _muted.Remove(sourceId);
+            if (_muted.Count >= _take.Sources.Count)
+            {
+                if (wasMuted) _muted.Add(sourceId); else _muted.Remove(sourceId);
+                throw new InvalidOperationException("Cannot mute every source in the take.");
+            }
             if (!_loaded) return;
 
-            if (_muted.Count >= _take.Sources.Count)
-                throw new InvalidOperationException("Cannot mute every source in the take.");
+            if (IsTiledLaunch)
+            {
+                _tiledGraph = FilterGraphBuilder.BuildTakeGraph(_take.Sources, _muted);
+                var response = await RequireIpc()
+                    .CommandAsync(["set_property", "lavfi-complex", _tiledGraph], ct)
+                    .ConfigureAwait(false);
+                if (!response.TryGetProperty("error", out var error) ||
+                    error.GetString() != "success")
+                {
+                    if (wasMuted) _muted.Add(sourceId); else _muted.Remove(sourceId);
+                    _tiledGraph = FilterGraphBuilder.BuildTakeGraph(_take.Sources, _muted);
+                    var reason = error.ValueKind == System.Text.Json.JsonValueKind.String
+                        ? error.GetString()
+                        : "unknown mpv error";
+                    throw new InvalidOperationException($"mpv could not update the mute graph: {reason}");
+                }
+                return;
+            }
 
             var pos = _positionSec;
             var wasPaused = _paused;
@@ -313,8 +340,12 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         psi.ArgumentList.Add(startPaused ? "--pause" : "--no-pause");
         if (EmbedWindowHandle != 0)
             psi.ArgumentList.Add($"--wid={EmbedWindowHandle}");
-        foreach (var f in files)
-            psi.ArgumentList.Add(f);
+        // Command-line filenames after the first are playlist entries, not
+        // simultaneous inputs. lavfi-complex needs one primary file plus
+        // external tracks so vidN/aidN all belong to the same playback item.
+        foreach (var f in files.Skip(1))
+            psi.ArgumentList.Add($"--external-file={f}");
+        psi.ArgumentList.Add(files[0]);
 
         _stderr = new StringBuilder();
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
@@ -397,6 +428,15 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
                     : "(no stderr output)"),
                 ex);
         }
+        catch (Exception ex)
+        {
+            var err = _stderr.ToString().Trim();
+            await StopInternalAsync().ConfigureAwait(false);
+            if (err.Length > 0)
+                AppLog.Current?.WriteLine("[mpv] stderr (captured after load failure): " + err);
+            throw new InvalidOperationException(
+                $"mpv failed while loading the media. {ex.Message}", ex);
+        }
 
         // Event-driven position tracking (mpv-recommended): mpv pushes the
         // current value immediately, then updates on change. Polling remains
@@ -464,6 +504,18 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         }
         if (name == "end-file")
         {
+            if (ev.TryGetProperty("reason", out var reasonProp) &&
+                reasonProp.GetString() == "error")
+            {
+                var fileError = ev.TryGetProperty("file_error", out var errorProp)
+                    ? errorProp.GetString()
+                    : null;
+                var message = string.IsNullOrWhiteSpace(fileError)
+                    ? "mpv reported a media load error."
+                    : $"mpv could not load a media input: {fileError}";
+                _fileLoadedTcs?.TrySetException(new InvalidOperationException(message));
+                AppLog.Current?.WriteLine("[mpv] " + message);
+            }
             PlaybackEnded?.Invoke();
             return;
         }

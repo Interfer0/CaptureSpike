@@ -202,7 +202,7 @@ public sealed class TiledTakePlayer : IPlayer
         var takeSources = videoSources.Select(s => s.TakeSource)
             .Concat(audioSources.Select(s => s.TakeSource))
             .ToList();
-        await engine.LoadAsync(filePaths, takeSources, graph, _takeDurationSec, ct)
+        await engine.LoadAsync(filePaths, takeSources, graph, _takeDurationSec, muted, ct)
             .ConfigureAwait(false);
         _engine = engine;
     }

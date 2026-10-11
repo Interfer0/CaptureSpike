@@ -29,7 +29,7 @@ public static class FilterGraphBuilder
             throw new InvalidOperationException("Take has no unmuted sources to play.");
 
         var live = videos.Concat(audios).ToList();
-        var minOffsetMs = live.Min(s => s.OffsetMs);
+        var minOffsetMs = take.Sources.Min(s => s.OffsetMs);
 
         var sb = new StringBuilder();
 
@@ -90,14 +90,19 @@ public static class FilterGraphBuilder
         ISet<string>? mutedSourceIds = null)
     {
         var muted = mutedSourceIds ?? new HashSet<string>();
-        var live = sources.Where(s => !muted.Contains(s.Id)).ToList();
+        var all = sources.ToList();
+        var live = all.Where(s => !muted.Contains(s.Id)).ToList();
         if (live.Count == 0)
             throw new InvalidOperationException("Take has no unmuted sources to play.");
-        var minOffsetMs = live.Min(s => s.OffsetMs);
+        // Keep the timeline origin stable across mute/unmute rebuilds. If
+        // the earliest source is muted, the remaining tracks must not shift.
+        var minOffsetMs = sources.Min(s => s.OffsetMs);
 
         var sb = new StringBuilder();
-        var allVideos = live.Where(s => s.Kind.IsVideo()).ToList();
-        var allAudios = live.Where(s => s.Kind.IsAudio()).ToList();
+        var allVideos = all.Where(s => s.Kind.IsVideo()).ToList();
+        var allAudios = all.Where(s => s.Kind.IsAudio()).ToList();
+        var videos = allVideos.Where(s => !muted.Contains(s.Id)).ToList();
+        var audios = allAudios.Where(s => !muted.Contains(s.Id)).ToList();
 
         // mpv's --lavfi-complex=GRAPH has its own input label
         // scheme that is DIFFERENT from ffmpeg's. mpv labels
@@ -122,46 +127,20 @@ public static class FilterGraphBuilder
         // using [v]/[a] makes mpv think there are no output
         // streams and it produces no file-loaded event.
         //
-        // The graph also synthesizes missing streams: anullsrc
-        // for video files that have no audio, color for audio
-        // files that have no video. These synthesized streams
-        // have arbitrary labels ([ias0], [ivs1]) and are NOT
-        // consumed by xstack/amix — they're there to make
-        // ffmpeg happy about the graph's stream topology.
-        // (Confirmed via the mpv source: see
-        // github.com/mpv-player/mpv/pull/5965 — the playback
-        // chain init looks for [vo]/[ao] specifically, and
-        // a graph with [v]/[a] outputs produces no playback
-        // stream.)
-        var totalFiles = allVideos.Count + allAudios.Count;
-        for (var i = 0; i < totalFiles; i++)
-        {
-            var isVideo = i < allVideos.Count;
-            if (isVideo)
-            {
-                // Video file: real stream is vid{fileIndex+1}.
-                // No real audio; synthesize silent.
-                sb.Append(CultureInfo.InvariantCulture,
-                    $"anullsrc=channel_layout=stereo:sample_rate=48000[ias{i}];");
-            }
-            else
-            {
-                // Audio file: real stream is aid{audioOrdinal+1}.
-                // No real video; synthesize black.
-                sb.Append(CultureInfo.InvariantCulture,
-                    $"color=size=640x360:rate=30:color=black[ivs{i}];");
-            }
-        }
-        if (allVideos.Count > 0)
+        // Only the requested media streams belong in this graph. Missing
+        // stream types are not represented by disconnected synthetic sources:
+        // mpv loads these files as external tracks, and the graph outputs
+        // [vo]/[ao] directly describe the streams it should play.
+        if (videos.Count > 0)
         {
             const int cellW = 640;
             const int cellH = 360;
             // vid1, vid2, ... for video files in order.
-            for (var i = 0; i < allVideos.Count; i++)
+            for (var i = 0; i < videos.Count; i++)
             {
-                var v = allVideos[i];
+                var v = videos[i];
                 var ms = v.OffsetMs - minOffsetMs;
-                var inputLabel = $"vid{i + 1}";
+                var inputLabel = $"vid{allVideos.IndexOf(v) + 1}";
                 sb.Append(CultureInfo.InvariantCulture,
                     $"[{inputLabel}]setpts=PTS+{Sec(ms)}/TB,scale={cellW}:{cellH}[{PLabel(i)}];");
             }
@@ -171,47 +150,56 @@ public static class FilterGraphBuilder
             // separated list of positions. With 2 columns and
             // arbitrary rows we just enumerate the layout.
             var layoutSb = new StringBuilder();
-            for (var i = 0; i < allVideos.Count; i++)
+            for (var i = 0; i < videos.Count; i++)
             {
                 var col = i % 2;
                 var row = i / 2;
                 if (i > 0) layoutSb.Append('|');
                 layoutSb.Append(CultureInfo.InvariantCulture, $"{col * cellW}_{row * cellH}");
             }
-            var inputs = string.Join("", Enumerable.Range(0, allVideos.Count).Select(i => $"[{PLabel(i)}]"));
-            // Output label is [vo] (mpv's required video-out).
-            sb.Append(CultureInfo.InvariantCulture,
-                $"{inputs}xstack=inputs={allVideos.Count}:layout={layoutSb}[vo];");
+            // FFmpeg's xstack requires at least two inputs. For a
+            // single video, pass the scaled stream through directly.
+            if (videos.Count == 1)
+            {
+                sb.Append($"[{PLabel(0)}]null[vo];");
+            }
+            else
+            {
+                var inputs = string.Join("", Enumerable.Range(0, videos.Count).Select(i => $"[{PLabel(i)}]"));
+                // Output label is [vo] (mpv's required video-out).
+                sb.Append(CultureInfo.InvariantCulture,
+                    $"{inputs}xstack=inputs={videos.Count}:layout={layoutSb}[vo];");
+            }
         }
 
         // Audio: aid1, aid2, ... for audio files in order.
         // mpv numbers aid separately from vid: the first
         // audio file in the file list is aid1 even if there
         // are video files before it.
-        if (allAudios.Count > 0)
+        if (audios.Count > 0)
         {
-            for (var i = 0; i < allAudios.Count; i++)
+            for (var i = 0; i < audios.Count; i++)
             {
-                var a = allAudios[i];
+                var a = audios[i];
                 var ms = a.OffsetMs - minOffsetMs;
-                var inputLabel = $"aid{i + 1}";
+                var inputLabel = $"aid{allAudios.IndexOf(a) + 1}";
                 sb.Append(CultureInfo.InvariantCulture,
                     $"[{inputLabel}]adelay=delays={ms:F0}:all=1,aresample=48000[{AOutLabel(i)}];");
             }
-            if (allAudios.Count == 1)
+            if (audios.Count == 1)
                 // Output label is [ao] (mpv's required audio-out).
                 sb.Append(CultureInfo.InvariantCulture, $"[{AOutLabel(0)}]anull[ao];");
             else
             {
-                var inputs = string.Join("", Enumerable.Range(0, allAudios.Count).Select(i => $"[{AOutLabel(i)}]"));
+                var inputs = string.Join("", Enumerable.Range(0, audios.Count).Select(i => $"[{AOutLabel(i)}]"));
                 sb.Append(CultureInfo.InvariantCulture,
-                    $"{inputs}amix=inputs={allAudios.Count}:normalize=0[ao];");
+                    $"{inputs}amix=inputs={audios.Count}:normalize=0[ao];");
             }
         }
 
         // If only audio, lavfi still needs a video output. Produce
         // a black frame. Without this mpv errors with "no video".
-        if (allVideos.Count == 0)
+        if (videos.Count == 0)
         {
             sb.Append("color=black:size=640x360:rate=30[vo];");
         }
