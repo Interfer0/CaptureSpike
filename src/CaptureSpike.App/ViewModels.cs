@@ -1384,20 +1384,29 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     {
         PaletteSources.Clear();
         if (_store is null) return;
-        // The Sources panel shows the project's own palette (Project.Sources).
-        // Each entry carries the project's per-source picks — device, badge,
-        // label — which is why they stick around project-to-project: the
-        // project owns them, the global registry is just a kinds-pool for
-        // adding new entries.
+        // The Sources panel shows each kind the project uses. The
+        // device for each comes from the GLOBAL palette (not the
+        // project), so the device the user picked on the previous
+        // project carries over to the next one — opening a fresh
+        // project shows the same Webcam/Display1 pick, not "Default".
+        // The project's Project.Sources is just a list of which kinds
+        // are in use (id, kind, label, badge) — it has no device of
+        // its own.
         foreach (var p in _store.Project.Sources)
         {
+            // Look up the global entry to get the (possibly user-picked)
+            // device. Falls back to the local entry's device if the
+            // global doesn't have one (defensive — shouldn't happen
+            // because EnsureProjectSources keeps the global in sync).
+            var global = _palette.Sources.FirstOrDefault(g => g.Id == p.Id);
+            var device = global?.Device ?? p.Device;
             // Pass a copy of the entry so the VM can mutate its
-            // own Badge/Device mid-edit without surprising the user with
+            // own Badge mid-edit without surprising the user with
             // mid-edit changes to the underlying source from elsewhere.
             var projectView = new ProjectSource
             {
                 Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = p.Badge,
-                Device = p.Device,
+                Device = device,
             };
             PaletteSourceViewModel? vm = null;
             vm = new PaletteSourceViewModel(projectView,
@@ -1430,26 +1439,33 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     }
 
     /// <summary>
-    /// Persists the user's edits to a project palette entry (device,
-    /// badge, label) into the current project's <c>Project.Sources</c>.
-    /// The global registry is a separate kinds-pool; per-project picks
-    /// don't touch it. Saving through this method is what makes the
-    /// settings stick to THIS project — switching projects and back
-    /// reads the same data from <c>Project.Sources</c>.
+    /// Persists the user's edits to a palette entry. The device
+    /// field is stored in the GLOBAL palette (palette.json) so it
+    /// carries across projects; the rest (badge, label) stays on
+    /// the project's own Project.Sources entry.
     /// </summary>
     private void SavePaletteSource(string paletteId, PaletteSourceViewModel vm)
     {
         if (_store is null) return;
-        var entry = _store.Project.Sources.FirstOrDefault(s => s.Id == paletteId);
-        if (entry is null) return;
+        var projectEntry = _store.Project.Sources.FirstOrDefault(s => s.Id == paletteId);
+        if (projectEntry is null) return;
+        var globalEntry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
         DebugPalette($"save: paletteId={paletteId} device={vm.Source.Device ?? "<null>"} badge={vm.Source.Badge ?? "<null>"}");
-        var changed = false;
-        if (entry.Device != vm.Source.Device) { entry.Device = vm.Source.Device; changed = true; }
-        if (entry.Badge != vm.Source.Badge) { entry.Badge = vm.Source.Badge; changed = true; }
-        if (entry.Label != vm.Source.Label) { entry.Label = vm.Source.Label; changed = true; }
-        if (!changed) return;
-        try { _store.SaveProject(); }
-        catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
+        var anyChange = false;
+        // Device lives in the global palette so it carries across
+        // projects. Badge and label are per-project (different
+        // projects might want different naming).
+        if (globalEntry is not null && globalEntry.Device != vm.Source.Device)
+        {
+            globalEntry.Device = vm.Source.Device;
+            try { _palette.Save(); anyChange = true; }
+            catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
+        }
+        var projectChanged = false;
+        if (projectEntry.Badge != vm.Source.Badge) { projectEntry.Badge = vm.Source.Badge; projectChanged = true; }
+        if (projectEntry.Label != vm.Source.Label) { projectEntry.Label = vm.Source.Label; projectChanged = true; }
+        if (projectChanged) { _store.SaveProject(); anyChange = true; }
+        _ = anyChange;
     }
 
     // Diagnostic logging for palette save debugging. Off by default;
@@ -1844,16 +1860,15 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             // Two-step add: the new kind lands in the global registry
             // (so other projects can use it) AND in this project's
             // palette (so the user sees it immediately). The registry
-            // is the kinds-pool — no device selection there. The
-            // project entry gets the user's id/kind/label; device
-            // stays null until the user picks one.
+            // entry is the canonical kind — the project entry inherits
+            // kind/label/badge from it; the device the user picked in
+            // the AddSource dialog is the global default for this kind.
             if (!_palette.Contains(result.Id))
             {
                 _palette.Add(new ProjectSource
                 {
                     Id = result.Id, Kind = result.Kind, Label = result.Label,
-                    Badge = result.Badge,
-                    // Device intentionally not copied to the registry.
+                    Badge = result.Badge, Device = result.Device,
                 });
                 _palette.Save();
             }

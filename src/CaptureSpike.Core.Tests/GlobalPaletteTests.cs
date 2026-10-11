@@ -65,13 +65,13 @@ public sealed class GlobalPaletteTests : IDisposable
     }
 
     [Fact]
-    public void EnsureProjectSources_SeedsFromGlobalRegistry_PreservesDevices()
+    public void EnsureProjectSources_SeedsFromGlobalRegistry_AndPreservesKinds()
     {
         // The migration runs inside ProjectStore.Open. Build a fake
         // project.json with a per-project palette that has explicit
-        // device selections, run Open, and verify the project kept
-        // its sources (with their device / label preserved verbatim)
-        // and that the global kinds registry also got any new kinds.
+        // kind/label/badge, run Open, and verify the project kept
+        // its kinds (with kind/label/badge preserved verbatim) and
+        // that the global kinds registry also got any new kinds.
         var projectDir = Path.Combine(_dir, "proj1.csp");
         Directory.CreateDirectory(projectDir);
         Directory.CreateDirectory(Path.Combine(projectDir, "scenes"));
@@ -96,12 +96,13 @@ public sealed class GlobalPaletteTests : IDisposable
 
         var store = ProjectStore.Open(projectDir);
 
-        // The project's palette is preserved verbatim. The screen
-        // entry keeps the user's DisplayPort-0 device.
+        // The project's palette keeps kind/label/badge. The device
+        // field is no longer carried — devices live in the global
+        // palette. So the project entry has a null device.
         Assert.Equal(4, store.Project.Sources.Count);
         var screen = store.Project.Sources.First(s => s.Id == "screen");
-        Assert.Equal("DisplayPort-0", screen.Device);
-        // The webcam had no device and no badge — preserved as-is.
+        Assert.Null(screen.Device);
+        // The webcam had no device — preserved as-is.
         var webcam = store.Project.Sources.First(s => s.Id == "webcam");
         Assert.Null(webcam.Device);
         Assert.Equal("Webcam", webcam.Label);
@@ -118,6 +119,11 @@ public sealed class GlobalPaletteTests : IDisposable
         Assert.Contains(global.Sources, s => s.Id == "webcam");
         Assert.Contains(global.Sources, s => s.Id == "mic");
         Assert.Contains(global.Sources, s => s.Id == "system");
+        // Device is not migrated to the global palette from the
+        // project — users set it via the picker, which writes to
+        // palette.json directly.
+        var globalScreen = global.Sources.First(s => s.Id == "screen");
+        Assert.Null(globalScreen.Device);
     }
 
     [Fact]

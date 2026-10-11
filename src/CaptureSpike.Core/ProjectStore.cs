@@ -74,22 +74,33 @@ public sealed class ProjectStore
     }
 
     /// <summary>
-    /// <summary>
     /// Ensures the project's <see cref="Project.Sources"/> contains
     /// the kinds the user expects to see. Three cases:
     ///   1. The project has its own entries (legacy or already
-    ///      populated) — leave it alone.
+    ///      populated) — leave them alone.
     ///   2. The project has no entries — copy in the global registry
     ///      so the user sees the kinds they can use. New projects
     ///      start in this state.
     ///   3. The global registry has kinds the project is missing —
     ///      add them (the user has since added them in another
     ///      project and they should be available here too).
-    /// Per-project picks (device, badge, label) on existing entries
-    /// are preserved verbatim. Safe to call repeatedly.
+    /// Project.Sources is just a list of kinds the project uses
+    /// (id, kind, label, badge) — the device for each comes from
+    /// the global palette, not the project. Safe to call repeatedly.
     /// </summary>
     private void EnsureProjectSources()
     {
+        // Project.Sources is per-project, just the kinds in use. The
+        // device field on those entries is dead data — the global
+        // palette is the source of truth for devices. We strip it
+        // so the on-disk representation matches the model: project
+        // owns kind/label/badge, global owns device.
+        void Normalize(List<ProjectSource> sources)
+        {
+            foreach (var s in sources) s.Device = null;
+        }
+        Normalize(Project.Sources);
+
         // If the project already has sources, leave them alone
         // unless the global registry has kinds the project doesn't.
         if (Project.Sources.Count > 0)
@@ -118,8 +129,8 @@ public sealed class ProjectStore
                 .Select(k => new ProjectSource
                 {
                     Id = k.Id, Kind = k.Kind, Label = k.Label, Badge = k.Badge,
-                    // Device starts null per-project; the user picks
-                    // per project.
+                    // Device intentionally not copied here — it stays
+                    // in the global palette and is read from there.
                 })
                 .ToList();
         }
