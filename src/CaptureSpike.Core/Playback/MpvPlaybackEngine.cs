@@ -290,15 +290,16 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         };
         psi.ArgumentList.Add("--no-config");
         psi.ArgumentList.Add("--no-terminal");
-        // Verbose logging during startup so we can see graph
-        // parsing errors and stream resolution. The previous
-        // --msg-level=all=no hid every error. With
-        // --msg-level=all=info,status=v, lavfi and demuxer
-        // messages are visible (graph parse failures, stream
-        // not found, codec mismatches) but the chatty per-
-        // frame decoder output is suppressed. If startup
-        // succeeds we can drop the level via set_property.
-        psi.ArgumentList.Add("--msg-level=all=info,status=v");
+        // Maximum verbosity. The previous --msg-level=all=no
+        // hid every error. --msg-level=all=info only showed
+        // info+; the actual graph parse errors come at the
+        // 'error' or 'verbose' level. all=v captures
+        // everything, including demuxer and decoder chatter
+        // and the lavfi graph build log. The user only sees
+        // this on startup failure; once mpv is up, the
+        // chatty per-frame logs are noise the user can
+        // ignore in the AppLog.
+        psi.ArgumentList.Add("--msg-level=all=v,status=v");
         psi.ArgumentList.Add($"--input-ipc-server={ipcArg}");
         if (graph is not null)
             psi.ArgumentList.Add($"--lavfi-complex={graph}");
@@ -353,12 +354,14 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         try
         {
             using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            // 30s gives slow mpv builds or slow Windows
-            // pipes (where the file-loaded event can take
-            // many seconds) room to settle. 10s was too
-            // aggressive and treated slow-but-valid graphs
-            // as failures.
-            loadCts.CancelAfter(TimeSpan.FromSeconds(30));
+            // 2 minutes: the user reports mpv always takes
+            // "a while" to load. 10s and 30s were too
+            // aggressive. The loadCts token also gets
+            // cancelled if the caller's CancellationToken
+            // fires (e.g. they close the play window), so
+            // this doesn't pin mpv for 2 min in the failure
+            // case.
+            loadCts.CancelAfter(TimeSpan.FromMinutes(2));
             await _fileLoadedTcs.Task.WaitAsync(loadCts.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
