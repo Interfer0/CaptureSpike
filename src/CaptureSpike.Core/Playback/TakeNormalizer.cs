@@ -51,6 +51,18 @@ public static class TakeNormalizer
         var updated = new List<TakeSource>(take.Sources.Count);
         var failed = new List<string>();
 
+        // Probe every input's natural duration up front. The pad
+        // target for the whole take is the LONGEST input. With
+        // parallel recording, sources are usually the same length
+        // (within a few ms) — but a slow-starting mic, a screen
+        // capture that started late, or a tap that took a moment
+        // to begin can leave one source a few hundred ms short.
+        // Without a common target, each normalized file keeps its
+        // own input length and the user can't mux the take without
+        // hand-padding. With the longest as target, we pad the
+        // shorter ones to match — no fabrication, no truncation.
+        var targetSeconds = await ResolveTargetDurationAsync(ffmpeg, take, takeDir, ct);
+
         foreach (var src in take.Sources)
         {
             ct.ThrowIfCancellationRequested();
@@ -116,20 +128,18 @@ public static class TakeNormalizer
                             $"ffmpeg prepend exited with code {exitCode} for {src.Id}.");
                 }
 
-                // Pad/trim the .normalized output to match the input's
-                // natural length. Without this, a positive offset produces
-                // an output shorter than the input (e.g. trim 200ms off a
-                // 9s clip → 8.8s), which the user can't mux back into a
-                // 9s video. The original is left untouched so we can probe
-                // its duration even if the offset was applied to a file
-                // that no longer matches the original length.
+                // Pad/trim the .normalized output to the take's
+                // common target length (the longest input across
+                // every source in the take, computed once at the
+                // start). Using a common target means every file
+                // in the take ends up the same length so the user
+                // can mux them without hand-padding.
                 var inputDuration = await ProbeDurationAsync(ffmpeg, inputPath, ct);
-                var normalizedDuration = await ProbeDurationAsync(ffmpeg, outputPath, ct);
-                if (Math.Abs(normalizedDuration - inputDuration) > 0.01)
+                if (Math.Abs(inputDuration - targetSeconds) > 0.01)
                 {
                     progress?.Invoke(src.Id, 0.9,
-                        $"Aligning length: {normalizedDuration:F2}s → {inputDuration:F2}s.");
-                    await PadToDurationAsync(ffmpeg, outputPath, inputDuration, ct);
+                        $"Aligning length: {inputDuration:F2}s → {targetSeconds:F2}s.");
+                    await PadToDurationAsync(ffmpeg, outputPath, targetSeconds, ct);
                 }
 
                 // Sanity check: did ffmpeg actually produce a non-empty output?
@@ -269,6 +279,36 @@ public static class TakeNormalizer
         var minutes = int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
         var seconds = double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
         return hours * 3600 + minutes * 60 + seconds;
+    }
+
+    /// <summary>
+    /// Probe every source file in the take and return the longest
+    /// input duration. That's the pad target for every source in
+    /// the take — the longer ones are kept as-is, the shorter ones
+    /// are padded with silence (or black for video) to match.
+    /// If all probes fail, returns 0 (each source pads to its own
+    /// length, the prior behaviour).
+    /// </summary>
+    private static async Task<double> ResolveTargetDurationAsync(string ffmpeg, Take take, string takeDir, CancellationToken ct)
+    {
+        double max = 0;
+        foreach (var src in take.Sources)
+        {
+            ct.ThrowIfCancellationRequested();
+            var path = Path.Combine(takeDir, src.File);
+            if (!File.Exists(path)) continue;
+            try
+            {
+                var d = await ProbeDurationAsync(ffmpeg, path, ct);
+                if (d > max) max = d;
+            }
+            catch
+            {
+                // Skip on probe failure — keep what we have from
+                // the others rather than aborting the whole take.
+            }
+        }
+        return max;
     }
 
     /// <summary>
