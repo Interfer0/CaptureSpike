@@ -275,38 +275,68 @@ public static class TakeNormalizer
     /// Pad/trim a file in place to exactly <paramref name="targetSeconds"/>.
     /// Pads audio with silence (apad) and video with cloned last
     /// frame (tpad); truncates with -t. Works for audio-only files
-    /// (apad only) and video files (both filters). Writes to a
+    /// (apad only) and video files (apad + tpad). Writes to a
     /// temp file, then atomically moves into place.
     /// </summary>
     private static async Task PadToDurationAsync(string ffmpeg, string path, double targetSeconds, CancellationToken ct)
     {
         var tempPath = path + ".padtmp";
         var secStr = FormatSeconds(targetSeconds);
-        var args = new[]
+        // We branch on whether the input has a video stream. A
+        // single filter graph that applies both tpad and apad
+        // works for video files but fails (exit -22 on some
+        // ffmpeg builds) when the input is audio-only because
+        // the tpad filter requires a [0:v] stream that doesn't
+        // exist. So: probe the input, then build args that
+        // only touch the streams that are actually present.
+        var probePsi = new ProcessStartInfo
         {
-            "-y", "-i", path,
-            // Audio pad: silence to the target duration. apad's
-            // whole_dur pads if shorter, no-op if longer. We then
-            // -t to truncate any overshoot (defensive — should be
-            // a no-op when whole_dur was set).
-            "-af", $"apad=whole_dur={secStr}",
-            // Video pad: tpad with clone stop mode fills any
-            // missing video with the last frame. For audio-only
-            // inputs the [0:v] filter is a no-op.
-            "-vf", $"tpad=stop_mode=clone:stop_duration={secStr}",
-            // Truncate to the target in case of any overshoot.
-            "-t", secStr,
-            // Match input codec family: pcm for wav, aac for
-            // mp4/mkv audio. Copy if the codec is already what
-            // we want.
-            "-c:a", "pcm_s16le",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
-            "-movflags", "+faststart",
-            tempPath,
+            FileName = ffmpeg,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
         };
+        probePsi.ArgumentList.Add("-i");
+        probePsi.ArgumentList.Add(path);
+        var probe = Process.Start(probePsi)
+            ?? throw new InvalidOperationException("Could not start ffmpeg.");
+        var probeStderr = new StringBuilder();
+        var probeTask = Task.Run(async () =>
+        {
+            string? line;
+            while ((line = await probe.StandardError.ReadLineAsync().ConfigureAwait(false)) != null)
+                probeStderr.AppendLine(line);
+        }, ct);
+        await probe.WaitForExitAsync(ct).ConfigureAwait(false);
+        try { await probeTask.ConfigureAwait(false); } catch { }
+        var hasVideo = probeStderr.ToString().Contains("Video:", StringComparison.Ordinal);
+
+        var args = new List<string> { "-y", "-i", path };
+        // Audio: pad to target. apad's whole_dur pads if shorter,
+        // no-op if longer; the -t below truncates any overshoot.
+        args.Add("-af"); args.Add($"apad=whole_dur={secStr}");
+        if (hasVideo)
+        {
+            // Video: tpad with clone stop mode fills missing
+            // frames with the last frame.
+            args.Add("-vf"); args.Add($"tpad=stop_mode=clone:stop_duration={secStr}");
+            args.Add("-c:v"); args.Add("libx264");
+            args.Add("-pix_fmt"); args.Add("yuv420p");
+            args.Add("-preset"); args.Add("ultrafast");
+            args.Add("-movflags"); args.Add("+faststart");
+        }
+        // Truncate to the target in case of any overshoot.
+        args.Add("-t"); args.Add(secStr);
+        // Match input codec: pcm for wav. Don't specify a video
+        // codec for audio-only files (we'd hit "video encoder not
+        // found" or similar when there's no video stream).
+        args.Add("-c:a"); args.Add("pcm_s16le");
+        args.Add(tempPath);
+
         try
         {
-            var exitCode = await RunFfmpegAsync(ffmpeg, args, ct);
+            var exitCode = await RunFfmpegAsync(ffmpeg, args.ToArray(), ct);
             if (exitCode != 0)
                 throw new InvalidOperationException(
                     $"ffmpeg pad exited with code {exitCode}.");
