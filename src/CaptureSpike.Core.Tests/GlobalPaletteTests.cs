@@ -96,12 +96,15 @@ public sealed class GlobalPaletteTests : IDisposable
 
         var store = ProjectStore.Open(projectDir);
 
-        // The project's palette keeps kind/label/badge. The device
-        // field is no longer carried — devices live in the global
-        // palette. So the project entry has a null device.
+        // The project's palette keeps the full config: id, kind,
+        // label, badge, AND the device the user picked. Devices
+        // live in the project (per-project, the project's own
+        // file is the source of truth). The global palette is
+        // a master catalog that other projects also read; the
+        // project carries its own copy with the user's device.
         Assert.Equal(4, store.Project.Sources.Count);
         var screen = store.Project.Sources.First(s => s.Id == "screen");
-        Assert.Null(screen.Device);
+        Assert.Equal("DisplayPort-0", screen.Device);
         // The webcam had no device — preserved as-is.
         var webcam = store.Project.Sources.First(s => s.Id == "webcam");
         Assert.Null(webcam.Device);
@@ -119,9 +122,7 @@ public sealed class GlobalPaletteTests : IDisposable
         Assert.Contains(global.Sources, s => s.Id == "webcam");
         Assert.Contains(global.Sources, s => s.Id == "mic");
         Assert.Contains(global.Sources, s => s.Id == "system");
-        // Device is not migrated to the global palette from the
-        // project — users set it via the picker, which writes to
-        // palette.json directly.
+        // Device stays on the project, not the registry.
         var globalScreen = global.Sources.First(s => s.Id == "screen");
         Assert.Null(globalScreen.Device);
     }

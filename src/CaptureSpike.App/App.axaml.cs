@@ -16,6 +16,13 @@ public partial class App : Application
 
     public override void OnFrameworkInitializationCompleted()
     {
+        // The global palette lives in the CaptureSpike data folder
+        // (next to the .csp project subfolders), not in %APPDATA%.
+        // Core resolves the path via this env var so the App owns
+        // the directory location without Core needing to depend on
+        // AppSettings.
+        System.Environment.SetEnvironmentVariable(
+            "CAPTURESPIKE_PALETTE_DIR", AppSettings.ProjectsDir);
         // Apply the saved theme before any windows are constructed so
         // brushes/colors are correct from the first frame. New users
         // (no settings.json yet) get the app's default of Dark.

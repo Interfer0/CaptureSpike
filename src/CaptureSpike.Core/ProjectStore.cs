@@ -40,11 +40,12 @@ public sealed class ProjectStore
     {
         Directory.CreateDirectory(projectDir);
         Directory.CreateDirectory(Path.Combine(projectDir, "scenes"));
-        // New projects seed their palette from the global kinds
-        // registry so the "Available sources" panel isn't empty the
-        // first time the user sees the project. Each entry gets the
-        // kind/label from the registry; device is null until the
-        // user picks one per project.
+        // New projects seed their available-sources list from the
+        // global palette (palette.json) so the "Available sources"
+        // panel isn't empty and the user's previous device picks
+        // carry over to the new project. Each entry gets the
+        // kind/label/badge/device from the global. New projects
+        // start fully populated and ready to use.
         var store = new ProjectStore(projectDir,
             new Project { Name = name, NamingVersion = 1 });
         store.EnsureProjectSources();
@@ -90,19 +91,14 @@ public sealed class ProjectStore
     /// </summary>
     private void EnsureProjectSources()
     {
-        // Project.Sources is per-project, just the kinds in use. The
-        // device field on those entries is dead data — the global
-        // palette is the source of truth for devices. We strip it
-        // so the on-disk representation matches the model: project
-        // owns kind/label/badge, global owns device.
-        void Normalize(List<ProjectSource> sources)
-        {
-            foreach (var s in sources) s.Device = null;
-        }
-        Normalize(Project.Sources);
-
-        // If the project already has sources, leave them alone
-        // unless the global registry has kinds the project doesn't.
+        // Project.Sources is the project's own available-sources list.
+        // It already has whatever the user picked (device, label,
+        // badge) — we don't touch it. If a kind exists in the global
+        // catalog (palette.json) that the project doesn't have, add
+        // it so the user sees kinds they've added in other projects.
+        // Devices on the new entries come from the global palette
+        // (the user's last pick) so the user doesn't have to re-pick
+        // on every project.
         if (Project.Sources.Count > 0)
         {
             var palette = GlobalPalette.Load();
@@ -113,24 +109,26 @@ public sealed class ProjectStore
                 if (existingIds.Contains(kind.Id)) continue;
                 Project.Sources.Add(new ProjectSource
                 {
-                    Id = kind.Id, Kind = kind.Kind, Label = kind.Label, Badge = kind.Badge,
+                    Id = kind.Id, Kind = kind.Kind, Label = kind.Label,
+                    Badge = kind.Badge, Device = kind.Device,
                 });
                 added = true;
             }
             if (added) SaveProject();
             return;
         }
-        // Empty project — seed from the global registry (or the
-        // default palette if the global file is missing).
+        // Empty project — seed from the global registry so the
+        // project inherits the kinds and the user's last-picked
+        // devices. Falls back to a clean default palette if the
+        // global file is missing.
         var registry = GlobalPalette.Load();
         if (registry.Sources.Count > 0)
         {
             Project.Sources = registry.Sources
                 .Select(k => new ProjectSource
                 {
-                    Id = k.Id, Kind = k.Kind, Label = k.Label, Badge = k.Badge,
-                    // Device intentionally not copied here — it stays
-                    // in the global palette and is read from there.
+                    Id = k.Id, Kind = k.Kind, Label = k.Label,
+                    Badge = k.Badge, Device = k.Device,
                 })
                 .ToList();
         }

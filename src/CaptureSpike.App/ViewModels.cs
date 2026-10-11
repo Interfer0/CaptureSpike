@@ -1384,29 +1384,21 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     {
         PaletteSources.Clear();
         if (_store is null) return;
-        // The Sources panel shows each kind the project uses. The
-        // device for each comes from the GLOBAL palette (not the
-        // project), so the device the user picked on the previous
-        // project carries over to the next one — opening a fresh
-        // project shows the same Webcam/Display1 pick, not "Default".
-        // The project's Project.Sources is just a list of which kinds
-        // are in use (id, kind, label, badge) — it has no device of
-        // its own.
+        // The Sources panel reads directly from the current project's
+        // own Project.Sources — that's the file the user edits, with
+        // the device/label/badge picks the user made. We don't look
+        // up devices in the global palette here, because for the user
+        // the project's own file is the source of truth: the dropdown
+        // shows the device the user picked, period.
         foreach (var p in _store.Project.Sources)
         {
-            // Look up the global entry to get the (possibly user-picked)
-            // device. Falls back to the local entry's device if the
-            // global doesn't have one (defensive — shouldn't happen
-            // because EnsureProjectSources keeps the global in sync).
-            var global = _palette.Sources.FirstOrDefault(g => g.Id == p.Id);
-            var device = global?.Device ?? p.Device;
             // Pass a copy of the entry so the VM can mutate its
             // own Badge mid-edit without surprising the user with
             // mid-edit changes to the underlying source from elsewhere.
             var projectView = new ProjectSource
             {
                 Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = p.Badge,
-                Device = device,
+                Device = p.Device,
             };
             PaletteSourceViewModel? vm = null;
             vm = new PaletteSourceViewModel(projectView,
@@ -1439,10 +1431,13 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     }
 
     /// <summary>
-    /// Persists the user's edits to a palette entry. The device
-    /// field is stored in the GLOBAL palette (palette.json) so it
-    /// carries across projects; the rest (badge, label) stays on
-    /// the project's own Project.Sources entry.
+    /// Persists the user's edits to a project source. The project
+    /// file is the source of truth for THIS project's view of the
+    /// source (device, badge, label). The global palette.json is
+    /// a master catalog — when the user picks a device here, we
+    /// also write the device to the global entry so the next project
+    /// that opens sees the same pick. Without the global write, each
+    /// new project would have to re-pick every device.
     /// </summary>
     private void SavePaletteSource(string paletteId, PaletteSourceViewModel vm)
     {
@@ -1451,21 +1446,27 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (projectEntry is null) return;
         var globalEntry = _palette.Sources.FirstOrDefault(s => s.Id == paletteId);
         DebugPalette($"save: paletteId={paletteId} device={vm.Source.Device ?? "<null>"} badge={vm.Source.Badge ?? "<null>"}");
-        var anyChange = false;
-        // Device lives in the global palette so it carries across
-        // projects. Badge and label are per-project (different
-        // projects might want different naming).
+        // Update the project's own entry. Device lives here too —
+        // the project file is the primary read path on open.
+        var projectChanged = false;
+        if (projectEntry.Device != vm.Source.Device) { projectEntry.Device = vm.Source.Device; projectChanged = true; }
+        if (projectEntry.Badge != vm.Source.Badge) { projectEntry.Badge = vm.Source.Badge; projectChanged = true; }
+        if (projectEntry.Label != vm.Source.Label) { projectEntry.Label = vm.Source.Label; projectChanged = true; }
+        if (projectChanged)
+        {
+            try { _store.SaveProject(); }
+            catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
+        }
+        // Also write the device to the global palette so other
+        // projects see the same pick. We do this second and ignore
+        // failures — the local save is what the user immediately
+        // sees; the global is a propagation step.
         if (globalEntry is not null && globalEntry.Device != vm.Source.Device)
         {
             globalEntry.Device = vm.Source.Device;
-            try { _palette.Save(); anyChange = true; }
-            catch (Exception ex) { DebugPalette($"save: FAILED: {ex.Message}"); throw; }
+            try { _palette.Save(); }
+            catch (Exception ex) { DebugPalette($"save global: FAILED: {ex.Message}"); }
         }
-        var projectChanged = false;
-        if (projectEntry.Badge != vm.Source.Badge) { projectEntry.Badge = vm.Source.Badge; projectChanged = true; }
-        if (projectEntry.Label != vm.Source.Label) { projectEntry.Label = vm.Source.Label; projectChanged = true; }
-        if (projectChanged) { _store.SaveProject(); anyChange = true; }
-        _ = anyChange;
     }
 
     // Diagnostic logging for palette save debugging. Off by default;
@@ -1857,12 +1858,14 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (result is null) return;
         try
         {
-            // Two-step add: the new kind lands in the global registry
-            // (so other projects can use it) AND in this project's
-            // palette (so the user sees it immediately). The registry
-            // entry is the canonical kind — the project entry inherits
-            // kind/label/badge from it; the device the user picked in
-            // the AddSource dialog is the global default for this kind.
+            // Two-step add: the new kind lands in the global palette
+            // (palette.json, in the CaptureSpike folder next to the
+            // projects) AND in this project's own Project.Sources.
+            // The global is the master catalog — adding there makes
+            // the new kind available to every project on next open.
+            // The project entry is what the "Available sources"
+            // panel reads immediately so the user sees it without
+            // having to reopen.
             if (!_palette.Contains(result.Id))
             {
                 _palette.Add(new ProjectSource

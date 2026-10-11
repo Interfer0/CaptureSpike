@@ -20,19 +20,27 @@ public sealed class GlobalPalette
 
     private static string ResolveFilePath()
     {
-        // Same conventions as AppSettings / AppLog: a single config
-        // directory per user, holding palette.json at the top level.
-        // Honour APPDATA on Windows and XDG_DATA_HOME on Linux/macOS
-        // for testability.
+        // The global palette lives in the CaptureSpike data folder
+        // (the same folder that holds the .csp project subfolders) —
+        // the user expects palette.json to be a sibling of their
+        // projects, not in %APPDATA%. The App sets the env var at
+        // startup from AppSettings.ProjectsDir; the env var is
+        // overridable for tests.
         var explicitDir = System.Environment.GetEnvironmentVariable("CAPTURESPIKE_PALETTE_DIR");
         if (!string.IsNullOrEmpty(explicitDir))
         {
             Directory.CreateDirectory(explicitDir);
             return Path.Combine(explicitDir, "palette.json");
         }
-        var baseDir = System.Environment.GetFolderPath(
-            System.Environment.SpecialFolder.ApplicationData);
-        return Path.Combine(baseDir, "CaptureSpike", "palette.json");
+        // Fallback when the env var isn't set (e.g. tests that
+        // don't boot the App). Uses the default CaptureSpike data
+        // folder on each platform.
+        var videos = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyVideos);
+        if (string.IsNullOrWhiteSpace(videos))
+            videos = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile);
+        var dir = Path.Combine(videos, "CaptureSpike");
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, "palette.json");
     }
 
     /// <summary>
