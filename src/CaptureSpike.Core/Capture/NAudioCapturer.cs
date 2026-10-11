@@ -40,6 +40,11 @@ public sealed class NAudioCapturer : ISourceCapturer
     private MMDevice? _mmDevice;
     private WaveFileWriter? _writer;
     private IWavePlayer? _keepAlive;
+    /// <summary>Human-readable name of the device we tried to open.
+    /// Captured before the WASAPI call so the error message can
+    /// name the actual physical device (e.g. "Headset
+    /// Microphone") instead of the opaque endpoint id.</summary>
+    private string? _deviceFriendlyName;
     private readonly TaskCompletionSource _firstDataTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _stoppedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _disposed;
@@ -71,10 +76,25 @@ public sealed class NAudioCapturer : ISourceCapturer
             var enumerator = new MMDeviceEnumerator();
             try
             {
-                _mmDevice = _deviceId is null
-                    ? enumerator.GetDefaultAudioEndpoint(
-                        _loopback ? DataFlow.Render : DataFlow.Capture, Role.Multimedia)
-                    : enumerator.GetDevice(_deviceId);
+                try
+                {
+                    _mmDevice = _deviceId is null
+                        ? enumerator.GetDefaultAudioEndpoint(
+                            _loopback ? DataFlow.Render : DataFlow.Capture, Role.Multimedia)
+                        : enumerator.GetDevice(_deviceId);
+                    _deviceFriendlyName = _mmDevice?.FriendlyName;
+                }
+                catch (Exception)
+                {
+                    // The id didn't resolve. Fall back to default
+                    // so the user can at least record something,
+                    // and capture the default's name for the error.
+                    _mmDevice = enumerator.GetDefaultAudioEndpoint(
+                        _loopback ? DataFlow.Render : DataFlow.Capture, Role.Multimedia);
+                    _deviceFriendlyName = _mmDevice?.FriendlyName
+                        ?? "<unknown device>";
+                    throw;
+                }
             }
             finally
             {
@@ -86,16 +106,25 @@ public sealed class NAudioCapturer : ISourceCapturer
         }
         catch (Exception ex) when (ex is not CaptureException)
         {
-            // 0x88890008 = AUDCLNT_E_DEVICE_IN_USE. The mic is
-            // exclusively held by another app (Zoom, Discord, OBS,
-            // browser tab). ffmpeg/directshow can't get it. Tell
-            // the user the cause — without this the raw HRESULT
-            // is just noise.
-            var hint = ex.Message.Contains("0x88890008")
-                ? " — the device is in use by another application. Close Zoom/Discord/OBS and try again."
-                : "";
+            // Translate the common HRESULTs into a hint the user
+            // can act on. Without this, all they see is the raw
+            // error code and the opaque endpoint id.
+            string hint = ex.Message switch
+            {
+                var m when m.Contains("0x88890008") =>
+                    " — the device is in use by another application. Close Zoom/Discord/OBS and try again.",
+                var m when m.Contains("0x88890004") =>
+                    " — the device endpoint couldn't be created. It may have been unplugged, disabled, or its driver is in a bad state. Reconnect it or pick a different device.",
+                var m when m.Contains("0x80070490") =>
+                    " — the device is not in the registry or has no active drivers. Check Device Manager.",
+                _ when _mmDevice is null && _deviceId is not null =>
+                    $" — the saved device id '{_deviceId}' wasn't found. It was probably unplugged. Pick a different device.",
+                _ => "",
+            };
+            var name = _deviceFriendlyName is null ? "" : $" \"{_deviceFriendlyName}\"";
+            var id = _deviceId is null ? "the system default" : $"'{_deviceId}'";
             throw new CaptureException(SourceId,
-                $"Could not open audio device '{_deviceId ?? "default"}': {ex.Message}{hint}");
+                $"Could not open audio device{name} ({id}): {ex.Message}{hint}");
         }
         _capture = capture;
         _writer = new WaveFileWriter(OutputFile, capture.WaveFormat);
