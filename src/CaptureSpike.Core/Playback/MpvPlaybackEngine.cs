@@ -318,7 +318,19 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
 
         _stderr = new StringBuilder();
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) _stderr.AppendLine(e.Data); };
+        // Capture stderr into _stderr AND into the user-facing
+        // AppLog in real time. _stderr is consumed when the
+        // engine times out or fails, but the AppLog path is
+        // persistent and visible immediately if the user
+        // opens the log folder. This way even if _stderr is
+        // somehow cleared before the timeout, the user still
+        // sees what mpv said.
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data is null) return;
+            _stderr.AppendLine(e.Data);
+            AppLog.Current?.WriteLine("[mpv] " + e.Data);
+        };
         if (!process.Start())
             throw new InvalidOperationException("Failed to start mpv.");
         process.BeginErrorReadLine();
@@ -378,7 +390,7 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
                     AppLog.Current?.WriteLine("  " + line.Trim());
             }
             throw new InvalidOperationException(
-                $"mpv did not load any streams within 30s. "
+                $"mpv did not load any streams within 2 minutes. "
                 + (graph is not null ? "Likely the lavfi graph was rejected. " : "")
                 + (err.Length > 0
                     ? "mpv said: " + err[^Math.Min(err.Length, 2000)..]
