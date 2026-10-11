@@ -2525,9 +2525,19 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             {
                 var handle = isVideo && handles.TryGetValue(source.Id, out var h) ? h : nint.Zero;
                 await player.AddSourceAsync(source, filePath, handle);
-                var eff = source.EffectiveOffsetMs;
-                var manual = source.ManualOffsetMs is not null ? " (manual)" : "";
-                offsetInfo.Add($"{label}={eff:F0}ms{manual}");
+                // Show the actual seek the player is using, not the
+                // JSON EffectiveOffsetMs. For a normalized file the
+                // player skips the per-source seek entirely (the
+                // trim/prepend already baked the offset into the
+                // content) — logging the JSON value would tell the
+                // user "Screen=354ms" when the player is actually
+                // seeking to 0ms, which is what Daniel's been seeing
+                // and assuming the player is wrong.
+                var isNormalized = source.File.Contains(".normalized.", StringComparison.Ordinal);
+                var seekMs = isNormalized ? 0 : source.EffectiveOffsetMs;
+                var manual = source.ManualOffsetMs is not null && !isNormalized ? " (manual)" : "";
+                var suffix = isNormalized ? " (normalized)" : "";
+                offsetInfo.Add($"{label}={seekMs:F0}ms{manual}{suffix}");
             }
             Status = $"Playing {row.DisplayName} with offsets: {string.Join(", ", offsetInfo)}";
             _player = player;
