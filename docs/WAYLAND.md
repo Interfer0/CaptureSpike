@@ -1,12 +1,29 @@
 # Wayland screen capture
 
-## Status: design phase, not yet implemented
+## Status: design phase + C helper skeleton
 
 This document describes the design for adding Wayland
-screen capture to CaptureSpike. Nothing here is
-implemented yet. The goal is to scope the work, identify
-the right libraries, and document the approach so the
-implementation has a clear target.
+screen capture to CaptureSpike. The C helper
+(`installer/linux/cs-pw-helper/`) is started but
+incomplete — the synchronous portal call is a
+placeholder, the real async flow needs to be wired
+up, and we can't test the actual capture without a
+real Wayland session.
+
+## Implementation plan (revised)
+
+- **Phase 1 (done):** detect Wayland and show a clear
+  error on screen capture. Code in the `wayland` branch.
+  LinuxSession.cs + CaptureFactory.cs + 7 unit tests.
+- **Phase 2 (in progress):** build the `cs-pw-helper`
+  C program that talks to xdg-desktop-portal and
+  PipeWire. Skeleton is in `installer/linux/cs-pw-helper/`;
+  the async portal flow is the real work.
+- **Phase 3:** C# side: launch the helper as a child
+  process, parse the socket protocol, wrap it as a
+  source capturer that feeds ffmpeg.
+- **Phase 4:** integration test on a real Wayland
+  session (KDE Plasma or GNOME on Fedora).
 
 ## Problem
 
@@ -53,21 +70,21 @@ The standard Wayland screen-capture path is:
         │                                        │ user clicks
         │                                        │ "Share" in dialog
         │                                        ▼
-        │                              +-----------------------+
-        │                              | compositor             |
-        │                              | (GNOME Mutter /        |
-        │                              |  KDE KWin / wlroots)   |
-        │                              +-----------------------+
-        │                                        │
-        │                                        │ opens PipeWire
-        │                                        │ stream of the
-        │                                        │ selected source
-        │                                        ▼
-        │                              +-----------------------+
-        │                              | PipeWire daemon        |
-        │                              | (pw.service)           |
-        │                              +-----------------------+
-        │                                        │
+                              +-----------------------+
+                              | compositor             |
+                              | (GNOME Mutter /        |
+                              |  KDE KWin / wlroots)   |
+                              +-----------------------+
+                                        │
+                                        │ opens PipeWire
+                                        │ stream of the
+                                        │ selected source
+                                        ▼
+                              +-----------------------+
+                              | PipeWire daemon        |
+                              | (pw.service)           |
+                              +-----------------------+
+                                        │
         │ FD + node id (passed back via D-Bus)    │
         │ ◄──────────────────────────────────────┘
         │
@@ -87,6 +104,77 @@ the PipeWire stream. The user picks what to share
 (full screen, a specific window, or a region) and the
 compositor decides what gets sent over the PipeWire
 stream.
+
+## Architecture
+
+### Why a separate C helper
+
+Reimplementing the portal + PipeWire flow in C# is
+a lot of GIO and libspa boilerplate. Instead we ship
+a small C helper (`cs-pw-helper`) that handles portal
++ PipeWire and writes raw frames to a Unix socket.
+The main .NET app launches the helper as a child
+process and pipes the socket through ffmpeg.
+
+### Why not ffmpeg's built-in pipewiresrc?
+
+We considered letting ffmpeg consume the PipeWire
+stream directly via its `pipewiresrc` input device.
+This is what OBS does. The blocker: no major
+prebuilt ffmpeg ships with `--enable-libpipewire`
+because PipeWire's library is LGPL/MIT and the GPL
+ffmpeg can't statically link it. We'd have to build
+ffmpeg from source with PipeWire support, which
+adds 5-10 minutes to every CI build and produces a
+~150 MB ffmpeg binary (vs the current ~50 MB
+prebuilt). The C-helper approach keeps ffmpeg small.
+
+### C helper: `cs-pw-helper`
+
+Location: `installer/linux/cs-pw-helper/`
+
+- `cs-pw-helper.c` — the C source, ~350 lines
+- `Makefile` — uses pkg-config for libpipewire,
+  libportal, libportal-gtk3, gtk+-3.0
+- `README.md` — build instructions + design notes
+
+The helper:
+1. Opens a Unix socket, listens for the C# app
+   to connect
+2. Calls `xdp_portal_create_screencast_session_full`
+   (async) → user picks what to share in the portal
+   dialog
+3. On success, calls `xdp_portal_session_start` →
+   gets a PipeWire node ID + file descriptor
+4. Connects to PipeWire, opens a stream on that
+   node, sets the format to BGRA (or BGR0)
+5. In the stream `process` callback, writes each
+   frame to the socket using a simple binary protocol
+6. On stream end (or SIGINT), writes an end-of-stream
+   marker and exits
+
+### Wire protocol
+
+```
+Stream header (32 bytes, written once at start):
+  bytes  0- 3  magic "CSWH"
+  bytes  4- 7  version (LE u32; currently 1)
+  bytes  8-11  width  (LE u32)
+  bytes 12-15  height (LE u32)
+  bytes 16-19  format (LE u32; 1 = BGRA, 2 = BGR0)
+  bytes 20-23  framerate numerator   (LE u32)
+  bytes 24-27  framerate denominator (LE u32)
+  bytes 28-31  reserved (0)
+
+Per-frame record (8-byte header + pixel data):
+  bytes  0- 3  stride (LE u32) — == width*4 for BGRA
+  bytes  4- 7  flags  (LE u32) — 0 = data frame, 1 = end of stream
+  bytes  8- N  pixel data (stride * height bytes)
+```
+
+The C# side parses this directly. We don't go
+through ffmpeg's rawvideo demuxer (which expects a
+file with one header, not a stream of frames).
 
 ## Libraries and packages
 
@@ -304,51 +392,20 @@ test):
 
 ## Open questions
 
-1. **ffmpeg + PipeWire is not bundled in any major
-   prebuilt ffmpeg.** Verified 2026-10-12:
-   - gyan.dev `ffmpeg-release-essentials` — no
-     `--enable-libpipewire`
-   - BtbN `ffmpeg-n9.0-latest-linux64-gpl` — no
-     `--enable-libpipewire`
-   - BtbN `ffmpeg-n9.0-latest-linux64-lgpl` — no
-     `--enable-libpipewire` either (and no x264/x265,
-     since those are GPL)
+1. ~~**ffmpeg + PipeWire is not bundled in any major
+   prebuilt ffmpeg.**~~ **RESOLVED with the C-helper
+   approach.** Instead of asking ffmpeg to consume
+   the PipeWire stream directly (which would require
+   building ffmpeg with `--enable-libpipewire`, a
+   5-10 min build that produces a 150 MB ffmpeg), we
+   ship a small C helper (`cs-pw-helper`) that
+   handles the portal + PipeWire interaction and
+   writes raw frames to a Unix socket. ffmpeg stays
+   as a small, fast prebuilt. The helper is at
+   `installer/linux/cs-pw-helper/`. **No ffmpeg
+   rebuild needed.**
 
-   **Why:** PipeWire's library is LGPL/MIT-licensed.
-   The GPL-licensed ffmpeg can't statically link
-   against non-GPL libraries. The prebuilt
-   distributions don't ship a separate
-   PipeWire-enabled build.
-
-   **Implication for the design:** to use ffmpeg's
-   built-in `pipewiresrc`, we need to build ffmpeg
-   from source. That's a 5-10 minute build step
-   that requires build-essential + many dev packages
-   on Linux. The build artifact is large (~150 MB
-   after stripping, vs the current 50 MB prebuilt).
-
-   **Decision (for v1):** ship two ffmpeg builds:
-   - `ffmpeg-x11`: gyan.dev (works for X11, the
-     current default)
-   - `ffmpeg-wayland`: built from source with
-     `--enable-libpipewire`, downloaded or built
-     on demand for Wayland systems
-   The `fetch-tools.sh` script can build the
-   Wayland variant on demand if the user requests
-   it (or always, with the result being cached).
-
-   **Alternative (simpler, v0.5):** a small C helper
-   that handles the portal + PipeWire + frame
-   extraction, exposes them via a Unix socket, and
-   ffmpeg reads from the socket. This avoids the
-   ffmpeg rebuild but means writing a non-trivial
-   C program. The C helper still needs libpipewire
-   + libportal at build time.
-
-2. **Does gyan.dev's ffmpeg build include `--enable-libpipewire`?**
-   See #1: confirmed NO for gyan.dev. **Resolved.**
-
-3. **Parent window ID.** The portal's `SelectSources`
+2. **Parent window ID.** The portal's `SelectSources`
    takes a "parent window" so the dialog can be modal
    to our window. On Wayland this is a `wl_surface*`,
    which is not easy to get from .NET. On X11 it's the
@@ -359,13 +416,13 @@ test):
    parent window; the portal centers the dialog on
    the screen. Not ideal but it works.
 
-4. **The ffmpeg FD lifecycle.** We open an FD, pass it
+3. **The ffmpeg FD lifecycle.** We open an FD, pass it
    to ffmpeg, ffmpeg reads from it until we kill the
    process. If ffmpeg dies but the FD is still open,
    we leak it. Need a try/finally around the ffmpeg
    process.
 
-5. **A single source or multiple?** The portal's
+4. **A single source or multiple?** The portal's
    `Start()` returns a single PipeWire node. The user
    can choose "Full screen" (one big stream) or
    "Window" (just that window). The "Region" choice
@@ -379,7 +436,7 @@ test):
    Screen source in the project re-uses the same
    stream. This matches what OBS does.
 
-6. **Region capture.** Wayland's portal doesn't have a
+5. **Region capture.** Wayland's portal doesn't have a
    "region" option like X11's `-video_size 800x600
    -i +100,100`. The user picks full-screen, then
    we crop in ffmpeg with a `crop` filter:
