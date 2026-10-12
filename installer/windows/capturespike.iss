@@ -45,10 +45,15 @@ DisableProgramGroupPage=yes
 ; (e.g. a USB drive, D:\Tools\CaptureSpike). Per-user
 ; install — no admin elevation needed.
 PrivilegesRequired=lowest
-; Inno Setup 7.x renamed this directive; the 6.x form
-; was PrivilegesRequiredOverridesAllowed, but 7.x uses
-; PrivilegesRequiredOverrideAllowed (no trailing s).
-PrivilegesRequiredOverrideAllowed=dialog
+; Per Inno Setup docs (jrsoftware.org/ishelp), the
+; directive is PrivilegesRequiredOverridesAllowed
+; (with trailing s) in both 6.x and 7.x. The 7.x
+; compiler rejects the no-s form. The setting lets
+; the user override the 'lowest' default via a
+; dialog ("Install for all users" vs "Install for
+; just me") or via /ALLUSERS and /CURRENTUSER
+; command-line parameters.
+PrivilegesRequiredOverridesAllowed=dialog
 ; Output goes to dist/ so it stays out of the repo (.gitignore).
 OutputDir=..\..\dist
 OutputBaseFilename=CaptureSpike-Setup-{#APP_VERSION}
@@ -82,11 +87,9 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-; The setting is `PrivilegesRequiredOverrideAllowed=yes`
-; above (Inno Setup 7.x form; the 6.x form had a
-; trailing s). The user is allowed to override the
-; 'lowest' setting via a dialog if they want to install
-; for all users.
+; PrivilegesRequiredOverridesAllowed=dialog (above)
+; lets the user override the 'lowest' default via a
+; dialog if they want to install for all users.
 Uninstallable=yes
 VersionInfoVersion={#APP_VERSION}
 VersionInfoCompany={#MyAppPublisher}
