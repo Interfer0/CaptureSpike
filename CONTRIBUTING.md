@@ -7,9 +7,8 @@ request.
 ## Code of conduct
 
 Be respectful, focus on the code, assume good intent.
-This is a small project; there's no formal Code of Conduct
-document yet, but the spirit of the [Contributor Covenant](https://www.contributor-covenant.org/)
-applies.
+The full text is in [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+— it's the standard Contributor Covenant 2.1.
 
 ## Before you start
 
