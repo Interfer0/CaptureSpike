@@ -84,8 +84,12 @@ function Fetch-InnoSetup {
     # the current version; we pin via the GitHub release for
     # reproducibility.
     $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/jrsoftware/issrc/releases/latest"
-    $asset = $rel.assets | Where-Object { $_.name -like "innosetup-*-setup.exe" } | Select-Object -First 1
-    if (-not $asset) { throw "No Inno Setup installer asset in latest jrsoftware/issrc release." }
+    # Asset names have varied across versions: 6.x used
+    # "innosetup-X.Y.Z-setup.exe", 7.x uses
+    # "innosetup-X.Y.Z-x64.exe". Match either so the
+    # fetch works on both 6.x and 7.x releases.
+    $asset = $rel.assets | Where-Object { $_.name -like "innosetup-*-setup.exe" -or $_.name -like "innosetup-*-x64.exe" } | Select-Object -First 1
+    if (-not $asset) { throw "No Inno Setup installer asset in latest jrsoftware/issrc release. Available: $($rel.assets.name -join ', ')" }
     Write-Host "Downloading Inno Setup: $($asset.name)"
     $archive = Join-Path $env:TEMP $asset.name
     Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archive
