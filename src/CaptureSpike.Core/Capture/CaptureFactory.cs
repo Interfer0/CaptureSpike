@@ -70,11 +70,44 @@ public static class CaptureFactory
 
     private static ISourceCapturer CreateLinux(Project project, ProjectSource source, string outputFile, string ffmpeg)
     {
+        // Wayland screen capture is not yet supported. The
+        // X11 path is kept for users who run an X11 session
+        // or XWayland (XDG_SESSION_TYPE=x11). On native
+        // Wayland sessions, ffmpeg's x11grab can't see the
+        // screen and would fail with a cryptic
+        // "Cannot open display" error; fail fast with a
+        // clear message and link to the design doc. Audio
+        // capture (pulse) works the same on both, so
+        // mic / system-audio sources still go through.
+        // The full Wayland story is in docs/WAYLAND.md.
+        var session = LinuxSession.Current;
+        if (source.Kind.IsVideo() && source.Kind is SourceKind.Screen or SourceKind.Window
+            && session == LinuxSession.DisplayServer.Wayland)
+        {
+            throw new CaptureException(source.Id,
+                $"Screen capture is not yet supported on Wayland sessions " +
+                $"(current display server: {LinuxSession.CurrentName}). " +
+                "Log into an X11 session to record the screen, or see " +
+                "docs/WAYLAND.md for the in-progress Wayland support.");
+        }
+
         var args = BaseArgs();
         switch (source.Kind)
         {
             case SourceKind.Screen:
             {
+                // x11grab needs the DISPLAY env var. On XWayland
+                // it's set by the session manager; on bare X11
+                // it's set by startx/Xorg. If neither is set
+                // (headless TTY, container, CI), fail with a
+                // clear message rather than a ffmpeg stack trace.
+                if (session is LinuxSession.DisplayServer.Headless or LinuxSession.DisplayServer.Unknown)
+                {
+                    throw new CaptureException(source.Id,
+                        "Screen capture requires a display server. " +
+                        $"Current session: {LinuxSession.CurrentName}. " +
+                        "Run the app from a graphical (X11 or Wayland) session.");
+                }
                 args.AddRange(new[] { "-f", "x11grab", "-framerate", project.Fps.ToString() });
                 var disp = DisplayName();
                 if (DeviceParsers.TryParseGeometry(source.Device, out var geo))
@@ -86,6 +119,12 @@ public static class CaptureFactory
             }
             case SourceKind.Window:
                 // True per-window capture on X11 needs the window geometry (v2).
+                if (session is LinuxSession.DisplayServer.Headless or LinuxSession.DisplayServer.Unknown)
+                {
+                    throw new CaptureException(source.Id,
+                        "Window capture requires a display server. " +
+                        $"Current session: {LinuxSession.CurrentName}.");
+                }
                 args.AddRange(new[] { "-f", "x11grab", "-framerate", project.Fps.ToString(), "-i", DisplayName() });
                 args.AddRange(VideoOutArgs(project, outputFile));
                 break;

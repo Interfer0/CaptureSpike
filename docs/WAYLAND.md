@@ -304,11 +304,51 @@ test):
 
 ## Open questions
 
-1. **Does gyan.dev's ffmpeg build include `--enable-libpipewire`?**
-   If not, do we need to switch to a different ffmpeg
-   source (e.g., BtbN's builds)? First thing to verify.
+1. **ffmpeg + PipeWire is not bundled in any major
+   prebuilt ffmpeg.** Verified 2026-10-12:
+   - gyan.dev `ffmpeg-release-essentials` — no
+     `--enable-libpipewire`
+   - BtbN `ffmpeg-n9.0-latest-linux64-gpl` — no
+     `--enable-libpipewire`
+   - BtbN `ffmpeg-n9.0-latest-linux64-lgpl` — no
+     `--enable-libpipewire` either (and no x264/x265,
+     since those are GPL)
 
-2. **Parent window ID.** The portal's `SelectSources`
+   **Why:** PipeWire's library is LGPL/MIT-licensed.
+   The GPL-licensed ffmpeg can't statically link
+   against non-GPL libraries. The prebuilt
+   distributions don't ship a separate
+   PipeWire-enabled build.
+
+   **Implication for the design:** to use ffmpeg's
+   built-in `pipewiresrc`, we need to build ffmpeg
+   from source. That's a 5-10 minute build step
+   that requires build-essential + many dev packages
+   on Linux. The build artifact is large (~150 MB
+   after stripping, vs the current 50 MB prebuilt).
+
+   **Decision (for v1):** ship two ffmpeg builds:
+   - `ffmpeg-x11`: gyan.dev (works for X11, the
+     current default)
+   - `ffmpeg-wayland`: built from source with
+     `--enable-libpipewire`, downloaded or built
+     on demand for Wayland systems
+   The `fetch-tools.sh` script can build the
+   Wayland variant on demand if the user requests
+   it (or always, with the result being cached).
+
+   **Alternative (simpler, v0.5):** a small C helper
+   that handles the portal + PipeWire + frame
+   extraction, exposes them via a Unix socket, and
+   ffmpeg reads from the socket. This avoids the
+   ffmpeg rebuild but means writing a non-trivial
+   C program. The C helper still needs libpipewire
+   + libportal at build time.
+
+2. **Does gyan.dev's ffmpeg build include `--enable-libpipewire`?**
+   See #1: confirmed NO for gyan.dev. **Resolved.**
+
+3. **Parent window ID.** The portal's `SelectSources`
    takes a "parent window" so the dialog can be modal
    to our window. On Wayland this is a `wl_surface*`,
    which is not easy to get from .NET. On X11 it's the
@@ -319,13 +359,13 @@ test):
    parent window; the portal centers the dialog on
    the screen. Not ideal but it works.
 
-3. **The ffmpeg FD lifecycle.** We open an FD, pass it
+4. **The ffmpeg FD lifecycle.** We open an FD, pass it
    to ffmpeg, ffmpeg reads from it until we kill the
    process. If ffmpeg dies but the FD is still open,
    we leak it. Need a try/finally around the ffmpeg
    process.
 
-4. **A single source or multiple?** The portal's
+5. **A single source or multiple?** The portal's
    `Start()` returns a single PipeWire node. The user
    can choose "Full screen" (one big stream) or
    "Window" (just that window). The "Region" choice
@@ -339,7 +379,7 @@ test):
    Screen source in the project re-uses the same
    stream. This matches what OBS does.
 
-5. **Region capture.** Wayland's portal doesn't have a
+6. **Region capture.** Wayland's portal doesn't have a
    "region" option like X11's `-video_size 800x600
    -i +100,100`. The user picks full-screen, then
    we crop in ffmpeg with a `crop` filter:
