@@ -102,42 +102,26 @@ cp -r "$LINUX_TOOLS"/* "$BUNDLED_TOOLS/" 2>/dev/null || true
 echo "==> Step 4/7: Stage AppDir for AppImage"
 APPDIR="$REPO_ROOT/dist/AppDir"
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/bin"
-mkdir -p "$APPDIR/usr/lib/capturespike"
-mkdir -p "$APPDIR/usr/share/applications"
-mkdir -p "$APPDIR/usr/share/icons/hicolor"
-mkdir -p "$APPDIR/usr/share/metainfo"
+mkdir -p "$APPDIR"
 
-# Copy the publish output. The .NET binary goes to
-# /usr/bin/CaptureSpike.App (so it ends up on PATH).
-# The .NET runtime, ffmpeg, mpv, and Avalonia DLLs
-# go to /usr/lib/capturespike/ for organization.
+# Mirror the publish output directly into the AppDir
+# root. The .NET apphost looks for its sibling .dll
+# AND for the .NET runtime (libhostfxr.so,
+# libcoreclr.so, etc.) in the same directory or via
+# DOTNET_ROOT. Splitting them across usr/bin/ and
+# usr/lib/ complicates this; the simplest correct
+# layout is to keep everything together.
 #
-# The apphost executable (CaptureSpike.App) looks for
-# its sibling CaptureSpike.App.dll at runtime, so we
-# copy both to /usr/bin/. The .deps.json and
-# .runtimeconfig.json files are also needed there
-# for the runtime to find the correct .NET version.
-cp "$PUBLISH_DIR/CaptureSpike.App" "$APPDIR/usr/bin/CaptureSpike.App"
-cp "$PUBLISH_DIR/CaptureSpike.App.dll" "$APPDIR/usr/bin/CaptureSpike.App.dll"
-cp "$PUBLISH_DIR/CaptureSpike.App.deps.json" "$APPDIR/usr/bin/CaptureSpike.App.deps.json" 2>/dev/null || true
-cp "$PUBLISH_DIR/CaptureSpike.App.runtimeconfig.json" "$APPDIR/usr/bin/CaptureSpike.App.runtimeconfig.json" 2>/dev/null || true
-chmod +x "$APPDIR/usr/bin/CaptureSpike.App"
-# All other files (DLLs, runtime, ffmpeg, mpv)
-cp -r "$PUBLISH_DIR/"*.dll "$APPDIR/usr/lib/capturespike/" 2>/dev/null || true
-cp -r "$PUBLISH_DIR/"*.so "$APPDIR/usr/lib/capturespike/" 2>/dev/null || true
-cp -r "$PUBLISH_DIR/tools" "$APPDIR/usr/lib/capturespike/"
-# Icons (the .csproj EmitLinuxIcons target produced
-# them in dist/publish/linux-x64/usr/share/icons/hicolor/
-# during publish).
-if [ -d "$PUBLISH_DIR/usr/share/icons/hicolor" ]; then
-    cp -r "$PUBLISH_DIR/usr/share/icons/hicolor/." "$APPDIR/usr/share/icons/hicolor/"
-fi
+# Icons go into usr/share/icons/hicolor/<size>x<size>/apps/
+# (the freedesktop hicolor spec) so file managers
+# can find them after install. The .desktop goes
+# into usr/share/applications/ (system integration).
+# Both are produced by the .csproj EmitLinuxIcons
+# target into the publish output.
+cp -r "$PUBLISH_DIR"/* "$APPDIR/" 2>/dev/null || true
 
-# AppStream metadata for app stores (e.g. elementary
-# AppCenter reads /usr/share/metainfo/*.appdata.xml).
-# AppImage metadata follows.
-
+# Mark the executable.
+chmod +x "$APPDIR/CaptureSpike.App"
 # AppStream metadata (optional but recommended for
 # AppImageHub submission and for file managers that
 # read it). appimagetool validates this with
@@ -156,6 +140,7 @@ fi
 # errors and aborts. A more complete appdata.xml
 # is on the roadmap (screenshots, release notes,
 # translations).
+mkdir -p "$APPDIR/usr/share/metainfo"
 cat > "$APPDIR/usr/share/metainfo/io.github.Interfer0.CaptureSpike.appdata.xml" <<'METAINFO_EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
@@ -222,7 +207,9 @@ APPIMAGE_DESKTOP_EOF
 # appimagetool requires the icon at the AppDir root
 # (with the name from the .desktop file's Icon= key)
 # and a .DirIcon symlink. The 256x256 PNG from the
-# hicolor set is the right size for this.
+# hicolor set is the right size for this. The icons
+# are inside usr/share/icons/hicolor/ (mirrored from
+# the publish output), so extract from there.
 ICON_SRC="$APPDIR/usr/share/icons/hicolor/256x256/apps/capturespike.png"
 if [ -f "$ICON_SRC" ]; then
     cp "$ICON_SRC" "$APPDIR/capturespike.png"
@@ -230,19 +217,22 @@ if [ -f "$ICON_SRC" ]; then
 fi
 
 # AppRun: the entry point that the AppImage runtime
-# invokes. Sets up the environment so the .NET binary
-# can find its sibling DLLs and the bundled ffmpeg/mpv.
+# invokes. The .NET apphost needs to find its sibling
+# .dll and the .NET runtime (libhostfxr.so, etc.).
+# We keep everything in the AppDir root (mirrored
+# from the publish output), so the apphost can
+# resolve everything by relative path.
 cat > "$APPDIR/AppRun" <<'APPRUN_EOF'
 #!/bin/bash
 # AppRun for CaptureSpike.
-# Set the working directory to the AppDir so the .NET
-# runtime can find its sibling DLLs, ffmpeg, and mpv
-# relative to the executable. The AppImage runtime
-# sets $APPDIR to the mount point.
+# The AppImage runtime sets $APPDIR to the mount
+# point. The .NET apphost needs DOTNET_ROOT to find
+# the .NET runtime libraries (libhostfxr.so etc.);
+# pointing it at the AppDir root lets it find them
+# alongside CaptureSpike.App.
 HERE="$(dirname "$(readlink -f "$0")")"
-export DOTNET_ROOT="$HERE/usr/lib/capturespike"
-export LD_LIBRARY_PATH="$HERE/usr/lib/capturespike:${LD_LIBRARY_PATH:-}"
-exec "$HERE/usr/bin/CaptureSpike.App" "$@"
+export DOTNET_ROOT="$HERE"
+exec "$HERE/CaptureSpike.App" "$@"
 APPRUN_EOF
 chmod +x "$APPDIR/AppRun"
 
