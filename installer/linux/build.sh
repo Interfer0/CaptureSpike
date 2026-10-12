@@ -325,8 +325,20 @@ cat > "$DEB_ROOT/DEBIAN/postinst" <<'POSTINST_EOF'
 #!/bin/bash
 set -e
 chmod +x /opt/capturespike/CaptureSpike.App
-chmod +x /opt/capturespike/tools/linux-x64/ffmpeg
-chmod +x /opt/capturespike/tools/linux-x64/mpv
+# Bundled ffmpeg is always present (the .csproj
+# copies it during publish). Bundled mpv is
+# optional — we don't compile it by default
+# because there's no trustworthy static mpv
+# build for Linux with X11 video output. The
+# .deb Depends: on system mpv (apt pulls it in
+# automatically) so the runtime works either
+# way.
+if [ -f /opt/capturespike/tools/linux-x64/ffmpeg ]; then
+    chmod +x /opt/capturespike/tools/linux-x64/ffmpeg
+fi
+if [ -f /opt/capturespike/tools/linux-x64/mpv ]; then
+    chmod +x /opt/capturespike/tools/linux-x64/mpv
+fi
 if [ -x /usr/bin/update-desktop-database ]; then
     update-desktop-database /usr/share/applications
 fi
