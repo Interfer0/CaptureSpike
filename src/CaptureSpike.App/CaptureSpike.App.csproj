@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <Version>0.1.0</Version>
     <!-- Both TFMs: the plain one for Linux, the Windows one for NAudio/WASAPI audio. -->
     <TargetFrameworks>net10.0;net10.0-windows10.0.19041</TargetFrameworks>
     <!-- Lets the Windows TFM compile on Linux/macOS (compile-only; never run here). -->
@@ -93,6 +94,26 @@
           Condition="'$(OS)' == 'Windows_NT'" WorkingDirectory="$(ProjectDir)" />
     <Exec Command="python3 -c &quot;import base64; open('Assets/capturespike-icon.png','wb').write(base64.b64decode(open('Assets/capturespike-icon.png.b64').read()))&quot;"
           Condition="'$(OS)' != 'Windows_NT'" WorkingDirectory="$(ProjectDir)" />
+  </Target>
+
+  <!-- Build a multi-resolution .ico from the source PNG. Windows
+       wants 16/32/48/64/128/256 sizes packed into one .ico
+       so the Start Menu, Alt-Tab switcher, and installer
+       wizard all render the right resolution.
+       We use ImageMagick `magick` (the modern binary) or
+       `convert` (legacy) — whichever is on PATH. The
+       Inno Setup installer references this file
+       (SetupIconFile=). The target is a no-op if the
+       .ico already exists, so a hand-checked-in copy
+       is also fine. -->
+  <Target Name="BuildWindowsIco" BeforeTargets="Publish"
+          Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041' And '$(OS)' == 'Windows_NT' And !Exists('Assets/capturespike-icon.ico')">
+    <PropertyGroup>
+      <_IcoSource>$(MSBuildProjectDirectory)/Assets/capturespike-icon.png</_IcoSource>
+      <_IcoOut>$(MSBuildProjectDirectory)/Assets/capturespike-icon.ico</_IcoOut>
+    </PropertyGroup>
+    <Exec Command="magick &quot;$(_IcoSource)&quot; -define icon:auto-resize=256,128,64,48,32,16 &quot;$(_IcoOut)&quot;"
+          ContinueOnError="false" />
   </Target>
 
   <ItemGroup>

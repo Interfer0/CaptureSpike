@@ -1,0 +1,45 @@
+name: build-windows-installer
+
+# Builds the Windows installer on a windows-latest runner.
+# Triggered manually (workflow_dispatch) and on tag pushes
+# (v*) so a tagged release gets a build artifact. The
+# installer is uploaded as a workflow artifact (not a release
+# asset) so a human can verify before publishing.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build installer
+        # build-installer.ps1 fetches ffmpeg + mpv + Inno
+        # Setup on first run, caches them in tools/, and
+        # produces dist\CaptureSpike-Setup-<version>.exe.
+        # Subsequent runs are idempotent (skips fetches if
+        # the artifacts are already in place).
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./installer/windows/build-installer.ps1
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: CaptureSpike-Setup
+          path: dist/CaptureSpike-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 14

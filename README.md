@@ -102,7 +102,29 @@ on the build machine. Keep the corresponding license files and source
 information with any distributed tool binaries; see
 [`tools/THIRD-PARTY-LICENSES.md`](tools/THIRD-PARTY-LICENSES.md).
 
-### Windows x64
+### Windows x64 — installer (.exe wizard)
+
+Run in PowerShell from the repository root. The script fetches Inno Setup
+into `tools/inno-setup/` if it's not already there, fetches ffmpeg + mpv
+into `tools/win-x64/`, runs `dotnet publish` self-contained, and finally
+runs `iscc` to produce the installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer/windows/build-installer.ps1
+```
+
+Output: `dist\CaptureSpike-Setup-<version>.exe`. Per-user install
+(no UAC prompt) into `%LOCALAPPDATA%\CaptureSpike`. Creates a Start Menu
+shortcut; an optional Desktop shortcut is off by default. The
+`.iss` script and CI workflow are in
+[`installer/windows/`](installer/windows/) and
+[`.github/workflows/build-windows-installer.yml`](.github/workflows/build-windows-installer.yml).
+
+A signed installer and Microsoft Store MSIX package are not configured
+yet; Store release work also needs package identity/manifest
+configuration, signing, and Partner Center submission.
+
+### Windows x64 — portable folder
 
 Run in PowerShell from the repository root:
 
