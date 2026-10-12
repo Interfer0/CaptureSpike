@@ -23,4 +23,12 @@
                       Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041'" />
   </ItemGroup>
 
+  <!-- Microsoft.Windows.SDK.NET is automatically provided
+       by the .NET 10 SDK for the net10.0-windows10.0.19041
+       TFM (it's part of the Windows targeting pack, like
+       Microsoft.Windows.SDK.NET.Ref 10.0.19041.57). No
+       explicit PackageReference is needed. The Windows
+       Graphics.Capture types (Windows.Graphics.Capture.*)
+       are part of the projection. -->
+
 </Project>

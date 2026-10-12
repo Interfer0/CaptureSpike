@@ -158,12 +158,19 @@ public static class CaptureFactory
                 break;
             }
             case SourceKind.Window:
-                if (string.IsNullOrWhiteSpace(source.Device))
-                    throw new CaptureException(source.Id,
-                        "Window capture needs a window title in the source's device setting.");
-                args.AddRange(new[] { "-f", "gdigrab", "-framerate", project.Fps.ToString(), "-i", $"title={source.Device}" });
-                args.AddRange(VideoOutArgs(project, outputFile));
-                break;
+                // Window capture on Windows uses the modern
+                // Windows.Graphics.Capture API instead of
+                // gdigrab. WGC captures the actual GPU-
+                // composed pixels of a single window, which
+                // gdigrab can't (UWP/Edge/DirectX-only
+                // surfaces fail, minimized windows fail).
+                // The user picks the window via the system
+                // picker dialog (same pattern as the
+                // Wayland portal dialog on Linux). On
+                // non-Windows the X11 path below handles
+                // window capture via x11grab.
+                return new WindowsGraphicsCapturer(
+                    source.Id, outputFile, ffmpeg, project.Fps);
             case SourceKind.Webcam:
                 args.AddRange(new[] { "-f", "dshow", "-framerate", "30", "-i",
                     $"video={source.Device ?? FirstDShowVideoDevice(ffmpeg)}" });
