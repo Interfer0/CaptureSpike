@@ -89,6 +89,16 @@ $installer = Join-Many @($repoRoot, "dist", "CaptureSpike-Setup-$appVersion.exe"
 if (-not (Test-Path $installer)) {
     throw "Installer was not produced at expected path: $installer"
 }
+
+# SHA256 next to the installer. GitHub Releases can display
+# the hash automatically (if the .sha256 file is uploaded as
+# a release asset), so users can verify their download.
+$sha256Path = "$installer.sha256"
+$hash = (Get-FileHash -Path $installer -Algorithm SHA256).Hash
+Set-Content -Path $sha256Path -Value "$hash  $(Split-Path $installer -Leaf)" -NoNewline
+Write-Host "SHA256: $hash"
+
 Write-Host ""
 Write-Host "==> Done. Installer: $installer"
 Write-Host "    Size: $([math]::Round((Get-Item $installer).Length / 1MB, 1)) MB"
+Write-Host "    Hash: $sha256Path"

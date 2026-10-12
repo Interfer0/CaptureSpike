@@ -1,0 +1,51 @@
+# Release Drafter configuration.
+# When a PR is merged, the Release Drafter GitHub Action
+# (run by .github/workflows/release-drafter.yml) reads
+# the PR title and labels and adds the PR to a draft
+# release. Tag names, category labels, and changelog
+# format are all configured here.
+#
+# Docs: https://github.com/release-drafter/release-drafter
+
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+version-resolver:
+  major:
+    labels: ["breaking", "breaking-change"]
+  minor:
+    labels: ["feature", "enhancement"]
+  patch:
+    labels: ["bug", "bugfix", "fix", "documentation", "chore"]
+  default: patch
+categories:
+  - title: "🚨 Breaking Changes"
+    labels: ["breaking", "breaking-change"]
+  - title: "🚀 New Features"
+    labels: ["feature", "enhancement"]
+  - title: "🐛 Bug Fixes"
+    labels: ["bug", "bugfix", "fix"]
+  - title: "📚 Documentation"
+    labels: ["documentation", "docs"]
+  - title: "🔧 Maintenance"
+    labels: ["chore", "maintenance", "dependencies"]
+  - title: "Other Changes"
+    labels: ["*"]
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
+exclude-labels: ["skip-changelog", "duplicate", "invalid"]
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## Installation
+
+  Download the installer from the **Assets** section below. This
+  is an **alpha** release — expect rough edges.
+
+  - **Windows:** run `CaptureSpike-Setup-$RESOLVED_VERSION.exe`.
+    See the [Install section in the README](https://github.com/Interfer0/CaptureSpike#windows)
+    for the SmartScreen workaround and SHA256 verification.
+
+  ## Notes
+
+  $BODY

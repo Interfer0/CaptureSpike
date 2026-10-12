@@ -40,6 +40,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CaptureSpike-Setup
-          path: dist/CaptureSpike-Setup-*.exe
+          # The .exe is the artifact; the .sha256 file
+          # is its verification hash. Upload both so
+          # users (and you, when you publish a release)
+          # have the hash next to the .exe.
+          path: |
+            dist/CaptureSpike-Setup-*.exe
+            dist/CaptureSpike-Setup-*.exe.sha256
           if-no-files-found: error
           retention-days: 14

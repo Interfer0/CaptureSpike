@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Version>0.1.0</Version>
+    <Version>0.1.0-alpha.1</Version>
     <!-- Both TFMs: the plain one for Linux, the Windows one for NAudio/WASAPI audio. -->
     <TargetFrameworks>net10.0;net10.0-windows10.0.19041</TargetFrameworks>
     <!-- Lets the Windows TFM compile on Linux/macOS (compile-only; never run here). -->

@@ -163,6 +163,77 @@ The project has no configured release automation or Store/Flathub submission
 workflow yet. Treat published folders as test artifacts until those packaging,
 license, signing, and clean-machine checks are complete.
 
+## Install
+
+CaptureSpike is currently distributed as an **alpha** via
+[GitHub Releases](https://github.com/Interfer0/CaptureSpike/releases).
+Expect rough edges. For Linux, you build from source — see the
+"Publishing Builds → Linux Mint x64" section below.
+
+### Windows
+
+1. Go to the [Releases page](https://github.com/Interfer0/CaptureSpike/releases).
+2. Download the latest `CaptureSpike-Setup-X.Y.Z.exe` from the
+   **Assets** section of the release you want.
+3. Double-click the .exe to start the installer.
+4. If **Microsoft Defender SmartScreen** warns "Windows protected
+   your PC", click **More info** → **Run anyway**. See
+   "Why does SmartScreen warn?" below for why this is normal
+   for an unsigned open-source app.
+5. Pick an install location. Default: `%LOCALAPPDATA%\CaptureSpike`
+   (per-user, no admin rights required).
+6. Optional: check **Create a desktop shortcut** if you want one.
+7. Click **Install**, then **Finish** (the app can launch
+   automatically).
+8. Launch from **Start Menu → CaptureSpike**, or click the
+   desktop shortcut if you created one.
+9. To uninstall: **Settings → Apps → Installed apps → CaptureSpike →
+   Uninstall**.
+
+The installer is self-contained: it bundles the .NET runtime
+and the `ffmpeg` and `mpv` binaries the app needs. Users do
+**not** need to install .NET, ffmpeg, or mpv separately.
+
+### Verifying the download
+
+Each release on the Releases page has a `.sha256` file next
+to the .exe. To verify the download on Windows:
+
+```powershell
+Get-FileHash .\CaptureSpike-Setup-0.1.0-alpha.1.exe -Algorithm SHA256
+```
+
+The hash should match the one in `CaptureSpike-Setup-0.1.0-alpha.1.exe.sha256`.
+If it doesn't match, the download was corrupted or tampered
+with — don't run it.
+
+### Why does SmartScreen warn?
+
+Microsoft SmartScreen flags executables from unknown publishers.
+CaptureSpike is **not** code-signed yet (signing costs ~$120/year
+for an Azure Trusted Signing subscription; open-source projects
+often skip it). The warning is a SmartScreen heuristic, not a
+verdict that the file is malicious.
+
+To work around the warning:
+
+- Click **More info** → **Run anyway** on the SmartScreen
+  dialog.
+- Or, right-click the .exe, choose **Properties**, check
+  **Unblock** at the bottom of the General tab, and click
+  **Apply**. Then run the installer.
+
+This warning is the same one you'll see for any unsigned
+open-source Windows app. It will go away if/when the project
+gets a code-signing cert.
+
+### Linux
+
+Linux is currently **build from source** only. See
+"Publishing Builds → Linux Mint x64" below. A signed
+Flatpak / .deb / AppImage release pipeline is on the
+roadmap but not configured yet.
+
 ## Layout
 
 - `src/CaptureSpike.Core` — data model, `ProjectStore`, capture engine,

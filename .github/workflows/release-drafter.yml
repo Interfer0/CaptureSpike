@@ -1,0 +1,23 @@
+name: release-drafter
+
+# Updates the next-release draft on every push to main.
+# The draft is a markdown changelog auto-generated from
+# PR titles and labels (see .github/release-drafter.yml).
+# Tag a commit to publish the draft as a real release.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
