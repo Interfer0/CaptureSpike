@@ -58,37 +58,128 @@ The first public release is `0.1.0-alpha.1`.
 
 ### 0.1.0-alpha.1 — initial alpha
 
-First public release of CaptureSpike. Records multiple
-sources in sync, with a per-take editor that re-aligns
-audio by prepending silence (no re-encoding, no quality
-loss).
+First public release of CaptureSpike. A recording-only,
+scene-and-take video + audio recorder for Linux Mint and
+Windows. Plan a scene, record multiple takes, hand the
+project folder straight to DaVinci Resolve for editing.
 
-**Known limitations:**
+**This is an alpha.** Expect rough edges. Test on a
+project you can re-record; do not use for anything
+unrecoverable yet.
 
-- **Linux:** build-from-source only, no signed package
-- **SmartScreen warning** on Windows (unsigned publisher;
-  click "More info" → "Run anyway")
-- **No auto-updater** — re-download the installer for new
-  versions
-- The normalize pass uses pure duration matching; silence
-  detection is not configurable
+#### What's working
 
-**What's working:**
+**Multi-source recording (Windows and Linux X11):**
+- Screen capture at your project's frame rate
+- Microphone capture (any input device NAudio / PulseAudio
+  exposes)
+- System audio capture on Windows (WASAPI loopback)
+- Per-take editor that re-aligns sources by prepending
+  silence to shorter ones (no re-encoding, no quality loss,
+  preserves the original audio codec — 32-bit float stays
+  32-bit float)
 
-- Multi-source recording (screen, mic, system audio) on
-  Windows
-- Per-take normalize: `NORM-` prefix on output files so
-  they sort to the top in DaVinci Resolve
-- Project palette is independent of the global sources
-  list (changes to one don't affect the other)
-- Per-project source list lives in `project.json`; the
-  master list lives in `palette.json`
-- Undo normalize button on each take row
-- Single-mpv tiled playback for synced review
+**Project model:**
+- Per-project `project.json` with the source list (separate
+  from the global palette so opening a project never changes
+  your master source list)
+- Master `palette.json` lives at `~/Videos/CaptureSpike/`
+  — add, remove, or rename sources here and they appear in
+  every project
+- Per-scene "sources in scene" list (so you can have a mic
+  active for one scene and not another)
+- Per-take note (markdown editor)
+- One-click **Unnormalize** to revert a take to original files
 
-**Feedback:** file an issue at
-https://github.com/Interfer0/CaptureSpike/issues with the
-log file attached (the **Open log** button in the app).
+**Review workflow:**
+- Single-mpv tiled playback — runs all takes' video sources
+  in one mpv instance so the audio clock is shared and the
+  videos stay in sync (no per-process drift)
+- Per-source mute / include in the player strip
+
+**Installer (Windows):**
+- Per-user Inno Setup installer (no admin required)
+- Bundles .NET 10 runtime, ffmpeg, and mpv — no need to
+  install anything else
+- Start Menu and optional Desktop shortcut
+- Installs LICENSE.txt and NOTICE alongside the .exe
+- Shows the GPL-3.0 license text in the wizard
+
+**Installer (Linux):**
+- AppImage (single file, no install, `chmod +x` and run)
+- `.deb` package for Debian / Ubuntu / Linux Mint
+- Both bundle .NET 10 + ffmpeg; mpv is expected from the
+  system package manager (no trustworthy static mpv build
+  for Linux with X11 video output)
+- X11 only (Wayland screen capture is not yet supported —
+  the app needs an X11 session)
+
+#### Known limitations
+
+- **Linux: X11 only.** Wayland sessions will fail at the
+  ffmpeg x11grab step. The Settings dialog's session type
+  should help you confirm.
+- **Linux: no bundled mpv.** Install `mpv` from your
+  package manager (`sudo apt install mpv`).
+- **Windows: SmartScreen warning.** The .exe is not
+  code-signed yet (signing costs ~$120/year for an Azure
+  Trusted Signing subscription; open-source projects often
+  skip it). Click "More info" → "Run anyway" or unblock
+  the .exe in Properties. The README explains this in
+  detail.
+- **No auto-updater.** New versions are published as new
+  installers on GitHub Releases; you'll re-download when
+  you want to upgrade.
+- **mpv and ffmpeg are bundled and not user-replaceable**
+  in the installed app. If a future version of ffmpeg
+  fixes a bug, you'll need to wait for a new release.
+- **Single project at a time.** The app opens one project
+  at a time; switching projects is by opening from the
+  project browser.
+- **No Wayland, no macOS.** Both are on the roadmap but
+  not implemented yet.
+
+#### Reporting issues
+
+If something doesn't work:
+
+1. Click **Open log** in the app's footer to open the
+   log folder.
+2. Attach the most recent `.log` file to a GitHub issue:
+   https://github.com/Interfer0/CaptureSpike/issues/new
+3. Include:
+   - Your OS and version (Windows 10/11, Linux Mint 21.x)
+   - The version of CaptureSpike (visible in the title
+     bar of the app and in `Settings → About`)
+   - A description of what you were doing when it broke
+   - The log file
+
+For "where do I get help" questions, use GitHub
+Discussions: https://github.com/Interfer0/CaptureSpike/discussions
+
+#### License and commercial use
+
+CaptureSpike is open source under the
+[GNU General Public License v3.0 or later](https://www.gnu.org/licenses/gpl-3.0.html).
+You can use, modify, and redistribute it under GPL-3.0
+terms (which requires sharing source for any
+redistributed version).
+
+A separate **commercial license** is available for
+companies that want to embed CaptureSpike in a
+proprietary product without the GPL-3.0
+source-availability obligation. To inquire, open a
+GitHub issue with `[commercial]` in the title.
+Details: [COMMERCIAL.md](../COMMERCIAL.md).
+
+#### Thanks
+
+Thanks to anyone who tested pre-release builds, to the
+open-source projects that CaptureSpike stands on
+shoulders of (.NET, Avalonia, ffmpeg, mpv), and to the
+users willing to try an alpha and report what breaks.
+
+— Daniel Bigelow
 
 <!--
 For the next release, copy the section above, bump the
