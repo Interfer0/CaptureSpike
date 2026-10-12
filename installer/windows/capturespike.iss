@@ -52,7 +52,17 @@ OutputBaseFilename=CaptureSpike-Setup-{#APP_VERSION}
 ; Modern UI: install wizard, not the old wizard-from-2003.
 WizardStyle=modern
 ; Display the README during install.
-SetupIconFile=..\..\src\CaptureSpike.App\Assets\capturespike-icon.ico
+;
+; SetupIconFile= would point at a custom .ico
+; (Assets\capturespike-icon.ico), but we don't
+; ship one in the repo (it's gitignored and there's
+; no portable PNG-to-ICO generator that works
+; without ImageMagick). Inno Setup falls back to
+; its default wizard icon when this is omitted.
+; When a hand-built .ico is available, uncomment
+; the line below and rebuild.
+;
+; SetupIconFile=..\..\src\CaptureSpike.App\Assets\capturespike-icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
