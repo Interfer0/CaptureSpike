@@ -49,9 +49,15 @@ Write-Host "==> Step 3/4: dotnet publish self-contained"
 $publishDir = Join-Many @($repoRoot, "dist", "publish", "win-x64")
 if (Test-Path $publishDir) { Remove-Item -Recurse -Force $publishDir }
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+# The csproj has two TFMs (net10.0 for Linux, net10.0-windows*
+# for Windows). Without -f, dotnet publish errors with
+# NETSDK1129. The Windows TFM is what the installer
+# bundles; the Linux TFM is for the portable Linux
+# publish workflow (Publishing Builds section in README).
 & dotnet @("publish",
     (Join-Many @($repoRoot, "src", "CaptureSpike.App")),
     "-c", "Release",
+    "-f", "net10.0-windows10.0.19041",
     "-r", "win-x64",
     "--self-contained", "true",
     "-p:PublishSingleFile=false",

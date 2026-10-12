@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2024-2026 Daniel Bigelow
+
 namespace CaptureSpike.Core.Capture;
 
 /// <summary>Thrown when a source can't be captured (missing device, bad args...).</summary>

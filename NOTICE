@@ -1,0 +1,32 @@
+CaptureSpike
+Copyright (C) 2024-2026 Daniel Bigelow
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+---
+
+Third-party software bundled with CaptureSpike:
+
+- .NET runtime: MIT License (c) Microsoft Corporation
+  https://github.com/dotnet/runtime
+- ffmpeg: GPL-2.0-or-later (with some LGPL components) (c) FFmpeg
+  contributors. https://www.ffmpeg.org/
+- mpv: GPL-2.0-or-later (c) The mpv developers.
+  https://mpv.io/
+
+The corresponding source code is available at the upstream project
+repositories linked above. We bundle the binary forms under the
+terms of their respective licenses; see
+`tools\THIRD-PARTY-LICENSES.md` in the repository for the
+full text.
