@@ -1,0 +1,67 @@
+name: build-linux-packages
+
+# Builds the AppImage + .deb on an ubuntu-22.04
+# runner. Triggered on workflow_dispatch and on tag
+# pushes (v*) so a tagged release gets the artifacts.
+# The artifacts are uploaded as workflow artifacts;
+# publish them to a release on GitHub Releases
+# manually after verifying.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+
+jobs:
+  packages:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install build dependencies
+        # appimagetool pulls in mksquashfs + libfuse2.
+        # desktop-file-validate + appstreamcli are needed
+        # by appimagetool's AppStream validation step.
+        # dpkg-deb builds the .deb. mpv is a runtime
+        # dep (the .deb Depends: it) but we also need
+        # it for the AppImage's "is this binary going
+        # to work on a real system" sanity check; mpv
+        # isn't on ubuntu-22.04 by default.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              libfuse2 \
+              squashfs-tools \
+              desktop-file-utils \
+              appstream-util \
+              mpv \
+              dpkg-dev
+
+      - name: Build packages
+        # build.sh fetches appimagetool (cached), the
+        # bundled ffmpeg (cached), and produces
+        # dist/CaptureSpike-x86_64.AppImage +
+        # dist/CaptureSpike-Setup-<version>.deb +
+        # matching .sha256 files.
+        run: |
+          bash installer/linux/build.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CaptureSpike-Linux
+          path: |
+            dist/CaptureSpike-x86_64.AppImage
+            dist/CaptureSpike-x86_64.AppImage.sha256
+            dist/CaptureSpike-Setup-*.deb
+            dist/CaptureSpike-Setup-*.deb.sha256
+          if-no-files-found: error
+          retention-days: 14

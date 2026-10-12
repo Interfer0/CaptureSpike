@@ -87,13 +87,13 @@
     <!-- Make the per-size output directories. ffmpeg
          can't create intermediate directories, so the
          mkdir has to happen first. -->
-    <MakeDir Directories="$(PublishDir)/usr/share/icons/hicolor/16/apps;$(PublishDir)/usr/share/icons/hicolor/22/apps;$(PublishDir)/usr/share/icons/hicolor/24/apps;$(PublishDir)/usr/share/icons/hicolor/32/apps;$(PublishDir)/usr/share/icons/hicolor/48/apps;$(PublishDir)/usr/share/icons/hicolor/64/apps;$(PublishDir)/usr/share/icons/hicolor/128/apps;$(PublishDir)/usr/share/icons/hicolor/256/apps;$(PublishDir)/usr/share/icons/hicolor/512/apps" />
+    <MakeDir Directories="$(PublishDir)/usr/share/icons/hicolor/16x16/apps;$(PublishDir)/usr/share/icons/hicolor/22x22/apps;$(PublishDir)/usr/share/icons/hicolor/24x24/apps;$(PublishDir)/usr/share/icons/hicolor/32x32/apps;$(PublishDir)/usr/share/icons/hicolor/48x48/apps;$(PublishDir)/usr/share/icons/hicolor/64x64/apps;$(PublishDir)/usr/share/icons/hicolor/128x128/apps;$(PublishDir)/usr/share/icons/hicolor/256x256/apps;$(PublishDir)/usr/share/icons/hicolor/512x512/apps" />
     <!-- Emit one PNG per size. Each Exec runs once per
          item; %(_LinuxIconSize.Identity) is the size
          string. Use `ffmpeg` from PATH. App-store
          installers should run this on the build server
          where ffmpeg is available. -->
-    <Exec Command="ffmpeg -loglevel error -y -i &quot;$(_LinuxIconSource)&quot; -vf scale=%(_LinuxIconSize.Identity):%(_LinuxIconSize.Identity) &quot;$(PublishDir)/usr/share/icons/hicolor/%(_LinuxIconSize.Identity)/apps/capturespike.png&quot;" />
+    <Exec Command="ffmpeg -loglevel error -y -i &quot;$(_LinuxIconSource)&quot; -vf scale=%(_LinuxIconSize.Identity):%(_LinuxIconSize.Identity) &quot;$(PublishDir)/usr/share/icons/hicolor/%(_LinuxIconSize.Identity)x%(_LinuxIconSize.Identity)/apps/capturespike.png&quot;" />
     <!-- Drop the .desktop in the standard location so
          app stores (Flathub, elementary, KDE Store) can
          find it. Installers typically copy this to

@@ -12,3 +12,4 @@ dist/
 
 # User data files (not source)
 palette.json
+installer/tools/

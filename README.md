@@ -229,10 +229,53 @@ gets a code-signing cert.
 
 ### Linux
 
-Linux is currently **build from source** only. See
-"Publishing Builds → Linux Mint x64" below. A signed
-Flatpak / .deb / AppImage release pipeline is on the
-roadmap but not configured yet.
+Two install options are available for Linux Mint (and
+other Debian/Ubuntu-based distros):
+
+#### AppImage (no install, single file)
+
+1. Go to the [Releases page](https://github.com/Interfer0/CaptureSpike/releases).
+2. Download `CaptureSpike-x86_64.AppImage` (and the
+   matching `.sha256` file to verify).
+3. Open a terminal in the download folder and:
+   ```bash
+   chmod +x CaptureSpike-x86_64.AppImage
+   ./CaptureSpike-x86_64.AppImage
+   ```
+4. To uninstall: just delete the file.
+
+The AppImage is self-contained: it bundles the .NET
+runtime and `ffmpeg`. The user's system must have
+`mpv` installed (`sudo apt install mpv`) — we don't
+bundle mpv because there's no trustworthy static mpv
+build for Linux with X11 video output.
+
+**Note:** X11 is required. Wayland screen capture is
+not supported yet (the ffmpeg `x11grab` device is
+used).
+
+#### .deb package (proper install)
+
+1. Download `CaptureSpike-Setup-<version>.deb` from
+   the Releases page.
+2. Double-click to open in the Software Center, or:
+   ```bash
+   sudo dpkg -i CaptureSpike-Setup-<version>.deb
+   sudo apt install -f   # if any deps are missing
+   ```
+3. Launch from the Applications menu → CaptureSpike,
+   or `capturespike` from the terminal.
+4. To uninstall: `sudo apt remove capturespike`.
+
+The .deb installs to `/opt/capturespike/`, creates a
+desktop entry, and registers the icon. Same X11
+requirement as the AppImage.
+
+#### Build from source
+
+If you want to modify the code, see "Publishing Builds
+→ Linux Mint x64" below. The `bash installer/linux/build.sh`
+script reproduces the AppImage + .deb locally.
 
 ## Layout
 
