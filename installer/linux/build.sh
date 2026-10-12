@@ -112,7 +112,16 @@ mkdir -p "$APPDIR/usr/share/metainfo"
 # /usr/bin/CaptureSpike.App (so it ends up on PATH).
 # The .NET runtime, ffmpeg, mpv, and Avalonia DLLs
 # go to /usr/lib/capturespike/ for organization.
+#
+# The apphost executable (CaptureSpike.App) looks for
+# its sibling CaptureSpike.App.dll at runtime, so we
+# copy both to /usr/bin/. The .deps.json and
+# .runtimeconfig.json files are also needed there
+# for the runtime to find the correct .NET version.
 cp "$PUBLISH_DIR/CaptureSpike.App" "$APPDIR/usr/bin/CaptureSpike.App"
+cp "$PUBLISH_DIR/CaptureSpike.App.dll" "$APPDIR/usr/bin/CaptureSpike.App.dll"
+cp "$PUBLISH_DIR/CaptureSpike.App.deps.json" "$APPDIR/usr/bin/CaptureSpike.App.deps.json" 2>/dev/null || true
+cp "$PUBLISH_DIR/CaptureSpike.App.runtimeconfig.json" "$APPDIR/usr/bin/CaptureSpike.App.runtimeconfig.json" 2>/dev/null || true
 chmod +x "$APPDIR/usr/bin/CaptureSpike.App"
 # All other files (DLLs, runtime, ffmpeg, mpv)
 cp -r "$PUBLISH_DIR/"*.dll "$APPDIR/usr/lib/capturespike/" 2>/dev/null || true
@@ -125,24 +134,9 @@ if [ -d "$PUBLISH_DIR/usr/share/icons/hicolor" ]; then
     cp -r "$PUBLISH_DIR/usr/share/icons/hicolor/." "$APPDIR/usr/share/icons/hicolor/"
 fi
 
-# appimagetool requires the .desktop file at the root
-# of the AppDir (it reads Categories, Exec, etc. from
-# there) AND in usr/share/applications/ for system
-# integration when the AppImage is extracted.
-cp "$REPO_ROOT/src/CaptureSpike.App/Assets/capturespike.desktop" \
-   "$APPDIR/capturespike.desktop"
-cp "$REPO_ROOT/src/CaptureSpike.App/Assets/capturespike.desktop" \
-   "$APPDIR/usr/share/applications/capturespike.desktop"
-
-# appimagetool also requires the icon at the AppDir root
-# (with the name from the .desktop file's Icon= key) and
-# a .DirIcon symlink. The 256x256 PNG from the hicolor
-# set is the right size for this.
-ICON_SRC="$APPDIR/usr/share/icons/hicolor/256x256/apps/capturespike.png"
-if [ -f "$ICON_SRC" ]; then
-    cp "$ICON_SRC" "$APPDIR/capturespike.png"
-    ln -s capturespike.png "$APPDIR/.DirIcon"
-fi
+# AppStream metadata for app stores (e.g. elementary
+# AppCenter reads /usr/share/metainfo/*.appdata.xml).
+# AppImage metadata follows.
 
 # AppStream metadata (optional but recommended for
 # AppImageHub submission and for file managers that
@@ -189,6 +183,51 @@ cat > "$APPDIR/usr/share/metainfo/io.github.Interfer0.CaptureSpike.appdata.xml" 
   </categories>
 </component>
 METAINFO_EOF
+
+# Desktop file for the AppImage. The Exec= points at
+# the AppRun script, which sets up the runtime and
+# invokes the .NET binary. Different from the
+# capturespike.desktop in src/.../Assets/ which is
+# the dev-mode launcher (dotnet CaptureSpike.App.dll).
+cat > "$APPDIR/capturespike.desktop" <<'APPIMAGE_DESKTOP_EOF'
+[Desktop Entry]
+Type=Application
+Name=CaptureSpike
+GenericName=Multi-source recorder
+Comment=Record screen and audio from multiple sources in sync
+Exec=AppRun %u
+Icon=capturespike
+Terminal=false
+Categories=AudioVideo;Audio;Video;Recorder;
+Keywords=screen;recording;audio;video;capture;
+StartupNotify=true
+StartupWMClass=CaptureSpike
+APPIMAGE_DESKTOP_EOF
+
+cat > "$APPDIR/usr/share/applications/capturespike.desktop" <<'APPIMAGE_DESKTOP_EOF'
+[Desktop Entry]
+Type=Application
+Name=CaptureSpike
+GenericName=Multi-source recorder
+Comment=Record screen and audio from multiple sources in sync
+Exec=AppRun %u
+Icon=capturespike
+Terminal=false
+Categories=AudioVideo;Audio;Video;Recorder;
+Keywords=screen;recording;audio;video;capture;
+StartupNotify=true
+StartupWMClass=CaptureSpike
+APPIMAGE_DESKTOP_EOF
+
+# appimagetool requires the icon at the AppDir root
+# (with the name from the .desktop file's Icon= key)
+# and a .DirIcon symlink. The 256x256 PNG from the
+# hicolor set is the right size for this.
+ICON_SRC="$APPDIR/usr/share/icons/hicolor/256x256/apps/capturespike.png"
+if [ -f "$ICON_SRC" ]; then
+    cp "$ICON_SRC" "$APPDIR/capturespike.png"
+    ln -s capturespike.png "$APPDIR/.DirIcon"
+fi
 
 # AppRun: the entry point that the AppImage runtime
 # invokes. Sets up the environment so the .NET binary
@@ -245,8 +284,24 @@ chmod +x "$DEB_ROOT/opt/capturespike/CaptureSpike.App"
 if [ -d "$PUBLISH_DIR/usr/share/icons/hicolor" ]; then
     cp -r "$PUBLISH_DIR/usr/share/icons/hicolor/." "$DEB_ROOT/usr/share/icons/hicolor/"
 fi
-cp "$REPO_ROOT/src/CaptureSpike.App/Assets/capturespike.desktop" \
-   "$DEB_ROOT/usr/share/applications/capturespike.desktop"
+# Desktop file for the .deb. Exec= points at the
+# .deb's install path (/opt/capturespike/), not at
+# the dev-mode `dotnet CaptureSpike.App.dll` that
+# the source repo's capturespike.desktop uses.
+cat > "$DEB_ROOT/usr/share/applications/capturespike.desktop" <<'DEB_DESKTOP_EOF'
+[Desktop Entry]
+Type=Application
+Name=CaptureSpike
+GenericName=Multi-source recorder
+Comment=Record screen and audio from multiple sources in sync
+Exec=/opt/capturespike/CaptureSpike.App %u
+Icon=capturespike
+Terminal=false
+Categories=AudioVideo;Audio;Video;Recorder;
+Keywords=screen;recording;audio;video;capture;
+StartupNotify=true
+StartupWMClass=CaptureSpike
+DEB_DESKTOP_EOF
 # AppStream metadata for app stores (e.g. elementary
 # AppCenter reads /usr/share/metainfo/*.appdata.xml).
 cp "$REPO_ROOT/dist/AppDir/usr/share/metainfo/io.github.Interfer0.CaptureSpike.appdata.xml" \
