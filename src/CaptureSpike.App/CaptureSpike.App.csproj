@@ -96,30 +96,38 @@
           Condition="'$(OS)' != 'Windows_NT'" WorkingDirectory="$(ProjectDir)" />
   </Target>
 
-  <!-- Build a multi-resolution .ico from the source PNG. Windows
-       wants 16/32/48/64/128/256 sizes packed into one .ico
-       so the Start Menu, Alt-Tab switcher, and installer
-       wizard all render the right resolution.
-       We DO NOT generate this automatically because there
-       is no portable PNG-to-ICO tool bundled with .NET
-       (ImageMagick isn't a standard Windows tool; ffmpeg
-       requires a custom format string; System.Drawing
-       on .NET Core isn't available without
-       `System.Drawing.Common` which is Windows-only).
-       Instead, this target is a no-op placeholder; the
-       .ico file should be checked into the repo
-       (gitignored by .gitignore's existing
-       capturespike-icon.ico line) by running:
+  <!-- Build a multi-resolution .ico from the source PNG.
+       Windows wants 16/32/48/64/128/256 sizes packed into
+       one .ico so the Start Menu, Alt-Tab switcher, and
+       installer wizard all render at the right resolution.
 
-         magick capturespike-icon.png \
-           -define icon:auto-resize=256,128,64,48,32,16 \
-           capturespike-icon.ico
+       We use ffmpeg (already a project dep; the app
+       itself ships with ffmpeg) to downscale the PNG,
+       then a small Python script (scripts/build_ico.py)
+       to combine the PNGs into a valid .ico container.
+       No ImageMagick required, no System.Drawing
+       package needed; everything is portable.
 
-       on a build machine that has ImageMagick. The .iss
-       script's SetupIconFile= reference falls back to
-       a default icon if the .ico is missing, so the
-       installer still builds — it just uses a generic
-       wizard icon. -->
+       The .ico is checked in to the repo so the build
+       is reproducible and CI doesn't need to regenerate
+       it. The target is a no-op if the .ico already
+       exists; delete it to force regeneration. -->
+  <Target Name="BuildWindowsIco" BeforeTargets="Publish"
+          Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041' And '$(OS)' == 'Windows_NT' And !Exists('Assets/capturespike-icon.ico')">
+    <PropertyGroup>
+      <_IcoSource>$(MSBuildProjectDirectory)/Assets/capturespike-icon.png</_IcoSource>
+      <_IcoOut>$(MSBuildProjectDirectory)/Assets/capturespike-icon.ico</_IcoOut>
+      <_IcoScript>$(MSBuildProjectDirectory)/../scripts/build_ico.py</_IcoScript>
+    </PropertyGroup>
+    <Exec Command="mkdir -p $([System.IO.Path]::Combine('$(TEMP)', 'cs-ico'))" />
+    <Exec Command="ffmpeg -loglevel error -y -i &quot;$(_IcoSource)&quot; -vf scale=256:256 &quot;$([System.IO.Path]::Combine('$(TEMP)', 'cs-ico', '256.png'))&quot;" />
+    <Exec Command="ffmpeg -loglevel error -y -i &quot;$(_IcoSource)&quot; -vf scale=128:128 &quot;$([System.IO.Path]::Combine('$(TEMP)', 'cs-ico', '128.png'))&quot;" />
+    <Exec Command="ffmpeg -loglevel error -y -i &quot;$(_IcoSource)&quot; -vf scale=64:64 &quot;$([System.IO.Path]::Combine('$(TEMP)', 'cs-ico', '64.png'))&quot;" />
+    <Exec Command="ffmpeg -loglevel error -y -i &quot;$(_IcoSource)&quot; -vf scale=48:48 &quot;$([System.IO.Path]::Combine('$(TEMP)', 'cs-ico', '48.png'))&quot;" />
+    <Exec Command="ffmpeg -loglevel error -y -i &quot;$(_IcoSource)&quot; -vf scale=32:32 &quot;$([System.IO.Path]::Combine('$(TEMP)', 'cs-ico', '32.png'))&quot;" />
+    <Exec Command="ffmpeg -loglevel error -y -i &quot;$(_IcoSource)&quot; -vf scale=16:16 &quot;$([System.IO.Path]::Combine('$(TEMP)', 'cs-ico', '16.png'))&quot;" />
+    <Exec Command="python &quot;$(_IcoScript)&quot; &quot;$([System.IO.Path]::Combine('$(TEMP)', 'cs-ico'))&quot; &quot;$(_IcoOut)&quot;" />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.1.3" />
