@@ -24,23 +24,22 @@
  * header from the start of the file.
  *
  * Protocol on the Unix socket:
- *   - One "stream header" written at start:
- *       4 bytes  magic "CSWH"
- *       4 bytes  version (1)
- *       4 bytes  width  (LE)
- *       4 bytes  height (LE)
- *       4 bytes  format code (1 = BGRA, 2 = BGR0)
- *       4 bytes  framerate numerator (LE)
- *       4 bytes  framerate denominator (LE)
- *     Total: 32 bytes
- *   - Then per-frame:
- *       4 bytes  stride (LE) -- == width * 4 for BGRA
- *       4 bytes  flags (LE)  -- 0 = keyframe, 1 = end of stream
- *       N bytes  pixel data
+ *   - NO header. The helper writes a flat stream of
+ *     raw BGRA (or BGR0) frames. ffmpeg's rawvideo
+ *     demuxer reads them as a sequence of frames
+ *     based on the -video_size and -framerate args
+ *     the .NET layer passed to ffmpeg.
+ *   - On end-of-stream (or SIGINT), the helper closes
+ *     the connection. ffmpeg's demuxer sees EOF and
+ *     shuts down cleanly.
  *
- * PipeWire interaction uses libpipewire. Portal
- * interaction uses libportal (the C library that wraps
- * the org.freedesktop.portal.ScreenCast D-Bus API).
+ * Wire format on stderr (for the .NET layer to read):
+ *   The helper writes ONE line of the form
+ *     "CSWH W=<width> H=<height> FPS=<fps>\n"
+ *   to stderr before opening the PipeWire stream. The
+ *   C# side reads this to learn the negotiated
+ *   dimensions and framerate, then constructs the
+ *   matching ffmpeg args.
  *
  * Build:
  *   sudo apt install libpipewire-0.3-dev libportal-dev
@@ -78,12 +77,11 @@
 #include <pipewire/stream.h>
 #include <spa/param/video/format-utils.h>
 
-/* Raw video format codes (must match the C# side's
- * RawVideoFormat enum). */
-#define CSWH_MAGIC     "CSWH"
-#define CSWH_VERSION   1
-#define CSWH_FORMAT_BGRA 1
-#define CSWH_FORMAT_BGR0 2
+/* Source types (org.freedesktop.portal.ScreenCast.SourceType).
+ * Must match libportal's XdpScreenCastSourceType enum values. */
+#define SOURCE_TYPE_MONITOR 1
+#define SOURCE_TYPE_WINDOW  2
+#define SOURCE_TYPE_REGION  4
 
 #define EXIT_OK              0
 #define EXIT_BAD_ARGS        1
@@ -91,12 +89,6 @@
 #define EXIT_PIPEWIRE_FAILED 3
 #define EXIT_STREAM_ERROR    4
 #define EXIT_USER_CANCELLED  5
-
-/* Source types (org.freedesktop.portal.ScreenCast.SourceType).
- * Must match libportal's XdpScreenCastSourceType enum values. */
-#define SOURCE_TYPE_MONITOR 1
-#define SOURCE_TYPE_WINDOW  2
-#define SOURCE_TYPE_REGION  4
 
 /* Globals. Cleaned up in main()'s cleanup path. */
 static volatile sig_atomic_t g_interrupted = 0;
@@ -116,7 +108,16 @@ static void on_sigint(int sig) {
     if (g_loop) pw_main_loop_quit(g_loop);
 }
 
-/* ---- Socket protocol ---- */
+/* ---- Socket protocol ----
+ *
+ * The Unix socket carries a flat stream of raw frames,
+ * no header. ffmpeg's rawvideo demuxer reads them
+ * based on the -video_size and -framerate args the
+ * .NET layer passed. The negotiated size is also
+ * reported on stderr (see emit_header_line) so the
+ * C# side can construct those args before ffmpeg
+ * connects.
+ */
 
 static int write_all(int fd, const void *buf, size_t len) {
     const char *p = buf;
@@ -132,35 +133,15 @@ static int write_all(int fd, const void *buf, size_t len) {
     return 0;
 }
 
-static int write_stream_header(void) {
-    unsigned char hdr[32];
-    memcpy(hdr, CSWH_MAGIC, 4);
-    uint32_t v = CSWH_VERSION, w = g_frame_width, h = g_frame_height;
-    uint32_t fmt = g_frame_format, n = g_framerate_num, d = g_framerate_den;
-    memcpy(hdr + 4,  &v, 4);
-    memcpy(hdr + 8,  &w, 4);
-    memcpy(hdr + 12, &h, 4);
-    memcpy(hdr + 16, &fmt, 4);
-    memcpy(hdr + 20, &n, 4);
-    memcpy(hdr + 24, &d, 4);
-    memcpy(hdr + 28, "\0\0\0\0", 4); /* reserved */
-    return write_all(g_socket_fd, hdr, sizeof(hdr));
-}
-
-static int write_frame(const void *pixels, size_t stride, size_t size) {
-    unsigned char meta[8];
-    uint32_t s = (uint32_t)stride, flags = 0;
-    memcpy(meta, &s, 4);
-    memcpy(meta + 4, &flags, 4);
-    if (write_all(g_socket_fd, meta, 8) < 0) return -1;
-    return write_all(g_socket_fd, pixels, size);
-}
-
-static int write_end_of_stream(void) {
-    unsigned char meta[8] = {0};
-    uint32_t flags = 1;
-    memcpy(meta + 4, &flags, 4);
-    return write_all(g_socket_fd, meta, 8);
+/* Write the "CSWH W=... H=... FPS=..." line on stderr so
+ * the .NET layer can read the negotiated size and pass
+ * it to ffmpeg as -video_size and -framerate. Called
+ * once, from on_stream_param_changed, after the
+ * PipeWire format is negotiated. */
+static void emit_header_line(int width, int height, int fps_num, int fps_den) {
+    double fps = fps_den > 0 ? (double)fps_num / (double)fps_den : 0.0;
+    fprintf(stderr, "CSWH W=%d H=%d FPS=%.2f\n", width, height, fps);
+    fflush(stderr);
 }
 
 /* ---- Unix socket setup ---- */
@@ -225,19 +206,25 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
     g_framerate_num = fmt.framerate.num;
     g_framerate_den = fmt.framerate.den;
 
-    /* Map SPA pixel format to our wire format code. */
+    /* Validate the pixel format. We support BGRA and
+     * BGRx/BGR0. Anything else is rejected; the C#
+     * layer will fall back or error out. */
     switch (fmt.format) {
-        case SPA_VIDEO_FORMAT_BGRA: g_frame_format = CSWH_FORMAT_BGRA; break;
+        case SPA_VIDEO_FORMAT_BGRA: g_frame_format = 1; break;
         case SPA_VIDEO_FORMAT_BGRx:
-        case SPA_VIDEO_FORMAT_BGR0: g_frame_format = CSWH_FORMAT_BGR0; break;
+        case SPA_VIDEO_FORMAT_BGR0: g_frame_format = 2; break;
         default:
-            fprintf(stderr, "cs-pw-helper: unsupported pixel format %d, trying BGRA\n", fmt.format);
-            g_frame_format = CSWH_FORMAT_BGRA;
+            fprintf(stderr, "cs-pw-helper: unsupported pixel format %d\n", fmt.format);
+            return;
     }
     g_frame_stride = g_frame_width * 4; /* BGRA = 4 bytes/pixel */
 
     fprintf(stderr, "cs-pw-helper: video %dx%d @ %d/%d fps, format code %d\n",
         g_frame_width, g_frame_height, g_framerate_num, g_framerate_den, g_frame_format);
+
+    /* Tell the .NET layer the negotiated size so it can
+     * build ffmpeg args. */
+    emit_header_line(g_frame_width, g_frame_height, g_framerate_num, g_framerate_den);
 }
 
 static void on_stream_process(void *data) {
@@ -250,7 +237,11 @@ static void on_stream_process(void *data) {
             pw_stream_queue_buffer(g_stream, buf);
             continue;
         }
-        if (write_frame(d->data, g_frame_stride, d->size) < 0) {
+        /* Write the raw pixel data straight to the
+         * socket. ffmpeg's rawvideo demuxer will read
+         * these as a flat sequence of frames based on
+         * the size and framerate we told it. */
+        if (write_all(g_socket_fd, d->data, d->size) < 0) {
             fprintf(stderr, "cs-pw-helper: write to socket failed: %s\n", strerror(errno));
             pw_stream_queue_buffer(g_stream, buf);
             pw_main_loop_quit(g_loop);

@@ -3,6 +3,7 @@
 
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using CaptureSpike.Core.Capture.Wayland;
 
 namespace CaptureSpike.Core.Capture;
 
@@ -70,25 +71,39 @@ public static class CaptureFactory
 
     private static ISourceCapturer CreateLinux(Project project, ProjectSource source, string outputFile, string ffmpeg)
     {
-        // Wayland screen capture is not yet supported. The
-        // X11 path is kept for users who run an X11 session
-        // or XWayland (XDG_SESSION_TYPE=x11). On native
-        // Wayland sessions, ffmpeg's x11grab can't see the
-        // screen and would fail with a cryptic
-        // "Cannot open display" error; fail fast with a
-        // clear message and link to the design doc. Audio
-        // capture (pulse) works the same on both, so
-        // mic / system-audio sources still go through.
-        // The full Wayland story is in docs/WAYLAND.md.
+        // Wayland screen capture is not yet supported by
+        // the X11 path. The WaylandCapturer composes the
+        // cs-pw-helper subprocess (which talks to
+        // xdg-desktop-portal + PipeWire) with ffmpeg over
+        // a Unix socket. Audio sources stay on the X11
+        // path because PulseAudio is the same on both
+        // display servers. The full Wayland story lives
+        // in docs/WAYLAND.md.
         var session = LinuxSession.Current;
-        if (source.Kind.IsVideo() && source.Kind is SourceKind.Screen or SourceKind.Window
+        if (source.Kind is SourceKind.Screen or SourceKind.Window
             && session == LinuxSession.DisplayServer.Wayland)
         {
-            throw new CaptureException(source.Id,
-                $"Screen capture is not yet supported on Wayland sessions " +
-                $"(current display server: {LinuxSession.CurrentName}). " +
-                "Log into an X11 session to record the screen, or see " +
-                "docs/WAYLAND.md for the in-progress Wayland support.");
+            // The cs-pw-helper binary lives next to ffmpeg
+            // (both bundled in tools/linux-x64/ by
+            // fetch-tools.sh). We look there directly
+            // rather than going through ToolPaths,
+            // which is ffmpeg-specific.
+            var helper = Path.Combine(
+                Path.GetDirectoryName(ffmpeg) ?? "",
+                "cs-pw-helper");
+            if (!File.Exists(helper))
+            {
+                throw new CaptureException(source.Id,
+                    $"cs-pw-helper is not bundled with this build (looked at '{helper}'). " +
+                    "The Wayland screen-capture helper is required on Wayland sessions. " +
+                    "Build the helper from installer/linux/cs-pw-helper/ and copy it next to ffmpeg, " +
+                    "or install CaptureSpike from a build that includes it.");
+            }
+            return new WaylandCapturer(
+                source.Id, outputFile, helper, ffmpeg,
+                framerate: project.Fps,
+                sourceType: 1, /* monitor */
+                includeCursor: true);
         }
 
         var args = BaseArgs();
