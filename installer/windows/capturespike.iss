@@ -45,7 +45,10 @@ DisableProgramGroupPage=yes
 ; (e.g. a USB drive, D:\Tools\CaptureSpike). Per-user
 ; install — no admin elevation needed.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+; Inno Setup 7.x renamed this directive; the 6.x form
+; was PrivilegesRequiredOverridesAllowed, but 7.x uses
+; PrivilegesRequiredOverrideAllowed (no trailing s).
+PrivilegesRequiredOverrideAllowed=dialog
 ; Output goes to dist/ so it stays out of the repo (.gitignore).
 OutputDir=..\..\dist
 OutputBaseFilename=CaptureSpike-Setup-{#APP_VERSION}
@@ -79,10 +82,11 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-; "Privileges required" message shown in the header of the
-; install wizard. The 'lowest' setting is reflected here so
-; the user knows they don't need admin rights.
-PrivilegesRequiredOverrideAllowed=yes
+; The setting is `PrivilegesRequiredOverrideAllowed=yes`
+; above (Inno Setup 7.x form; the 6.x form had a
+; trailing s). The user is allowed to override the
+; 'lowest' setting via a dialog if they want to install
+; for all users.
 Uninstallable=yes
 VersionInfoVersion={#APP_VERSION}
 VersionInfoCompany={#MyAppPublisher}
