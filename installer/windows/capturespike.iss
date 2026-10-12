@@ -24,6 +24,14 @@
 #ifndef APP_VERSION
   #define APP_VERSION "0.0.0-dev"
 #endif
+; VersionInfoVersion requires up to 4 numbers separated
+; by dots. A pre-release suffix like '-alpha.1' (which
+; AppVersion and the output filename keep) is rejected
+; here. The build script computes APP_VERSION_NUMERIC
+; from APP_VERSION by stripping the suffix.
+#ifndef APP_VERSION_NUMERIC
+  #define APP_VERSION_NUMERIC "0.0.0"
+#endif
 #define MyAppExeName "CaptureSpike.App.exe"
 
 [Setup]
@@ -91,7 +99,7 @@ MinVersion=10.0
 ; lets the user override the 'lowest' default via a
 ; dialog if they want to install for all users.
 Uninstallable=yes
-VersionInfoVersion={#APP_VERSION}
+VersionInfoVersion={#APP_VERSION_NUMERIC}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} installer
 

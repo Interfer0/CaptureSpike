@@ -83,12 +83,21 @@ Copy-Item (Join-Path $winTools "*") $bundledTools -Recurse -Force
 Write-Host "==> Step 4/4: iscc"
 
 # Read the version from the .csproj. The .iss file uses
-# {#APP_VERSION} which we set via /DAPP_VERSION=.
+# {#APP_VERSION} for AppVersion and the output filename
+# (so the alpha suffix is preserved), and
+# {#APP_VERSION_NUMERIC} for VersionInfoVersion which
+# Inno Setup requires to be just numbers and dots.
 $csproj = Get-Content (Join-Many @($repoRoot, "src", "CaptureSpike.App", "CaptureSpike.App.csproj")) -Raw
 $versionMatch = [regex]::Match($csproj, '<Version>([^<]+)</Version>')
 $appVersion = if ($versionMatch.Success) { $versionMatch.Groups[1].Value } else { "0.0.0-dev" }
 
-& $iscc /DAPP_VERSION=$appVersion (Join-Many @($PSScriptRoot, "capturespike.iss"))
+# Strip the pre-release suffix for VersionInfoVersion.
+# "0.1.0-alpha.1" -> "0.1.0", "1.2.3-rc.4" -> "1.2.3".
+# SemVer pre-release identifiers come after the first '-'.
+$numericMatch = [regex]::Match($appVersion, '^(\d+(?:\.\d+){0,3})')
+$appVersionNumeric = if ($numericMatch.Success) { $numericMatch.Groups[1].Value } else { "0.0.0" }
+
+& $iscc /DAPP_VERSION=$appVersion /DAPP_VERSION_NUMERIC=$appVersionNumeric (Join-Many @($PSScriptRoot, "capturespike.iss"))
 if ($LASTEXITCODE -ne 0) { throw "iscc failed with code $LASTEXITCODE" }
 
 $installer = Join-Many @($repoRoot, "dist", "CaptureSpike-Setup-$appVersion.exe")
