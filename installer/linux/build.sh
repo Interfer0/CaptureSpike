@@ -259,6 +259,7 @@ DEB_ROOT="$REPO_ROOT/dist/deb"
 rm -rf "$DEB_ROOT"
 mkdir -p "$DEB_ROOT/DEBIAN"
 mkdir -p "$DEB_ROOT/opt/capturespike"
+mkdir -p "$DEB_ROOT/usr/bin"
 mkdir -p "$DEB_ROOT/usr/share/applications"
 mkdir -p "$DEB_ROOT/usr/share/icons/hicolor"
 mkdir -p "$DEB_ROOT/usr/share/doc/capturespike"
@@ -376,6 +377,13 @@ cp "$REPO_ROOT/NOTICE" "$DEB_ROOT/usr/share/doc/capturespike/NOTICE"
 cp "$REPO_ROOT/LICENSE" "$DEB_ROOT/usr/share/licenses/capturespike/LICENSE"
 cp "$REPO_ROOT/tools/THIRD-PARTY-LICENSES.md" \
    "$DEB_ROOT/usr/share/doc/capturespike/THIRD-PARTY-LICENSES.md"
+
+# Launcher symlink in /usr/bin so 'capturespike' on
+# the command line works. The /usr/bin/capturespike
+# name matches the package name and the .desktop
+# file's StartupWMClass. dpkg preserves symlinks
+# across upgrades (they're not conffiles).
+ln -s /opt/capturespike/CaptureSpike.App "$DEB_ROOT/usr/bin/capturespike"
 
 # --- Step 7: Build .deb ---
 echo "==> Step 7/7: dpkg-deb"
