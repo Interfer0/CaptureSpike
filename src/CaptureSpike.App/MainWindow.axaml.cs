@@ -15,12 +15,23 @@ public partial class MainWindow : Window
         AvaloniaXamlLoader.Load(this);
         RestoreWindowBounds();
         // App icon (optional: only if the asset was synced).
+        // Prefer the .ico (multi-resolution) over the PNG;
+        // Windows picks the right size from the .ico for
+        // the title bar / taskbar without upscaling.
         try
         {
             Icon = new WindowIcon(
-                Avalonia.Platform.AssetLoader.Open(new Uri("avares://CaptureSpike.App/Assets/capturespike-icon.png")));
+                Avalonia.Platform.AssetLoader.Open(new Uri("avares://CaptureSpike.App/Assets/capturespike-icon.ico")));
         }
-        catch { /* default icon */ }
+        catch
+        {
+            try
+            {
+                Icon = new WindowIcon(
+                    Avalonia.Platform.AssetLoader.Open(new Uri("avares://CaptureSpike.App/Assets/capturespike-icon.png")));
+            }
+            catch { /* default icon */ }
+        }
 
         Opened += (_, _) =>
         {

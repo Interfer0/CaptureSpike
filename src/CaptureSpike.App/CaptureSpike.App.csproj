@@ -9,6 +9,14 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <OutputType>WinExe</OutputType>
+    <!-- Embed the .ico as the .exe's icon resource. Without
+         this, the .exe has no icon (Windows shows a generic
+         icon in File Explorer, taskbar previews, and Alt-Tab).
+         The .ico is the multi-resolution one built by
+         BuildWindowsIco target (16/32/48/64/128/256 packed
+         into a single file). Only set on the Windows TFM;
+         the Linux TFM doesn't use .ico files. -->
+    <ApplicationIcon Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041'">Assets\capturespike-icon.ico</ApplicationIcon>
     <RootNamespace>CaptureSpike.App</RootNamespace>
     <!-- .axaml files are compiled by Avalonia -->
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
@@ -24,6 +32,14 @@
        clone. -->
   <ItemGroup>
     <AvaloniaResource Include="Assets\capturespike-icon.png" Condition="Exists('Assets\capturespike-icon.png')" />
+    <!-- Embed the .ico too. Avalonia loads the .ico as
+         a WindowIcon at runtime, and Windows uses the
+         same .ico for the taskbar/title bar at the
+         right resolution (16 for the title bar, 32 for
+         the taskbar, etc.). Without this, the
+         WindowIcon code falls back to the PNG which
+         Windows scales up blurrily at small sizes. -->
+    <AvaloniaResource Include="Assets\capturespike-icon.ico" Condition="Exists('Assets\capturespike-icon.ico')" />
   </ItemGroup>
 
   <!-- Linux desktop entry: copied into the publish

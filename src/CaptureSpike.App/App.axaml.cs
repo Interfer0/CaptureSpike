@@ -82,13 +82,28 @@ public partial class App : Application
     private void SetupTrayIcon(IClassicDesktopStyleApplicationLifetime desktop,
         Window window, MainViewModel vm)
     {
+        // Try the .ico first (multi-resolution: 16/32/48/64/128/256
+        // packed into one file, so Windows picks the right
+        // resolution for the title bar / taskbar / tray
+        // without upscaling). Fall back to the PNG if the
+        // .ico isn't in the publish output (e.g. the
+        // user built from source on a platform where the
+        // .ico build target didn't run).
         WindowIcon? icon = null;
         try
         {
             icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(
-                new Uri("avares://CaptureSpike.App/Assets/capturespike-icon.png")));
+                new Uri("avares://CaptureSpike.App/Assets/capturespike-icon.ico")));
         }
-        catch { /* tray without icon */ }
+        catch
+        {
+            try
+            {
+                icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(
+                    new Uri("avares://CaptureSpike.App/Assets/capturespike-icon.png")));
+            }
+            catch { /* tray without icon */ }
+        }
 
         var stopItem = new NativeMenuItem("Stop Recording");
         stopItem.Click += (_, _) => vm.StopRecordingFromTray();
