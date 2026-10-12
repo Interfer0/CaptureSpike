@@ -51,7 +51,18 @@ OutputDir=..\..\dist
 OutputBaseFilename=CaptureSpike-Setup-{#APP_VERSION}
 ; Modern UI: install wizard, not the old wizard-from-2003.
 WizardStyle=modern
-; Display the README during install.
+; Show the GPL-3.0 license text on the License page
+; before the user clicks "I agree". This is required
+; for the GPL to be legally valid in some jurisdictions
+; (the user must have the opportunity to read the
+; license terms before installing).
+;
+; The LICENSE.txt file is the standard FSF GPL-3.0
+; text, kept plain (Windows-1252 compatible, no
+; Markdown) so Inno Setup can display it without
+; formatting glitches. It's checked into the repo
+; alongside this script.
+LicenseFile=LICENSE.txt
 ;
 ; SetupIconFile= points at the multi-resolution .ico
 ; built by the BuildWindowsIco target (ffmpeg + Python).
@@ -95,6 +106,17 @@ Source: "..\..\dist\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion r
 ; the .NET runtime's MIT license is included by the SDK
 ; but we ship our own bundled-licenses file too.
 Source: "..\..\tools\THIRD-PARTY-LICENSES.md"; DestDir: "{app}"; Flags: ignoreversion
+; The GPL-3.0 license text is shown in the installer
+; wizard (LicenseFile= above) but we also install a
+; copy next to the .exe so the user can read it later
+; without re-running the installer.
+Source: "LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+; The project NOTICE file (copyright + bundled
+; attributions) is required by GPL-3.0 section 5
+; (preservation of attribution when the program
+; is modified and redistributed). Install it
+; alongside the LICENSE.txt.
+Source: "..\..\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; Start Menu entry. Per-user installs go under

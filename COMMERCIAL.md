@@ -41,20 +41,22 @@ the annual price.
 
 ## Contact
 
-To inquire about a commercial license, please contact:
+To inquire about a commercial license, **open a GitHub
+Issue** at https://github.com/Interfer0/CaptureSpike/issues/new
 
-**Daniel Bigelow**
-Email: see the GitHub profile of [@Interfer0](https://github.com/Interfer0)
-(public email address, if visible) or open a GitHub Issue
-with the word `[commercial]` in the title and we will
-follow up by email.
+- Title must start with `[commercial]`
+- Body should include:
+  - Your company name and website
+  - A short description of the product or use case
+  - Approximate number of developers and end users
+  - Whether you need modifications from upstream
 
-Please include:
-
-- Your company name and website
-- A short description of the product or use case
-- Approximate number of developers and end users
-- Whether you need modifications from upstream
+GitHub does not have a direct-message feature, so issues
+are the only built-in way to reach the project owner
+without exposing a personal email address. Issues with
+`[commercial]` in the title are filtered and replied to
+privately via the issue thread (you'll be asked to share
+a contact email in the reply).
 
 We typically respond within 1-2 business days.
 
