@@ -7,10 +7,12 @@ using System.IO;
 
 #if WINDOWS
 using System.Runtime.InteropServices;
-using Windows.Graphics;
-using Windows.Graphics.Capture;
-using Windows.Graphics.DirectX;
-using Windows.Graphics.DirectX.Direct3D11;
+using System.Threading.Tasks;
+using global::Windows.Graphics;
+using global::Windows.Graphics.Capture;
+using global::Windows.Graphics.DirectX;
+using global::Windows.Graphics.DirectX.Direct3D11;
+using CaptureSpike.Core.Capture.Windows;
 using WinRT.Interop;
 #endif
 
@@ -55,8 +57,9 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
     private readonly int _framerate;
 #if WINDOWS
     private readonly IntPtr _parentHwnd;
-    private readonly Direct3D11CaptureFramePool? _framePool;
-    private readonly GraphicsCaptureSession? _session;
+    private D3D11FrameReader? _frameReader;
+    private IDisposable? _framePoolDisposable;
+    private IDisposable? _sessionDisposable;
 #endif
     private Process? _process;
     private readonly List<string> _stderrTail = new();
@@ -117,40 +120,18 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         }
         var (width, height) = (item.Size.Width, item.Size.Height);
 
-        // Step 2: create a Direct3D 11 device and a frame
-        // pool. IDirect3DDevice is the WinRT handle; the
-        // Direct3D11Device is the CsWinRT projection.
-        //
-        // Creating the device requires the D3D11 constant
-        // for the feature level (D3D_FEATURE_LEVEL_11_0).
-        // The standard pattern is:
-        //
-        //   using Silk.NET.Direct3D11; (or Vortice.Windows
-        //   or SharpDX — any of the D3D11 bindings)
-        //   var dxDevice = D3D11.CreateDevice(...);
-        //   var device = Direct3D11Helpers.CreateDevice(...);
-        //
-        // We don't take on a D3D11 binding just for this
-        // one call. Instead, see
-        //   docs/WINDOWS-CAPTURE.md
-        // for the integration plan that includes either:
-        //   (a) adding a small P/Invoke layer for
-        //       D3D11CreateDevice, or
-        //   (b) adding the Silk.NET.Direct3D11 package
-        //       (the lightest D3D11 binding).
-        //
-        // For now, throw a clear error so the picker
-        // path is testable but the frame-receiving path
-        // is gated on finishing the D3D11 wrapper.
-        throw new CaptureException(SourceId,
-                    "WindowsGraphicsCapturer needs a Direct3D 11 device to start the " +
-                    "frame pool. The device creation step isn't wired up yet — see " +
-                    "docs/WINDOWS-CAPTURE.md. The picker UI works (try it to confirm the " +
-                    "WGC plumbing is sound); the GPU-to-CPU surface copy is the " +
-                    "remaining piece.");
-        var d3dDevice = (IDirect3DDevice)null!;
-        var framePool = (Direct3D11CaptureFramePool)null!;
-        var session = (GraphicsCaptureSession)null!;
+        // Step 2: create a D3D11 device, then wrap it in
+        // the WinRT IDirect3DDevice that the frame pool
+        // needs. The D3D11FrameReader creates both and
+        // keeps the raw ID3D11Device* for surface copies.
+        var d3dDevice = D3D11FrameReader.CreateWinRtDevice(out _);
+        var frameReader = new D3D11FrameReader(d3dDevice);
+        var framePool = Direct3D11CaptureFramePool.Create(
+            d3dDevice,
+            DirectXPixelFormat.B8G8R8A8UIntNormalized,
+            2, // two buffers; one being filled, one being consumed
+            item.Size);
+        var session = framePool.CreateCaptureSession(item);
 
         // Step 3: launch ffmpeg reading rawvideo from
         // stdin. The output side is the same as the
@@ -191,7 +172,10 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
             {
                 using var frame = sender.TryGetNextFrame();
                 if (frame is null) return;
-                WriteFrameToStdin(frame, d3dDevice, stdin, width, height, ct);
+                var (pixels, w, h) = frameReader.ReadFrame(frame);
+                stdin.Write(pixels, 0, pixels.Length);
+                stdin.Flush();
+                MarkFirstData();
             }
             catch (Exception ex)
             {
@@ -206,6 +190,11 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         };
 
         session.StartCapture();
+
+        // Stash for DisposeAsync.
+        _frameReader = frameReader;
+        _framePoolDisposable = framePool;
+        _sessionDisposable = session;
 
         // Step 5: wait for first data (same pattern as
         // FfmpegCapturer). 10s is generous for WGC;
@@ -278,23 +267,11 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
     ///    row pitch may differ from width*4 due to
     ///    alignment).
     /// 6. Write the bytes to stdin.
-    ///
-    /// Throws because the surface-copy P/Invoke is
-    /// unwritten. The rest of the pipeline (picker, frame
-    /// pool, ffmpeg process, first-data detection) is in
-    /// place.
+    /// (Surface copy is implemented in
+    /// <see cref="D3D11FrameReader"/> which does the
+    /// D3D11 CreateTexture2D / CopyResource / Map dance
+    /// via raw P/Invoke.)
     /// </summary>
-    private void WriteFrameToStdin(
-        Direct3D11CaptureFrame frame,
-        IDirect3DDevice device,
-        Stream stdin,
-        int width, int height,
-        CancellationToken ct)
-    {
-        throw new NotImplementedException(
-            "GPU-to-CPU surface copy is not yet implemented. " +
-            "See docs/WINDOWS-CAPTURE.md for the integration plan.");
-    }
 #endif
 
     public async Task StopAsync(CancellationToken ct)
@@ -327,9 +304,16 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         if (_disposed) return;
         _disposed = true;
 #if WINDOWS
-        // The frame pool disposes the session.
-        try { /* session?.Dispose() */ } catch { }
-        try { /* framePool?.Dispose() */ } catch { }
+        // Disposing the frame pool disposes the session
+        // implicitly (per the WinRT docs). The D3D11
+        // frame reader holds the raw ID3D11Device* + a
+        // staging texture, both freed on Dispose.
+        _sessionDisposable?.Dispose();
+        _framePoolDisposable?.Dispose();
+        _frameReader?.Dispose();
+        _sessionDisposable = null;
+        _framePoolDisposable = null;
+        _frameReader = null;
 #endif
         var process = _process;
         _process = null;
