@@ -264,17 +264,12 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
     /// interface that the activation factory implements.
     ///
     /// Path: WinRT activation factory (via
-    /// <c>WinRT.ActivationFactory.Get</c>) → manually
-    /// QueryInterface for the interop IID → call
-    /// <c>CreateForWindow</c> through the COM vtable →
+    /// <c>WinRT.ActivationFactory.Get</c>) →
+    /// <see cref="Marshal.QueryInterface"/> for the interop
+    /// IID → call <c>CreateForWindow</c> through the COM
+    /// vtable →
     /// <c>ABI.Windows.Graphics.Capture.GraphicsCaptureItem.FromAbi</c>
     /// to wrap the raw pointer in the managed projection.
-    ///
-    /// We use the manual QueryInterface + vtable-call
-    /// path because the IGraphicsCaptureItemInterop
-    /// interface is a custom one (not a CsWinRT-projected
-    /// type) so the higher-level IObjectReference.As&lt;T&gt;()
-    /// helper doesn't know how to instantiate it.
     /// </summary>
     private static GraphicsCaptureItem CreateItemFromWindow(IntPtr hwnd)
     {
@@ -290,13 +285,17 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
             // The factory is IActivationFactory (IInspectable)
             // by default; the IGraphicsCaptureItemInterop is
             // a separate interface that the same object also
-            // implements.
+            // implements. Use Marshal.QueryInterface (the
+            // proper .NET wrapper for IUnknown::QueryInterface
+            // — there is no direct P/Invoke entry point named
+            // "QueryInterface" in ole32.dll; it's a COM
+            // interface method, not a DLL export).
             var interopIid = typeof(IGraphicsCaptureItemInterop).GUID;
-            int hr = QueryInterface(factoryPtr, ref interopIid, out var interopPtr);
-            if (hr != 0 || interopPtr == IntPtr.Zero)
+            Marshal.QueryInterface(factoryPtr, in interopIid, out var interopPtr);
+            if (interopPtr == IntPtr.Zero)
             {
                 throw new InvalidOperationException(
-                    $"QueryInterface for IGraphicsCaptureItemInterop failed (hr=0x{hr:X}). " +
+                    "QueryInterface for IGraphicsCaptureItemInterop returned null. " +
                     "The activation factory may not implement this interface.");
             }
             try
@@ -305,10 +304,9 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
                 // IGraphicsCaptureItemInterop inherits IUnknown
                 // (3 methods), then has CreateForWindow at
                 // index 3. Calling convention is the C++
-                // member-function convention: thiscall on
-                // x86 (first arg = this, in ECX), thiscall
-                // doesn't exist on x64 (this is the first
-                // arg). .NET's [UnmanagedFunctionPointer] for
+                // member-function convention: on x64 the
+                // this pointer is the first arg, passed in
+                // RCX. .NET's [UnmanagedFunctionPointer] for
                 // COM is always StdCall. The first arg is
                 // the this pointer (we pass interopPtr).
                 var itemIid = GraphicsCaptureItemGuid;
@@ -340,11 +338,6 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
             factoryRef.Dispose();
         }
     }
-
-    // Raw QueryInterface declaration.
-    [DllImport("ole32.dll")]
-    private static extern int QueryInterface(
-        IntPtr pUnk, ref Guid iid, out IntPtr ppv);
 
     /// <summary>
     /// Call IGraphicsCaptureItemInterop::CreateForWindow
