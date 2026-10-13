@@ -413,8 +413,46 @@ internal sealed class D3D11FrameReader : IDisposable
     /// </summary>
     private static IntPtr GetDXGIInterface(object winRtObject, Guid iid)
     {
-        var access = (IDirect3DDxgiInterfaceAccess)winRtObject;
-        return access.GetInterface(ref iid);
+        // The WinRT IDirect3DSurface / IDirect3DDevice
+        // implements IDirect3DDxgiInterfaceAccess as a
+        // separate COM interface. To get at it, we
+        // need to QueryInterface from the underlying
+        // IUnknown*. We get that via the
+        // IObjectReference property on the .NET WinRT
+        // projection (WinRT types implement
+        // IWinRTObject, which exposes the raw pointer).
+        //
+        // This is the same pattern that worked for
+        // IGraphicsCaptureItemInterop: use
+        // WinRT.IObjectReference.As<T> or, if the
+        // target interface isn't a CsWinRT-projected
+        // type (like our IDirect3DDxgiInterfaceAccess),
+        // use GetTypedObjectForIUnknown with the IID.
+        var winRt = (WinRT.IWinRTObject)winRtObject;
+        var iObjectRef = winRt.NativeObject;
+        // QueryInterface for IDirect3DDxgiInterfaceAccess.
+        var accessIid = typeof(IDirect3DDxgiInterfaceAccess).GUID;
+        Marshal.QueryInterface(iObjectRef.ThisPtr, in accessIid, out var accessPtr);
+        if (accessPtr == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                "IDirect3DDxgiInterfaceAccess not implemented on the WinRT object.");
+        }
+        try
+        {
+            // Call GetInterface(ref iid) which is the
+            // IDirect3DDxgiInterfaceAccess method.
+            // The returned IntPtr is a +1 ref on the
+            // requested interface; caller releases.
+            var access =
+                (IDirect3DDxgiInterfaceAccess)Marshal.GetTypedObjectForIUnknown(
+                    accessPtr, typeof(IDirect3DDxgiInterfaceAccess));
+            return access.GetInterface(ref iid);
+        }
+        finally
+        {
+            Marshal.Release(accessPtr);
+        }
     }
 
     public void Dispose()
