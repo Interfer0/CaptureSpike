@@ -55,6 +55,7 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
 {
     private readonly string _ffmpeg;
     private readonly int _framerate;
+    private readonly string? _deviceId;
 #if WINDOWS
     private readonly IntPtr _parentHwnd;
     private D3D11FrameReader? _frameReader;
@@ -82,12 +83,14 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         string sourceId,
         string outputFile,
         string ffmpeg,
-        int framerate)
+        int framerate,
+        string? deviceId = null)
     {
         SourceId = sourceId;
         OutputFile = outputFile;
         _ffmpeg = ffmpeg;
         _framerate = framerate;
+        _deviceId = deviceId;
 #if WINDOWS
         _parentHwnd = WindowHandleProvider.MainWindowHandle
             ?? throw new CaptureException(sourceId,
@@ -106,18 +109,14 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         throw new PlatformNotSupportedException(
             "WindowsGraphicsCapturer is only supported on Windows.");
 #else
-        // Step 1: show the WGC picker and get the user's
-        // chosen window. The picker is async; the user
-        // can cancel by closing the dialog. We propagate
-        // the cancellation to the capturer's caller.
-        var picker = new GraphicsCapturePicker();
-        InitializeWithWindow.Initialize(picker, _parentHwnd);
-        var item = await picker.PickSingleItemAsync().AsTask(ct).ConfigureAwait(false);
-        if (item is null)
-        {
-            throw new CaptureException(SourceId,
-                "Window capture was cancelled (no window was selected in the picker).");
-        }
+        // Step 1: get the GraphicsCaptureItem. We prefer
+        // the HWND form (hwnd:0xABCD) that the source
+        // dropdown stores. Legacy palette entries that
+        // store a plain window title (gdigrab format) are
+        // looked up via FindWindow; if that's also a miss
+        // (window was closed), we fall back to the system
+        // picker so the user can re-select.
+        var item = ResolveCaptureItem(ct);
         var (width, height) = (item.Size.Width, item.Size.Height);
 
         // Step 2: create a D3D11 device, then wrap it in
@@ -228,6 +227,127 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
     }
 
 #if WINDOWS
+    // FindWindowW: looks up an HWND by window title. Used
+    // to migrate legacy palette entries that stored a
+    // plain title (the gdigrab format) to an HWND that
+    // WGC can use.
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowW(string? lpClassName, string lpWindowName);
+
+    // IGraphicsCaptureItemInterop: the COM interop
+    // interface for creating a GraphicsCaptureItem from a
+    // raw HWND. The .NET WinRT projection doesn't expose
+    // this as a managed method, so we cast the runtime
+    // class itself to this interface and call
+    // CreateForWindow directly. The same pattern the
+    // Microsoft sample uses (CaptureHelper.cs in
+    // Windows.UI.Composition-Win32-Samples).
+    [ComImport]
+    [Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IGraphicsCaptureItemInterop
+    {
+        IntPtr CreateForWindow(IntPtr window, ref Guid iid);
+        IntPtr CreateForMonitor(IntPtr monitor, ref Guid iid);
+    }
+
+    // GUID of the GraphicsCaptureItem runtime class.
+    // We pass this as the riid to CreateForWindow so the
+    // returned pointer is cast to the right WinRT type.
+    private static readonly Guid GraphicsCaptureItemGuid =
+        new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
+
+    /// <summary>
+    /// Create a <see cref="GraphicsCaptureItem"/> from a
+    /// raw HWND using the IGraphicsCaptureItemInterop COM
+    /// interface. The .NET WinRT projection doesn't expose
+    /// this as a managed method (e.g.
+    /// <c>GraphicsCaptureItem.CreateFromWindowHandle</c>),
+    /// so we cast the runtime class to the interop
+    /// interface and call CreateForWindow — the same
+    /// pattern the Microsoft sample uses.
+    /// </summary>
+    private static GraphicsCaptureItem CreateItemFromWindow(IntPtr hwnd)
+    {
+        // The pattern from Composition.WindowsRuntimeHelpers:
+        //   var interop = (IGraphicsCaptureItemInterop)factory;
+        //   var item = interop.CreateForWindow(hwnd, GraphicsCaptureItemGuid);
+        // The cast works because the activation factory
+        // for GraphicsCaptureItem happens to also implement
+        // IGraphicsCaptureItemInterop.
+        var interop = (IGraphicsCaptureItemInterop)(
+            object)typeof(GraphicsCaptureItem);
+        var iid = GraphicsCaptureItemGuid;
+        var itemPtr = interop.CreateForWindow(hwnd, ref iid);
+        try
+        {
+            return (GraphicsCaptureItem)Marshal.GetObjectForIUnknown(itemPtr);
+        }
+        finally
+        {
+            Marshal.Release(itemPtr);
+        }
+    }
+
+    private GraphicsCaptureItem ResolveCaptureItem(CancellationToken ct)
+    {
+        // Path 1: modern HWND form ("hwnd:0xABCD").
+        // The source dropdown stores this since the
+        // WGC migration. Direct path, no user interaction.
+        if (DeviceParsers.TryParseHwnd(_deviceId, out var hwnd))
+        {
+            try
+            {
+                return CreateItemFromWindow(hwnd);
+            }
+            catch (Exception ex)
+            {
+                // The HWND was valid when stored but the
+                // window has been closed since. Fall
+                // through to the picker as a last resort.
+                System.Console.Error.WriteLine(
+                    $"[cs] stored HWND {hwnd:X} invalid: {ex.Message}");
+            }
+        }
+
+        // Path 2: legacy plain-title form (the gdigrab
+        // format). The palette might have entries from
+        // before this migration. Look up the title via
+        // FindWindowW; if the window is still open, use
+        // its current HWND. If FindWindow returns zero,
+        // the window is gone.
+        if (!string.IsNullOrWhiteSpace(_deviceId) &&
+            !DeviceParsers.IsHwndDeviceId(_deviceId))
+        {
+            var found = FindWindowW(null, _deviceId);
+            if (found != IntPtr.Zero)
+            {
+                try
+                {
+                    return CreateItemFromWindow(found);
+                }
+                catch { /* fall through to picker */ }
+            }
+        }
+
+        // Path 3: picker. The user gets the system
+        // picker so they can re-select. The HWND they
+        // pick should be saved back to the palette
+        // (TODO: not implemented in this pass; the
+        // picker just records once).
+        var picker = new GraphicsCapturePicker();
+        InitializeWithWindow.Initialize(picker, _parentHwnd);
+        var item = picker.PickSingleItemAsync().AsTask(ct).GetAwaiter().GetResult();
+        if (item is null)
+        {
+            throw new CaptureException(SourceId,
+                "Window capture was cancelled (no window was selected in the picker). " +
+                "Re-add the source and pick a window from the device dropdown to avoid " +
+                "the picker in the future.");
+        }
+        return item;
+    }
+
     private IReadOnlyList<string> BuildFfmpegArgs(int width, int height)
     {
         // -i - reads from stdin. ffmpeg's rawvideo demuxer

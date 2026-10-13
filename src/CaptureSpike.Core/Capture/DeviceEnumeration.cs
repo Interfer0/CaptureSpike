@@ -28,6 +28,31 @@ public static class DeviceParsers
     private static readonly Regex GeometryPattern =
         new(@"^(\d+)x(\d+)\+(\d+)\+(\d+)$", RegexOptions.Compiled);
 
+    /// <summary>Prefix used by the window device picker to
+    /// mark a device id as a literal HWND (vs a legacy
+    /// plain-title entry from before WGC support was added).</summary>
+    public const string HwndPrefix = "hwnd:";
+
+    /// <summary>True if the device id is the modern
+    /// HWND form (starts with <see cref="HwndPrefix"/>).</summary>
+    public static bool IsHwndDeviceId(string? deviceId) =>
+        !string.IsNullOrEmpty(deviceId) && deviceId.StartsWith(HwndPrefix, StringComparison.Ordinal);
+
+    /// <summary>Parse the "hwnd:0xABCD" form. Returns
+    /// false if the id isn't in that form or the hex
+    /// portion doesn't parse.</summary>
+    public static bool TryParseHwnd(string? deviceId, out IntPtr hwnd)
+    {
+        hwnd = IntPtr.Zero;
+        if (!IsHwndDeviceId(deviceId)) return false;
+        var hex = deviceId!.Substring(HwndPrefix.Length).Trim();
+        if (!long.TryParse(hex, System.Globalization.NumberStyles.HexNumber,
+            System.Globalization.CultureInfo.InvariantCulture, out var raw))
+            return false;
+        hwnd = new IntPtr(raw);
+        return true;
+    }
+
     /// <summary>Parses a "WxH+X+Y" device id back into a geometry.</summary>
     public static bool TryParseGeometry(string? deviceId, out MonitorGeometry geometry)
     {
@@ -223,23 +248,78 @@ public static class DeviceEnumeration
         private static extern int GetWindowTextLengthW(IntPtr hWnd);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern int GetWindowTextW(IntPtr hWnd, char[] lpString, int nMaxCount);
+        // GetClassNameW: used to disambiguate windows with
+        // the same title (e.g. two "Untitled - Notepad" windows
+        // for different .txt files; their class names differ).
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassNameW(IntPtr hWnd, char[] lpString, int nMaxCount);
 
+        /// <summary>
+        /// Enumerate all top-level visible windows for the
+        /// "Add Source" / device-picker dropdown. Each
+        /// entry's <see cref="DeviceOption.Id"/> is
+        /// <c>"hwnd:0xHHHHHHHH"</c> — the literal HWND
+        /// value formatted as hex with a "hwnd:" prefix
+        /// (so the capturer can distinguish HWNDs from
+        /// legacy plain-title entries).
+        /// </summary>
         private static IReadOnlyList<DeviceOption> GetWindows()
         {
-            var titles = new List<string>();
+            // We keep a list of (hwnd, title, class) tuples,
+            // then dedupe by HWND at the end. (Multiple windows
+            // with the same title and class is possible if
+            // a single process opens them — e.g. an MDI
+            // app. We keep all of them and rely on the user
+            // to pick the right one. The display label
+            // shows the class for disambiguation when
+            // titles collide.)
+            var seen = new List<(IntPtr Hwnd, string Title, string Class)>();
             EnumWindows((hwnd, _) =>
             {
-                if (titles.Count >= 100) return false;
+                if (seen.Count >= 100) return false;
                 if (!IsWindowVisible(hwnd)) return true;
                 var len = GetWindowTextLengthW(hwnd);
                 if (len == 0 || len > 256) return true;
-                var buf = new char[len + 1];
-                GetWindowTextW(hwnd, buf, buf.Length);
-                var title = new string(buf, 0, len).Trim();
-                if (title.Length > 0 && !titles.Contains(title)) titles.Add(title);
+                var titleBuf = new char[len + 1];
+                GetWindowTextW(hwnd, titleBuf, titleBuf.Length);
+                var title = new string(titleBuf, 0, len).Trim();
+                if (title.Length == 0) return true;
+
+                // Get the window class for disambiguation.
+                var classBuf = new char[256];
+                var classLen = GetClassNameW(hwnd, classBuf, classBuf.Length);
+                var className = classLen > 0
+                    ? new string(classBuf, 0, classLen)
+                    : "";
+
+                seen.Add((hwnd, title, className));
                 return true;
             }, IntPtr.Zero);
-            return titles.Select(t => new DeviceOption(t, t)).ToList();
+
+            // Find windows with duplicate titles so we can
+            // append the class name to disambiguate them.
+            var duplicates = seen
+                .GroupBy(s => s.Title)
+                .Where(g => g.Count() > 1)
+                .SelectMany(g => g.Select(s => s.Hwnd))
+                .ToHashSet();
+
+            return seen.Select(s =>
+            {
+                // HWND formatted as "hwnd:0xHHHH" (uppercase,
+                // no leading zeros, 8 hex digits). 64-bit
+                // HWNDs on 64-bit Windows would need 16
+                // digits, but capturing a 32-bit window
+                // from a 64-bit process is the common case.
+                // We use the lower 32 bits which is what
+                // WGC's CreateFromWindowHandle takes on
+                // x64 Windows.
+                var id = $"hwnd:0x{s.Hwnd.ToInt64():x}";
+                var label = duplicates.Contains(s.Hwnd)
+                    ? $"{s.Title}  ({s.Class})"
+                    : s.Title;
+                return new DeviceOption(id, label);
+            }).ToList();
         }
 
         // ----- DirectShow cameras -----

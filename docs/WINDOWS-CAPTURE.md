@@ -28,23 +28,57 @@ let the user pick the window (no title guessing).
 
 ## Architecture
 
-The capture flow:
+The user flow is the same as the old gdigrab path:
+the user adds a `SourceKind.Window` source, picks a
+window from the device dropdown (which is already
+populated by `DeviceEnumeration.GetWindows()` with
+all top-level visible windows), and hits Record. No
+dialog appears at record time.
 
-1. The user adds a `SourceKind.Window` source to a
-   scene.
-2. When recording starts, `WindowsGraphicsCapturer`
-   shows the system `GraphicsCapturePicker` (a
-   modal dialog owned by Windows).
-3. The user clicks on a window. The picker returns a
-   `GraphicsCaptureItem`.
-4. We create a `Direct3D11CaptureFramePool` and a
-   `GraphicsCaptureSession` for that item.
-5. We launch ffmpeg reading raw BGRA from stdin.
-6. The `FrameArrived` callback fires for each captured
-   frame. We copy the GPU surface to a CPU buffer
-   and write it to ffmpeg's stdin.
-7. On stop, we close ffmpeg's stdin (EOF) and dispose
-   the frame pool / session.
+The internal flow:
+
+1. **Selection** (in `DeviceEnumeration.GetWindows`):
+   `EnumWindows` lists all top-level visible windows;
+   for each, we record the HWND (in `Id`, prefixed
+   `hwnd:0x...`) and the title (in `Label`, the
+   dropdown's display text). Duplicate titles are
+   disambiguated by appending the window class.
+2. **Source stores the HWND** (via the existing
+   `Source.Device` field, format `"hwnd:0xABCD"`).
+3. **At record time** (`WindowsGraphicsCapturer`):
+   - Parse the HWND from `source.Device`.
+   - Call `GraphicsCaptureItem.CreateFromWindowHandle(hwnd)`
+     via the `IGraphicsCaptureItemInterop` COM interface
+     (the .NET WinRT projection doesn't expose this
+     as a managed method).
+   - Create a D3D11 device, frame pool, and session.
+4. **Frame copy** (`D3D11FrameReader`): each
+   `FrameArrived` callback copies the GPU surface to
+   a CPU buffer (via `ID3D11DeviceContext::CopyResource`
+   + `Map`), writes the BGRA bytes to ffmpeg's stdin.
+5. **ffmpeg** reads rawvideo from stdin and encodes
+   with libx264.
+
+### Migration from old gdigrab-based palette entries
+
+If a palette has a Window source with a plain title
+in `Device` (the pre-WGC format), `ResolveCaptureItem`
+tries `FindWindowW(title)` to look up the current HWND.
+If the window has been closed, it falls back to the
+system `GraphicsCapturePicker` so the user can
+re-select. The picker is a backstop, not the normal
+flow.
+
+### Why not the system picker as the primary UX?
+
+It interrupts the recording flow with a modal dialog
+every time, even when the user knows exactly which
+window they want. The dropdown keeps the window
+selection persisted in the project (you don't have
+to re-pick it next time), and the picker is opaque
+about what's currently selected. The dropdown is
+the same UX the app already uses for screens, mics,
+and webcams.
 
 ## What's done in this commit
 
