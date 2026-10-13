@@ -273,7 +273,7 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
      * the stream. The state goes 2 (PAUSED) -> 3 (STREAMING)
      * and on_process starts firing. */
     if (g_pw_stream) {
-        fprintf(stderr, "cs-pw-helper: calling pw_stream_set_active(TRUE)\n");
+        fprintf(stderr, "cs-pw-helper: (no-op) pw_stream_set_active(TRUE) since no INACTIVE\n");
         pw_stream_set_active(g_pw_stream, true);
     }
 }
@@ -437,6 +437,24 @@ static void setup_pw_stream_on_pw_thread(uint32_t node_id) {
         }
     }
     fprintf(stderr, "cs-pw-helper: pw_stream_connect succeeded; waiting for param negotiation\n");
+
+    /* Proactively query the source's current format. Some
+     * sources (V4L2/webcam) never push an on_stream_param_changed
+     * for Format, so the negotiation would deadlock. We get the
+     * format up front; the response is delivered via
+     * on_stream_param_changed as usual. */
+    {
+        uint8_t buf[1024];
+        struct spa_pod_builder b = {0};
+        spa_pod_builder_init(&b, buf, sizeof(buf));
+        const struct spa_pod *params[1];
+        params[0] = spa_pod_builder_add_object(&b,
+            SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+            SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
+            SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw));
+        int r = pw_stream_update_params(g_pw_stream, params, 1);
+        fprintf(stderr, "cs-pw-helper: query EnumFormat via update_params returned %d\n", r);
+    }
 }
 
 static void on_signal_event(void *data, uint64_t count) {
