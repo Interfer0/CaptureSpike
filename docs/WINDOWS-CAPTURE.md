@@ -1,6 +1,6 @@
 # Windows window capture
 
-## Status: skeleton, picker wired up, GPU surface copy pending
+## Status: implemented; Windows integration testing pending
 
 This document describes the Windows-specific window
 capture path using `Windows.Graphics.Capture` (WGC),
@@ -51,23 +51,30 @@ The internal flow:
      via the `IGraphicsCaptureItemInterop` COM interface
      (the .NET WinRT projection doesn't expose this
      as a managed method).
-   - Create a D3D11 device, frame pool, and session.
+   - Create a D3D11 device, free-threaded frame pool,
+     and session. The free-threaded pool delivers frame
+     events without requiring a WinRT dispatcher on the
+     recording thread.
 4. **Frame copy** (`D3D11FrameReader`): each
    `FrameArrived` callback copies the GPU surface to
    a CPU buffer (via `ID3D11DeviceContext::CopyResource`
-   + `Map`), writes the BGRA bytes to ffmpeg's stdin.
+   + `Map`). A fixed-rate writer feeds the latest BGRA
+   frame to ffmpeg's stdin, repeating it when WGC hasn't
+   delivered a newer frame. This keeps the video timeline
+   aligned when frame delivery pauses, though the image
+   will hold until WGC provides another frame.
 5. **ffmpeg** reads rawvideo from stdin and encodes
-   with libx264.
+   with libx264. Odd-sized windows are padded by at most one pixel on
+   the right or bottom edge so the `yuv420p` output has even dimensions.
 
 ### Migration from old gdigrab-based palette entries
 
 If a palette has a Window source with a plain title
 in `Device` (the pre-WGC format), `ResolveCaptureItem`
 tries `FindWindowW(title)` to look up the current HWND.
-If the window has been closed, it falls back to the
-system `GraphicsCapturePicker` so the user can
-re-select. The picker is a backstop, not the normal
-flow.
+If the window has been closed, capture fails with an
+instruction to re-select a window from the source
+dropdown.
 
 ### Why not the system picker as the primary UX?
 
@@ -83,16 +90,9 @@ and webcams.
 ## What's done in this commit
 
 - `src/CaptureSpike.Core/Capture/Windows/WindowsGraphicsCapturer.cs` —
-  the capturer class, with the picker UI, frame pool
+  the capturer class, with HWND resolution, frame pool
   setup, ffmpeg process management, and first-data
   detection all in place.
-- `src/CaptureSpike.Core/Capture/WindowHandleProvider.cs` —
-  static class that the UI layer uses to publish the
-  main window's HWND. The capturer reads it to
-  initialize the picker.
-- `src/CaptureSpike.App/App.axaml.cs` — registers the
-  main window's HWND with `WindowHandleProvider` on
-  load, clears it on close.
 - `src/CaptureSpike.Core/Capture/CaptureFactory.cs` —
   the `SourceKind.Window` case now constructs a
   `WindowsGraphicsCapturer` instead of building
@@ -104,39 +104,10 @@ and webcams.
 
 ## What's left
 
-The picker UI is fully wired up. The remaining piece
-is the GPU-to-CPU surface copy that runs in the
-`FrameArrived` callback. This needs:
-
-1. **Create a Direct3D 11 device.** The standard
-   WinRT call is `Direct3D11Helpers.CreateDevice()`
-   from the `Microsoft.Graphics.Canvas` or
-   `Win2D` packages, but the .NET 10 projection
-   doesn't include it. The cleanest options are:
-   - **Add `Silk.NET.Direct3D11`** (a small NuGet
-     package, ~200 KB) and use it to call
-     `D3D11CreateDevice` + `Direct3D11CreateDevice`
-   - **Hand-roll a P/Invoke** of `D3D11CreateDevice`
-     (about 30 lines of C#)
-
-2. **CopyResource + Map.** The frame's surface is a
-   GPU texture. We need:
-   - `IDXGISurface.QueryInterface` for `ID3D11Texture2D`
-   - `ID3D11Device.CreateTexture2D` with
-     `D3D11_USAGE_STAGING` and
-     `D3D11_CPU_ACCESS_READ` flags
-   - `ID3D11DeviceContext.CopyResource(staging, gpuTex)`
-   - `ID3D11DeviceContext.Map(staging, ...)` to get
-     a CPU pointer to the pixels
-   - Copy row-by-row (the GPU row pitch may differ
-     from `width * 4` due to alignment) to a managed
-     `byte[]`
-   - Unmap, write to ffmpeg's stdin
-
-This is ~50-100 lines of C# and P/Invoke. The
-struct layouts and COM signatures are well-documented
-in the Direct3D 11 headers and several open-source
-samples (e.g. `leadedge/Win32CaptureSample` on GitHub).
+The D3D11 device setup and GPU-to-CPU frame copy are
+implemented in `D3D11FrameReader`. Build and exercise
+the capture path on Windows to validate driver/runtime
+interop and verify the resulting video.
 
 ## Integration test plan (run on Windows)
 
@@ -145,24 +116,23 @@ samples (e.g. `leadedge/Win32CaptureSample` on GitHub).
    errors.
 2. **Run:** launch the app. Open a project, add a
    Window source, hit Record.
-3. **Picker appears:** the system WGC picker should
-   appear. Confirm it's modal to the app window.
-4. **Click a window:** pick e.g. a browser window.
-   Capture should start.
-5. **Verify output:** the take folder should have a
+3. **Start capture:** choose a window in the source
+   device dropdown and start recording.
+4. **Verify output:** the take folder should have a
    new .mkv file. Open it in VLC or Resolve.
    - Should show the picked window's content
    - Audio track (if any) should be in sync with the
      video (within ~100ms; the `zerolatency` ffmpeg
      tune and the 0.1s stats_period give us this)
-6. **Edge cases to test:**
-   - Minimize the window during recording: WGC
-     should keep capturing; gdigrab would stop.
+5. **Edge cases to test:**
+   - Unfocus, cover, and minimize the window during recording:
+     verify output duration stays aligned. If WGC pauses updates,
+     the output should hold the latest image until capture resumes.
    - UWP / Edge window: should work; gdigrab would
      fail.
-   - Cancel the picker: the capturer should throw
-     `CaptureException` with a clear message and the
-     take shouldn't be created.
+   - Close a legacy title-based window source: the
+     capturer should report that the window needs to
+     be re-selected.
    - Multiple windows of the same app: pick one, see
      that only that window is captured (not all).
 
@@ -172,7 +142,7 @@ samples (e.g. `leadedge/Win32CaptureSample` on GitHub).
   Windows App SDK)](https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/screen-capture)
 - [`leadedge/Win32CaptureSample`](https://github.com/leadedge/Win32CaptureSample) — minimal
   C++ sample using WGC from a Win32 app; the closest
-  reference for the GPU-to-CPU copy we're missing.
+  example of WGC capture from a Win32 app.
 - [`dotnet/WPF/ScreenCapture`](https://github.com/microsoft/Windows.UI.Composition-Win32-Samples/blob/master/dotnet/WPF/ScreenCapture/) — older
   SharpDX-based sample; useful for the C# side of
-  the picker / frame pool / session lifecycle.
+  the   frame pool / session lifecycle.

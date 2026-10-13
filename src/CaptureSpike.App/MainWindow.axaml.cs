@@ -77,6 +77,14 @@ public partial class MainWindow : Window
             }
         };
 
+        // Playback is shown as a separate top-level window. Close it only
+        // when this close request is not being deferred for recording shutdown.
+        Closing += (_, e) =>
+        {
+            if (!e.Cancel && DataContext is MainViewModel vm)
+                vm.ClosePlaybackWindow();
+        };
+
         // Remember size, position, and maximized state for next launch.
         Closing += (_, _) =>
         {

@@ -56,74 +56,35 @@ internal sealed class D3D11FrameReader : IDisposable
     private static readonly Guid IID_ID3D11Texture2D =
         new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
 
-    // The IDirect3DDxgiInterfaceAccess COM interface.
-    // Implemented by IDirect3DDevice and IDirect3DSurface.
-    // Its GetInterface(IID) returns the underlying DXGI
-    // pointer (IDXGIDevice*, IDXGISurface*, etc.).
-    [ComImport]
-    [Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IDirect3DDxgiInterfaceAccess
-    {
-        IntPtr GetInterface(ref Guid iid);
-    }
+    private static readonly Guid IID_IDirect3DDxgiInterfaceAccess =
+        new("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1");
 
-    // ID3D11Device vtable (only the methods we use).
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int GetInterfaceDelegate(
+        IntPtr self,
+        in Guid iid,
+        out IntPtr result);
+
+    // ID3D11Device vtable. Unused entries are placeholders so the
+    // methods we call land at their native vtable indices.
     [ComImport]
     [Guid("db6f6ddb-ac77-4e88-8253-819df9bbf140")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface ID3D11Device
     {
-        // The full vtable is ~40 methods. We only declare
-        // the ones we need; the COM runtime will treat
-        // the rest as "not implemented" if called. To
-        // call GetImmediateContext and CreateTexture2D
-        // we need slots 7 and 24 respectively (zero-indexed
-        // from IUnknown's 3 methods). The .NET COM
-        // interop uses the vtable order from this
-        // interface declaration, so we list methods in
-        // vtable order up to what we need.
-        void Reserved0(); void Reserved1(); void Reserved2();
-        void Reserved3(); void Reserved4(); void Reserved5();
-        void Reserved6();
-        void GetImmediateContext(out IntPtr context);  // slot 7
-        void Reserved8(); void Reserved9(); void Reserved10();
-        void Reserved11(); void Reserved12(); void Reserved13();
-        void Reserved14(); void Reserved15(); void Reserved16();
-        void Reserved17(); void Reserved18(); void Reserved19();
-        void Reserved20(); void Reserved21(); void Reserved22();
-        void Reserved23();
-        int CreateTexture2D(                                // slot 24; returns HRESULT
+        void Reserved0();
+        void Reserved1();
+        [PreserveSig]
+        int CreateTexture2D(
             ref D3D11_TEXTURE2D_DESC desc,
-            IntPtr initialData,           // D3D11_SUBRESOURCE_DATA*
-            IntPtr reserved,               // we don't use this
+            IntPtr initialData,
             out IntPtr texture);
     }
 
+    // ID3D11DeviceContext vtable. Its COM methods begin after IUnknown;
+    // Map and CopyResource are at method indices 11 and 44 respectively.
     [ComImport]
-    [Guid("6f15aaf2-d208-4e89-9ab4-489535d34f9c")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface ID3D11Texture2D
-    {
-        void Reserved0(); void Reserved1(); void Reserved2();
-        void Reserved3(); void Reserved4(); void Reserved5();
-        void Reserved6(); void Reserved7(); void Reserved8();
-        void Reserved9(); void Reserved10(); void Reserved11();
-        void Reserved12();
-        void GetDevice(out IntPtr device);  // slot 12
-    }
-
-    // ID3D11DeviceContext vtable. The full interface is
-    // enormous (~60 methods). We declare the methods we
-    // call; the COM runtime treats undeclared vtable
-    // slots as "not callable from C#", which is what we
-    // want. The slot numbers matter for vtable layout:
-    // IUnknown is slots 0-2 (QueryInterface/AddRef/Release),
-    // so the first device-context-specific method is
-    // slot 3. Map is at slot 11, Unmap at 12, CopyResource
-    // at slot 47 per d3d11.h.
-    [ComImport]
-    [Guid("c0bfa3ca-3ab3-48fc-b1f0-43fc1a3f03f3")]
+    [Guid("c0bfa96c-e089-44fb-8eaf-26f8796190da")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface ID3D11DeviceContext
     {
@@ -131,15 +92,26 @@ internal sealed class D3D11FrameReader : IDisposable
         void Reserved3(); void Reserved4(); void Reserved5();
         void Reserved6(); void Reserved7(); void Reserved8();
         void Reserved9(); void Reserved10();
-        int Map(                                            // slot 11
+        [PreserveSig]
+        int Map(
             IntPtr resource,
             uint subresource,
             uint mapType,
             uint mapFlags,
             ref MAPPED_SUBRESOURCE mapped);
-        void Unmap(IntPtr resource, uint subresource);   // slot 12
-        // ... up to slot 46 reserved
-        void CopyResource(IntPtr dst, IntPtr src);  // slot 47
+        void Unmap(IntPtr resource, uint subresource);
+        void Reserved13(); void Reserved14(); void Reserved15();
+        void Reserved16(); void Reserved17(); void Reserved18();
+        void Reserved19(); void Reserved20(); void Reserved21();
+        void Reserved22(); void Reserved23(); void Reserved24();
+        void Reserved25(); void Reserved26(); void Reserved27();
+        void Reserved28(); void Reserved29(); void Reserved30();
+        void Reserved31(); void Reserved32(); void Reserved33();
+        void Reserved34(); void Reserved35(); void Reserved36();
+        void Reserved37(); void Reserved38(); void Reserved39();
+        void Reserved40(); void Reserved41(); void Reserved42();
+        void Reserved43();
+        void CopyResource(IntPtr dst, IntPtr src);
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -154,7 +126,7 @@ internal sealed class D3D11FrameReader : IDisposable
         public uint SampleDesc_Quality;
         public uint Usage;            // 3 = Staging
         public uint BindFlags;        // 0 for staging
-        public uint CPUAccessFlags;   // 1 = Read
+        public uint CPUAccessFlags;   // 0x20000 = D3D11_CPU_ACCESS_READ
         public uint MiscFlags;
     }
 
@@ -167,31 +139,31 @@ internal sealed class D3D11FrameReader : IDisposable
     }
 
     private const uint D3D11_USAGE_STAGING = 3;
-    private const uint D3D11_CPU_ACCESS_READ = 1;
+    private const uint D3D11_CPU_ACCESS_READ = 0x20000;
     private const uint DXGI_FORMAT_B8G8R8A8_UNORM = 87;
     private const uint D3D11_MAP_READ = 1;
+    private const uint D3D11_CREATE_DEVICE_BGRA_SUPPORT = 0x20;
 
     // IID for the IDXGIDevice COM interface. Used to
     // bridge D3D11CreateDevice's output to the WinRT
     // IDirect3DDevice via CreateDirect3D11DeviceFromDXGIDevice.
     private static readonly Guid IID_IDXGIDevice =
-        new("54ec77fa-1377-44e6-8c92-79eb5ba7c092");
+        new("54ec77fa-1377-44e6-8c32-88fd5f44c84c");
 
-    // D3D11CreateDevice from d3d11.dll. DriverType=Hardware
-    // (1), Flags=0, FeatureLevels=11_0, FeatureLevelsCount=1.
-    // The returned ID3D11Device* is what we feed into
-    // CreateDirect3D11DeviceFromDXGIDevice to get the
-    // WinRT IDirect3DDevice the frame pool needs.
+    // D3D11CreateDevice from d3d11.dll. The two optional native
+    // outputs after ppDevice must still be present in this signature.
     [DllImport("d3d11.dll", EntryPoint = "D3D11CreateDevice", CallingConvention = CallingConvention.StdCall)]
     private static extern int D3D11CreateDevice(
-        IntPtr adapter,         // null = default adapter
-        uint driverType,        // 1 = Hardware
-        IntPtr software,         // null
-        uint flags,              // 0
-        IntPtr featureLevels,    // IntPtr to D3D_FEATURE_LEVEL[]
+        IntPtr adapter,
+        uint driverType,
+        IntPtr software,
+        uint flags,
+        IntPtr featureLevels,
         uint featureLevelCount,
         uint sdkVersion,
-        out IntPtr deviceOut);
+        out IntPtr deviceOut,
+        IntPtr featureLevelOut,
+        out IntPtr immediateContextOut);
 
     // d3d11.dll's CreateDirect3D11DeviceFromDXGIDevice.
     // Returns an IInspectable* (which is then
@@ -201,31 +173,16 @@ internal sealed class D3D11FrameReader : IDisposable
         IntPtr dxgiDevice,
         out IntPtr graphicsDevice);
 
-    // IUnknown::QueryInterface (slot 0 of the IUnknown
-    // vtable). We use this to get IDXGIDevice from the
-    // ID3D11Device* returned by D3D11CreateDevice, then
-    // feed that into CreateDirect3D11DeviceFromDXGIDevice.
-    [ComImport]
-    [Guid("00000000-0000-0000-c000-000000000046")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IUnknown
-    {
-        IntPtr QueryInterface(ref Guid iid);
-        IntPtr AddRef();
-        IntPtr Release();
-    }
-
     private IntPtr _device;
     private IntPtr _context;
     private IntPtr _stagingTexture;
     private int _stagingWidth;
     private int _stagingHeight;
 
-    public D3D11FrameReader(IDirect3DDevice device)
+    public D3D11FrameReader(IntPtr device, IntPtr context)
     {
-        _device = GetDXGIInterface(device, IID_ID3D11Device);
-        var dev = (ID3D11Device)Marshal.GetObjectForIUnknown(_device);
-        dev.GetImmediateContext(out _context);
+        _device = device;
+        _context = context;
     }
 
     /// <summary>
@@ -235,13 +192,18 @@ internal sealed class D3D11FrameReader : IDisposable
     /// the underlying ID3D11Device* is also kept by the
     /// <see cref="D3D11FrameReader"/> for surface copies.
     /// </summary>
-    public static IDirect3DDevice CreateWinRtDevice(out IntPtr d3d11Device)
+    public static IDirect3DDevice CreateWinRtDevice(
+        out IntPtr nativeDevice,
+        out IntPtr immediateContext)
     {
-        AppLog.Current?.WriteLine("[cs] WGC: D3D11FrameReader.CreateWinRtDevice begin");
+        nativeDevice = IntPtr.Zero;
+        immediateContext = IntPtr.Zero;
         // D3D11CreateDevice wants a D3D_FEATURE_LEVEL[]. We
         // use 11.0 (the only one we need).
         var featureLevels = new uint[] { 0xb000 /* D3D_FEATURE_LEVEL_11_0 = 0xb000 */ };
         var flPtr = Marshal.AllocHGlobal(sizeof(uint) * featureLevels.Length);
+        var d3dDevicePtr = IntPtr.Zero;
+        var contextPtr = IntPtr.Zero;
         try
         {
             // Marshal.Copy only takes byte[] / short[] /
@@ -251,50 +213,51 @@ internal sealed class D3D11FrameReader : IDisposable
                 .AsBytes(featureLevels.AsSpan());
             for (var i = 0; i < flSpan.Length; i++)
                 Marshal.WriteByte(flPtr, i, flSpan[i]);
-            AppLog.Current?.WriteLine(
-                "[cs] WGC: D3D11FrameReader calling D3D11CreateDevice...");
             var hr = D3D11CreateDevice(
                 IntPtr.Zero,    // default adapter
                 1,              // D3D_DRIVER_TYPE_HARDWARE
                 IntPtr.Zero,    // no software fallback module
-                0,              // no flags
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                 flPtr,
                 (uint)featureLevels.Length,
                 7,              // D3D11_SDK_VERSION
-                out var d3dDevicePtr);
-            AppLog.Current?.WriteLine(
-                $"[cs] WGC: D3D11CreateDevice returned hr=0x{hr:X8}, d3dDevicePtr={d3dDevicePtr:X}");
+                out d3dDevicePtr,
+                IntPtr.Zero,    // optional selected feature level
+                out contextPtr);
             if (hr < 0) throw new InvalidOperationException(
                 $"D3D11CreateDevice failed (hr=0x{hr:X8}).");
 
-            // Query IDXGIDevice from the ID3D11Device. The
-            // IID is a struct (Guid) and we need a writable
-            // local because QueryInterface takes `ref Guid`.
+            // Query IDXGIDevice from the ID3D11Device.
             var iid = IID_IDXGIDevice;
-            var unknown = (IUnknown)Marshal.GetObjectForIUnknown(d3dDevicePtr);
-            AppLog.Current?.WriteLine(
-                $"[cs] WGC: ID3D11Device::QueryInterface(IDXGIDevice)...");
-            var dxgiPtr = unknown.QueryInterface(ref iid);
-            AppLog.Current?.WriteLine(
-                $"[cs] WGC: IDXGIDevice pointer = {dxgiPtr:X}");
+            var queryHr = Marshal.QueryInterface(d3dDevicePtr, in iid, out var dxgiPtr);
             try
             {
+                if (queryHr < 0)
+                    throw new InvalidOperationException(
+                        $"ID3D11Device::QueryInterface(IDXGIDevice) failed (hr=0x{queryHr:X8}).");
                 if (dxgiPtr == IntPtr.Zero) throw new InvalidOperationException(
-                    "ID3D11Device did not expose IDXGIDevice.");
+                    "ID3D11Device::QueryInterface(IDXGIDevice) succeeded but returned a null pointer.");
 
                 // Wrap the IDXGIDevice in a WinRT IDirect3DDevice.
-                AppLog.Current?.WriteLine(
-                    "[cs] WGC: CreateDirect3D11DeviceFromDXGIDevice...");
                 var hr2 = CreateDirect3D11DeviceFromDXGIDevice(dxgiPtr, out var inspectablePtr);
-                AppLog.Current?.WriteLine(
-                    $"[cs] WGC: CreateDirect3D11DeviceFromDXGIDevice returned hr=0x{hr2:X8}, inspectablePtr={inspectablePtr:X}");
                 if (hr2 < 0) throw new InvalidOperationException(
                     $"CreateDirect3D11DeviceFromDXGIDevice failed (hr=0x{hr2:X8}).");
 
-                d3d11Device = d3dDevicePtr;
-                AppLog.Current?.WriteLine(
-                    "[cs] WGC: IDirect3DDevice wrapping succeeded");
-                return (IDirect3DDevice)Marshal.GetObjectForIUnknown(inspectablePtr);
+                try
+                {
+                    var device =
+                        WinRT.MarshalInterface<IDirect3DDevice>
+                            .FromAbi(inspectablePtr);
+                    nativeDevice = d3dDevicePtr;
+                    d3dDevicePtr = IntPtr.Zero;
+                    immediateContext = contextPtr;
+                    contextPtr = IntPtr.Zero;
+                    return device;
+                }
+                finally
+                {
+                    Marshal.Release(inspectablePtr);
+                }
             }
             finally
             {
@@ -303,6 +266,8 @@ internal sealed class D3D11FrameReader : IDisposable
         }
         finally
         {
+            if (contextPtr != IntPtr.Zero) Marshal.Release(contextPtr);
+            if (d3dDevicePtr != IntPtr.Zero) Marshal.Release(d3dDevicePtr);
             Marshal.FreeHGlobal(flPtr);
         }
     }
@@ -326,7 +291,7 @@ internal sealed class D3D11FrameReader : IDisposable
 
         // Get the underlying ID3D11Texture2D from the
         // frame's IDirect3DSurface.
-        var surfacePtr = GetDXGIInterface(frame.Surface, IID_ID3D11Texture2D);  // property, not method
+        var surfacePtr = GetDXGIInterface(frame.Surface, IID_ID3D11Texture2D);
         try
         {
             // CopyResource(staging, gpuTexture). The
@@ -397,7 +362,7 @@ internal sealed class D3D11FrameReader : IDisposable
         };
         var dev = (ID3D11Device)Marshal.GetObjectForIUnknown(_device);
         IntPtr tex;
-        var hr = dev.CreateTexture2D(ref desc, IntPtr.Zero, IntPtr.Zero, out tex);
+        var hr = dev.CreateTexture2D(ref desc, IntPtr.Zero, out tex);
         if (hr != 0) throw new InvalidOperationException(
             $"ID3D11Device::CreateTexture2D failed (hr=0x{hr:X8}).");
         _stagingTexture = tex;
@@ -411,10 +376,45 @@ internal sealed class D3D11FrameReader : IDisposable
     /// The returned pointer has a +1 ref count;
     /// caller is responsible for Marshal.Release.
     /// </summary>
-    private static IntPtr GetDXGIInterface(object winRtObject, Guid iid)
+    private static IntPtr GetDXGIInterface(IDirect3DSurface winRtObject, Guid iid)
     {
-        var access = (IDirect3DDxgiInterfaceAccess)winRtObject;
-        return access.GetInterface(ref iid);
+        var marshaler =
+            WinRT.MarshalInterface<IDirect3DSurface>.CreateMarshaler2(winRtObject);
+        var abiPtr = WinRT.MarshalInterface<IDirect3DSurface>.GetAbi(marshaler);
+        if (abiPtr == IntPtr.Zero)
+            throw new InvalidOperationException(
+                "The WinRT surface projected to a null ABI pointer.");
+
+        var accessHr = Marshal.QueryInterface(
+            abiPtr, in IID_IDirect3DDxgiInterfaceAccess, out var accessPtr);
+        if (accessHr < 0)
+            throw new InvalidOperationException(
+                $"QueryInterface(IDirect3DDxgiInterfaceAccess) failed (hr=0x{accessHr:X8}).");
+
+        try
+        {
+            var vtable = Marshal.ReadIntPtr(accessPtr);
+            var getInterfacePtr = Marshal.ReadIntPtr(
+                vtable, 3 * IntPtr.Size);
+            var getInterface =
+                Marshal.GetDelegateForFunctionPointer<GetInterfaceDelegate>(
+                    getInterfacePtr);
+            var hr = getInterface(accessPtr, in iid, out var result);
+            if (hr < 0)
+            {
+                if (result != IntPtr.Zero) Marshal.Release(result);
+                throw new InvalidOperationException(
+                    $"IDirect3DDxgiInterfaceAccess::GetInterface failed (hr=0x{hr:X8}).");
+            }
+            if (result == IntPtr.Zero)
+                throw new InvalidOperationException(
+                    "IDirect3DDxgiInterfaceAccess::GetInterface succeeded but returned a null pointer.");
+            return result;
+        }
+        finally
+        {
+            Marshal.Release(accessPtr);
+        }
     }
 
     public void Dispose()

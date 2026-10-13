@@ -33,10 +33,10 @@ namespace CaptureSpike.Core.Capture;
 ///
 /// Frames are pulled from a <c>Direct3D11CaptureFramePool</c>
 /// and copied from the GPU surface to a CPU-side BGRA
-/// byte buffer. The buffer is written to ffmpeg's stdin
-/// as a rawvideo stream (same approach as the Wayland
-/// capture on Linux — just with a pipe instead of a Unix
-/// socket).
+/// byte buffer. A fixed-rate writer feeds the latest
+/// captured image to ffmpeg's rawvideo stdin, repeating it
+/// when WGC has not delivered a newer frame. This preserves
+/// the capture timeline even when frame delivery is sparse.
 ///
 /// ffmpeg command line:
 ///   ffmpeg -f rawvideo -pix_fmt bgra -video_size WxH
@@ -47,8 +47,10 @@ namespace CaptureSpike.Core.Capture;
 /// - gdigrab reads from GDI, which can't see UWP / Edge
 ///   / DirectX-only surfaces. WGC reads the actual
 ///   composited GPU output.
-/// - gdigrab fails on minimized windows. WGC keeps
-///   capturing even when the source window is minimized.
+/// - When WGC stops delivering new frames (for example,
+///   while a window is minimized or not being repainted),
+///   the fixed-rate writer repeats the latest frame so
+///   elapsed playback time remains correct.
 /// - gdigrab needs the exact window title. WGC lets
 ///   the user pick from a list (or click the window
 ///   directly in some Windows versions).
@@ -62,10 +64,19 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
     private D3D11FrameReader? _frameReader;
     private IDisposable? _framePoolDisposable;
     private IDisposable? _sessionDisposable;
+    private readonly object _latestFrameLock = new();
+    private byte[]? _latestFrame;
+    private long _latestFrameGeneration;
+    private Task? _frameWriterTask;
+    private CancellationTokenSource? _frameWriterCts;
+    private long _capturedFrameCount;
+    private long _writtenFrameCount;
+    private long _repeatedFrameCount;
 #endif
     private Process? _process;
     private readonly List<string> _stderrTail = new();
     private readonly TaskCompletionSource _firstDataTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _firstCapturedFrameTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<int> _exitTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _disposed;
 
@@ -106,9 +117,6 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         throw new PlatformNotSupportedException(
             "WindowsGraphicsCapturer is only supported on Windows.");
 #else
-        AppLog.Current?.WriteLine(
-            $"[cs] WGC: StartAsync begin, deviceId='{_deviceId}'");
-
         // Step 1: get the GraphicsCaptureItem. The
         // window is selected by the user from the source
         // device dropdown (no system picker). The HWND
@@ -118,18 +126,21 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         // resolves, we fail with a clear error so the
         // user knows to re-pick a window.
         var item = ResolveCaptureItem(ct);
-        AppLog.Current?.WriteLine(
-            $"[cs] WGC: GraphicsCaptureItem obtained, size={item.Size.Width}x{item.Size.Height}");
-
         var (width, height) = (item.Size.Width, item.Size.Height);
+        AppLog.Current?.WriteLine(
+            $"[cs] WGC: starting window capture ({width}x{height}) at {_framerate} fps");
 
         // Step 2: create a D3D11 device, then wrap it in
         // the WinRT IDirect3DDevice that the frame pool
         // needs. The D3D11FrameReader creates both and
         // keeps the raw ID3D11Device* for surface copies.
-        var d3dDevice = D3D11FrameReader.CreateWinRtDevice(out _);
-        var frameReader = new D3D11FrameReader(d3dDevice);
-        var framePool = Direct3D11CaptureFramePool.Create(
+        var d3dDevice = D3D11FrameReader.CreateWinRtDevice(
+            out var nativeDevice, out var immediateContext);
+        var frameReader = new D3D11FrameReader(nativeDevice, immediateContext);
+        // StartAsync can run without a WinRT dispatcher queue. The
+        // dispatcher-bound Create overload may therefore never deliver
+        // FrameArrived; the free-threaded pool raises it on its own thread.
+        var framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
             d3dDevice,
             DirectXPixelFormat.B8G8R8A8UIntNormalized,
             2, // two buffers; one being filled, one being consumed
@@ -165,30 +176,43 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         _ = Task.Run(() => ReadProgressAsync(process.StandardOutput, ct), ct);
         _ = Task.Run(() => ReadStderrAsync(process.StandardError, ct), ct);
 
-        // Step 4: subscribe to frame arrivals and copy
-        // each GPU surface to CPU memory, then write
-        // the BGRA bytes to ffmpeg's stdin.
+        // Step 4: subscribe to frame arrivals and keep a
+        // CPU-side copy of the most recent frame. A separate
+        // fixed-rate writer feeds frames to ffmpeg's stdin.
         var stdin = process.StandardInput.BaseStream;
+        var frameArrivedCount = 0;
+        var nullFrameCount = 0;
+        var frameErrorCount = 0;
         framePool.FrameArrived += (sender, _) =>
         {
+            Interlocked.Increment(ref frameArrivedCount);
             try
             {
                 using var frame = sender.TryGetNextFrame();
-                if (frame is null) return;
-                var (pixels, w, h) = frameReader.ReadFrame(frame);
-                stdin.Write(pixels, 0, pixels.Length);
-                stdin.Flush();
-                MarkFirstData();
+                if (frame is null)
+                {
+                    Interlocked.Increment(ref nullFrameCount);
+                    return;
+                }
+                byte[] pixels;
+                lock (_latestFrameLock)
+                {
+                    (pixels, _, _) = frameReader.ReadFrame(frame);
+                    _latestFrame = pixels;
+                    _latestFrameGeneration++;
+                    FirstDataAt ??= DateTimeOffset.UtcNow;
+                }
+                Interlocked.Increment(ref _capturedFrameCount);
+                _firstCapturedFrameTcs.TrySetResult();
             }
             catch (Exception ex)
             {
-                // Best-effort logging. The frame-arrived
-                // callback is a fire-and-forget Task; we
-                // can't throw out of it. If the write
-                // fails (ffmpeg closed stdin), StopAsync
-                // will clean up.
-                System.Console.Error.WriteLine(
-                    $"[cs] WindowsGraphicsCapturer: frame write failed: {ex.Message}");
+                var errorCount = Interlocked.Increment(ref frameErrorCount);
+                if (errorCount == 1)
+                {
+                    AppLog.Current?.WriteLine(
+                        $"[cs] WGC: FrameArrived callback failed: {ex}");
+                }
             }
         };
 
@@ -207,12 +231,33 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(10));
-            AppLog.Current?.WriteLine(
-                $"[cs] WGC: waiting for first frame from device='{_deviceId}'...");
+            var timeoutTask = Task.Delay(Timeout.Infinite, cts.Token);
             var winner = await Task.WhenAny(
-                _firstDataTcs.Task, _exitTcs.Task,
-                Task.Delay(Timeout.Infinite, cts.Token)).ConfigureAwait(false);
+                _firstCapturedFrameTcs.Task, _exitTcs.Task, timeoutTask).ConfigureAwait(false);
 
+            if (winner == _exitTcs.Task)
+            {
+                var code = await _exitTcs.Task.ConfigureAwait(false);
+                throw new CaptureException(SourceId,
+                    $"ffmpeg exited (code {code}) before capturing any data from '{SourceId}'.{Environment.NewLine}{ErrorTail()}");
+            }
+            if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
+            if (winner != _firstCapturedFrameTcs.Task)
+            {
+                throw new CaptureException(SourceId,
+                    $"No frame from '{SourceId}' within 10s. " +
+                    $"Frame events={Volatile.Read(ref frameArrivedCount)}, " +
+                    $"empty={Volatile.Read(ref nullFrameCount)}, " +
+                    $"callback errors={Volatile.Read(ref frameErrorCount)}." +
+                    $"{Environment.NewLine}{ErrorTail()}");
+            }
+
+            var writerCts = new CancellationTokenSource();
+            _frameWriterCts = writerCts;
+            _frameWriterTask = Task.Run(
+                () => WriteFramesAsync(stdin, writerCts.Token));
+            winner = await Task.WhenAny(
+                _firstDataTcs.Task, _exitTcs.Task, timeoutTask).ConfigureAwait(false);
             if (winner == _exitTcs.Task)
             {
                 var code = await _exitTcs.Task.ConfigureAwait(false);
@@ -222,13 +267,11 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
             if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
             if (winner != _firstDataTcs.Task)
             {
-                AppLog.Current?.WriteLine(
-                    $"[cs] WGC: no data from device='{_deviceId}' within 10s");
                 throw new CaptureException(SourceId,
                     $"No data from '{SourceId}' within 10s of starting capture.{Environment.NewLine}{ErrorTail()}");
             }
             AppLog.Current?.WriteLine(
-                $"[cs] WGC: first frame from device='{_deviceId}' OK, recording started");
+                $"[cs] WGC: window recording started ({width}x{height})");
         }
         catch
         {
@@ -317,16 +360,11 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
     /// </summary>
     private static GraphicsCaptureItem CreateItemFromWindow(IntPtr hwnd)
     {
-        AppLog.Current?.WriteLine(
-            $"[cs] WGC: CreateItemFromWindow begin, hwnd={hwnd:X}");
-
         // Get the activation factory as an IObjectReference.
         // The string is the WinRT class name (not the
         // .NET projection name).
         var factoryRef = WinRT.ActivationFactory.Get(
             "Windows.Graphics.Capture.GraphicsCaptureItem");
-        AppLog.Current?.WriteLine(
-            $"[cs] WGC: activation factory obtained");
         var factoryPtr = factoryRef.GetRef();
         try
         {
@@ -337,11 +375,7 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
             // implements. Use Marshal.QueryInterface (the
             // proper .NET wrapper for IUnknown::QueryInterface).
             var interopIid = typeof(IGraphicsCaptureItemInterop).GUID;
-            AppLog.Current?.WriteLine(
-                $"[cs] WGC: calling QueryInterface for IGraphicsCaptureItemInterop...");
             Marshal.QueryInterface(factoryPtr, in interopIid, out var interopPtr);
-            AppLog.Current?.WriteLine(
-                $"[cs] WGC: QueryInterface returned interopPtr={interopPtr:X}");
             if (interopPtr == IntPtr.Zero)
             {
                 throw new InvalidOperationException(
@@ -358,12 +392,8 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
                 var interop =
                     (IGraphicsCaptureItemInterop)Marshal.GetTypedObjectForIUnknown(
                         interopPtr, typeof(IGraphicsCaptureItemInterop));
-                AppLog.Current?.WriteLine(
-                    $"[cs] WGC: calling CreateForWindow...");
                 var itemIid = GraphicsCaptureItemGuid;
                 interop.CreateForWindow(hwnd, ref itemIid, out var itemPtr);
-                AppLog.Current?.WriteLine(
-                    $"[cs] WGC: CreateForWindow returned itemPtr={itemPtr:X}");
                 if (itemPtr == IntPtr.Zero)
                 {
                     throw new InvalidOperationException(
@@ -379,8 +409,6 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
                     // CsWinRT path; using it directly is the
                     // documented way to wrap a raw WinRT pointer
                     // without going through a public factory method.
-                    AppLog.Current?.WriteLine(
-                        $"[cs] WGC: calling FromAbi...");
                     return ABI.Windows.Graphics.Capture.GraphicsCaptureItem.FromAbi(itemPtr);
                 }
                 catch
@@ -457,6 +485,10 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
             "-video_size", $"{width}x{height}",
             "-framerate", _framerate.ToString(),
             "-i", "-",
+            // libx264's yuv420p output requires even dimensions. WGC can
+            // report odd-sized windows, so pad the right/bottom edge
+            // rather than cropping captured pixels.
+            "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
             "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
             "-crf", "18", "-pix_fmt", "yuv420p", "-r", _framerate.ToString(),
             "-y", OutputFile,
@@ -492,10 +524,11 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
     public async Task StopAsync(CancellationToken ct)
     {
 #if WINDOWS
-        // Stop the capture session first so no more
-        // frames arrive. Then close ffmpeg's stdin
-        // (EOF → ffmpeg finalizes the file).
-        try { /* session is already disposed via framePool.Dispose() in DisposeAsync */ } catch { }
+        await StopCaptureAndWriterAsync().ConfigureAwait(false);
+        AppLog.Current?.WriteLine(
+            $"[cs] WGC: frames captured={Interlocked.Read(ref _capturedFrameCount)}, " +
+            $"written={Interlocked.Read(ref _writtenFrameCount)} " +
+            $"(repeated={Interlocked.Read(ref _repeatedFrameCount)})");
 #endif
         var process = _process;
         if (process is null) return;
@@ -519,6 +552,7 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         if (_disposed) return;
         _disposed = true;
 #if WINDOWS
+        await StopCaptureAndWriterAsync().ConfigureAwait(false);
         // Disposing the frame pool disposes the session
         // implicitly (per the WinRT docs). The D3D11
         // frame reader holds the raw ID3D11Device* + a
@@ -539,6 +573,80 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         }
         await Task.CompletedTask.ConfigureAwait(false);
     }
+
+#if WINDOWS
+    private async Task StopCaptureAndWriterAsync()
+    {
+        // Stop WGC first so the latest-frame buffer cannot be replaced
+        // while the fixed-rate writer is being shut down.
+        _sessionDisposable?.Dispose();
+        _sessionDisposable = null;
+        _framePoolDisposable?.Dispose();
+        _framePoolDisposable = null;
+
+        var writerCts = _frameWriterCts;
+        _frameWriterCts = null;
+        writerCts?.Cancel();
+        var writer = _frameWriterTask;
+        _frameWriterTask = null;
+        if (writer is not null)
+        {
+            try { await writer.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+        }
+        writerCts?.Dispose();
+    }
+
+    private async Task WriteFramesAsync(Stream stdin, CancellationToken ct)
+    {
+        long frameIndex = 0;
+        long lastGeneration = -1;
+        var startTimestamp = Stopwatch.GetTimestamp();
+
+        try
+        {
+            while (true)
+            {
+                var targetTimestamp = startTimestamp +
+                    frameIndex * Stopwatch.Frequency / _framerate;
+                var remainingTicks = targetTimestamp - Stopwatch.GetTimestamp();
+                if (remainingTicks > 0)
+                {
+                    var delay = TimeSpan.FromSeconds(
+                        (double)remainingTicks / Stopwatch.Frequency);
+                    await Task.Delay(delay, ct).ConfigureAwait(false);
+                }
+
+                byte[]? pixels;
+                long generation;
+                lock (_latestFrameLock)
+                {
+                    pixels = _latestFrame;
+                    generation = _latestFrameGeneration;
+                }
+                if (pixels is null)
+                    continue;
+
+                await stdin.WriteAsync(pixels.AsMemory(), ct).ConfigureAwait(false);
+                MarkFirstData();
+                Interlocked.Increment(ref _writtenFrameCount);
+                if (generation == lastGeneration)
+                    Interlocked.Increment(ref _repeatedFrameCount);
+                else
+                    lastGeneration = generation;
+                frameIndex++;
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppLog.Current?.WriteLine(
+                $"[cs] WGC: fixed-rate frame writer failed: {ex}");
+        }
+    }
+#endif
 
     private void MarkFirstData()
     {
