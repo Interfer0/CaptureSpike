@@ -35,8 +35,14 @@ public static class DeviceParsers
 
     /// <summary>True if the device id is the modern
     /// HWND form (starts with <see cref="HwndPrefix"/>).</summary>
-    public static bool IsHwndDeviceId(string? deviceId) =>
-        !string.IsNullOrEmpty(deviceId) && deviceId.StartsWith(HwndPrefix, StringComparison.Ordinal);
+    private static readonly string HwndPrefixLower = "hwnd:";
+    private static readonly string HwndPrefixUpper = "HWND:";
+
+    public static bool IsHwndDeviceId(string? deviceId)
+    {
+        if (string.IsNullOrEmpty(deviceId)) return false;
+        return deviceId.StartsWith(HwndPrefixLower, StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>Parse the "hwnd:0xABCD" form. Returns
     /// false if the id isn't in that form or the hex
@@ -45,11 +51,22 @@ public static class DeviceParsers
     {
         hwnd = IntPtr.Zero;
         if (!IsHwndDeviceId(deviceId)) return false;
-        var hex = deviceId!.Substring(HwndPrefix.Length).Trim();
-        if (!long.TryParse(hex, System.Globalization.NumberStyles.HexNumber,
-            System.Globalization.CultureInfo.InvariantCulture, out var raw))
+        // Strip the prefix (case-insensitive) to get the
+        // hex portion. We don't use HwndPrefix.Length
+        // directly because we'd lose case-folding
+        // semantics.
+        var raw = deviceId!.Trim();
+        if (raw.StartsWith(HwndPrefixUpper, StringComparison.OrdinalIgnoreCase))
+            raw = raw.Substring(HwndPrefixUpper.Length).Trim();
+        else
+            raw = raw.Substring(HwndPrefixLower.Length).Trim();
+        // Strip the optional "0x" prefix.
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            raw = raw.Substring(2);
+        if (!long.TryParse(raw, System.Globalization.NumberStyles.HexNumber,
+            System.Globalization.CultureInfo.InvariantCulture, out var parsed))
             return false;
-        hwnd = new IntPtr(raw);
+        hwnd = new IntPtr(parsed);
         return true;
     }
 
