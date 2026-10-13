@@ -6,6 +6,7 @@ using System;
 using System.Runtime.InteropServices;
 using global::Windows.Graphics.DirectX;
 using global::Windows.Graphics.DirectX.Direct3D11;
+using CaptureSpike.Core;
 #endif
 
 namespace CaptureSpike.Core.Capture.Windows;
@@ -236,6 +237,7 @@ internal sealed class D3D11FrameReader : IDisposable
     /// </summary>
     public static IDirect3DDevice CreateWinRtDevice(out IntPtr d3d11Device)
     {
+        AppLog.Current?.WriteLine("[cs] WGC: D3D11FrameReader.CreateWinRtDevice begin");
         // D3D11CreateDevice wants a D3D_FEATURE_LEVEL[]. We
         // use 11.0 (the only one we need).
         var featureLevels = new uint[] { 0xb000 /* D3D_FEATURE_LEVEL_11_0 = 0xb000 */ };
@@ -249,6 +251,8 @@ internal sealed class D3D11FrameReader : IDisposable
                 .AsBytes(featureLevels.AsSpan());
             for (var i = 0; i < flSpan.Length; i++)
                 Marshal.WriteByte(flPtr, i, flSpan[i]);
+            AppLog.Current?.WriteLine(
+                "[cs] WGC: D3D11FrameReader calling D3D11CreateDevice...");
             var hr = D3D11CreateDevice(
                 IntPtr.Zero,    // default adapter
                 1,              // D3D_DRIVER_TYPE_HARDWARE
@@ -258,6 +262,8 @@ internal sealed class D3D11FrameReader : IDisposable
                 (uint)featureLevels.Length,
                 7,              // D3D11_SDK_VERSION
                 out var d3dDevicePtr);
+            AppLog.Current?.WriteLine(
+                $"[cs] WGC: D3D11CreateDevice returned hr=0x{hr:X8}, d3dDevicePtr={d3dDevicePtr:X}");
             if (hr < 0) throw new InvalidOperationException(
                 $"D3D11CreateDevice failed (hr=0x{hr:X8}).");
 
@@ -266,18 +272,28 @@ internal sealed class D3D11FrameReader : IDisposable
             // local because QueryInterface takes `ref Guid`.
             var iid = IID_IDXGIDevice;
             var unknown = (IUnknown)Marshal.GetObjectForIUnknown(d3dDevicePtr);
+            AppLog.Current?.WriteLine(
+                $"[cs] WGC: ID3D11Device::QueryInterface(IDXGIDevice)...");
             var dxgiPtr = unknown.QueryInterface(ref iid);
+            AppLog.Current?.WriteLine(
+                $"[cs] WGC: IDXGIDevice pointer = {dxgiPtr:X}");
             try
             {
                 if (dxgiPtr == IntPtr.Zero) throw new InvalidOperationException(
                     "ID3D11Device did not expose IDXGIDevice.");
 
                 // Wrap the IDXGIDevice in a WinRT IDirect3DDevice.
+                AppLog.Current?.WriteLine(
+                    "[cs] WGC: CreateDirect3D11DeviceFromDXGIDevice...");
                 var hr2 = CreateDirect3D11DeviceFromDXGIDevice(dxgiPtr, out var inspectablePtr);
+                AppLog.Current?.WriteLine(
+                    $"[cs] WGC: CreateDirect3D11DeviceFromDXGIDevice returned hr=0x{hr2:X8}, inspectablePtr={inspectablePtr:X}");
                 if (hr2 < 0) throw new InvalidOperationException(
                     $"CreateDirect3D11DeviceFromDXGIDevice failed (hr=0x{hr2:X8}).");
 
                 d3d11Device = d3dDevicePtr;
+                AppLog.Current?.WriteLine(
+                    "[cs] WGC: IDirect3DDevice wrapping succeeded");
                 return (IDirect3DDevice)Marshal.GetObjectForIUnknown(inspectablePtr);
             }
             finally
