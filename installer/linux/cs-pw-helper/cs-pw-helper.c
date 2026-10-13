@@ -201,34 +201,77 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
             g_frame_format = fmt.format;
             break;
     }
-    g_frame_stride = g_frame_width * 4;
-    fprintf(stderr, "cs-pw-helper: video %dx%d @ %d/%d fps, format %d\n",
-        g_frame_width, g_frame_height, g_framerate_num, g_framerate_den, g_frame_format);
+    /* Compute per-format stride. BGRA/BGRx/RGBx/RGBA = 4
+     * bytes/pixel, YUY2 = 2 bytes/pixel. The width*4 default
+     * is only correct for the BGRA family. */
+    int bytes_per_pixel;
+    switch (g_frame_format) {
+        case SPA_VIDEO_FORMAT_BGRA:
+        case SPA_VIDEO_FORMAT_BGRx:
+        case SPA_VIDEO_FORMAT_RGBA:
+        case SPA_VIDEO_FORMAT_RGBx:
+        case SPA_VIDEO_FORMAT_BGR:
+        case SPA_VIDEO_FORMAT_RGB:
+            bytes_per_pixel = 4; break;
+        case SPA_VIDEO_FORMAT_YUY2:
+        case SPA_VIDEO_FORMAT_YVYU:
+        case SPA_VIDEO_FORMAT_UYVY:
+        case SPA_VIDEO_FORMAT_VYUY:
+            bytes_per_pixel = 2; break;
+        case SPA_VIDEO_FORMAT_I420:
+        case SPA_VIDEO_FORMAT_YV12:
+        case SPA_VIDEO_FORMAT_NV12:
+        case SPA_VIDEO_FORMAT_NV21:
+            bytes_per_pixel = 1; /* avg, used for size; stride is width for Y */
+            break;
+        default:
+            bytes_per_pixel = 4;
+    }
+    g_frame_stride = g_frame_width * bytes_per_pixel;
+    fprintf(stderr, "cs-pw-helper: video %dx%d stride=%d @ %d/%d fps, format %d\n",
+        g_frame_width, g_frame_height, g_frame_stride,
+        g_framerate_num, g_framerate_den, g_frame_format);
     emit_header_line(g_frame_width, g_frame_height, g_framerate_num, g_framerate_den);
 
-    /* After format negotiation, send buffer configuration
-     * back to PipeWire so it knows how to allocate the
-     * buffer pool. Without this, pw_stream_dequeue_buffer
-     * never returns a buffer. */
-    {
-        uint8_t buf[1024];
+    /* IMPORTANT: the SPA_PARAM_Buffers + SPA_PARAM_Meta pods
+     * are written into STATIC storage. PipeWire's negotiation
+     * thread dereferences these pointers after this function
+     * returns, so stack storage (the previous bug) caused
+     * a use-after-free that killed the stream. */
+    static uint8_t g_buffers_pod[1024];
+    static struct spa_pod *g_buffers_params[4];
+    static int g_buffers_n_params = 0;
+    static int g_buffers_built = 0;
+
+    if (!g_buffers_built) {
         struct spa_pod_builder b = {0};
-        spa_pod_builder_init(&b, buf, sizeof(buf));
-        const struct spa_pod *params[1];
-        uint32_t n_params = 0;
-        params[n_params++] = spa_pod_builder_add_object(&b,
+        spa_pod_builder_init(&b, g_buffers_pod, sizeof(g_buffers_pod));
+        g_buffers_n_params = 0;
+        /* Buffers: how many, what size, what stride, what data type. */
+        g_buffers_params[g_buffers_n_params++] = spa_pod_builder_add_object(&b,
             SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
             SPA_PARAM_BUFFERS_buffers,  SPA_POD_CHOICE_RANGE_Int(8, 2, 32),
             SPA_PARAM_BUFFERS_blocks,   SPA_POD_Int(1),
             SPA_PARAM_BUFFERS_size,     SPA_POD_Int(g_frame_stride * g_frame_height),
             SPA_PARAM_BUFFERS_stride,   SPA_POD_Int(g_frame_stride),
             SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int((1 << SPA_DATA_MemPtr)));
-        int r = pw_stream_update_params(g_pw_stream, params, n_params);
-        fprintf(stderr, "cs-pw-helper: pw_stream_update_params returned %d\n", r);
+        /* Meta: timing information (pts, duration). The
+         * compositor fills this in for each frame. We don't
+         * need VideoCrop/Cursor for screen capture. */
+        g_buffers_params[g_buffers_n_params++] = spa_pod_builder_add_object(&b,
+            SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+            SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
+            SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_header)));
+        g_buffers_built = 1;
     }
 
+    int r = pw_stream_update_params(g_pw_stream, g_buffers_params, g_buffers_n_params);
+    fprintf(stderr, "cs-pw-helper: pw_stream_update_params returned %d\n", r);
+
     /* We had INACTIVE set; now that the format is
-     * negotiated, activate the stream. */
+     * negotiated and buffers are configured, activate
+     * the stream. The state goes 2 (PAUSED) -> 3 (STREAMING)
+     * and on_process starts firing. */
     if (g_pw_stream) {
         fprintf(stderr, "cs-pw-helper: calling pw_stream_set_active(TRUE)\n");
         pw_stream_set_active(g_pw_stream, true);
@@ -241,6 +284,27 @@ static void on_stream_process(void *data) {
     if (++g_process_call_count <= 3) {
         fprintf(stderr, "cs-pw-helper: on_stream_process called (count=%d) client_fd=%d\n",
             g_process_call_count, g_client_fd);
+    }
+    /* If we never received a Format event, derive the
+     * size from the first frame. We assume BGRA (4
+     * bytes/pixel) which is the screencast default. */
+    if (g_frame_width == 0) {
+        struct pw_buffer *b = pw_stream_dequeue_buffer(g_pw_stream);
+        if (b) {
+            struct spa_buffer *sbuf = b->buffer;
+            if (sbuf->datas[0].chunk && sbuf->datas[0].chunk->size > 0) {
+                uint32_t stride = sbuf->datas[0].chunk->stride;
+                if (stride == 0) stride = 1920 * 4;  /* assume full HD BGRA */
+                g_frame_width = stride / 4;
+                g_frame_height = sbuf->datas[0].chunk->size / stride;
+                g_frame_format = SPA_VIDEO_FORMAT_BGRA;
+                g_frame_stride = stride;
+                fprintf(stderr, "cs-pw-helper: derived format from first frame: %dx%d stride=%d\n",
+                    g_frame_width, g_frame_height, g_frame_stride);
+                emit_header_line(g_frame_width, g_frame_height, g_framerate_num, g_framerate_den);
+            }
+            pw_stream_queue_buffer(g_pw_stream, b);
+        }
     }
     if (g_client_fd < 0) {
         struct pw_buffer *b;
@@ -296,13 +360,16 @@ static void build_format_pod(void) {
         SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
         SPA_FORMAT_mediaType,       SPA_POD_Id(SPA_MEDIA_TYPE_video),
         SPA_FORMAT_mediaSubtype,    SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
+        /* BGRA/BGRx/RGBx/RGBA are preferred for screencast
+         * (gnome-remote-desktop, wlroots-portal). YUY2 is a
+         * fallback for V4L2 cameras in --node-id test mode.
+         * Order matters: the first one is the default. */
         SPA_FORMAT_VIDEO_format,    SPA_POD_CHOICE_ENUM_Id(
-            8, SPA_VIDEO_FORMAT_BGRA, SPA_VIDEO_FORMAT_BGRx,
-            SPA_VIDEO_FORMAT_BGR, SPA_VIDEO_FORMAT_RGBx,
-            SPA_VIDEO_FORMAT_YUY2, SPA_VIDEO_FORMAT_YV12,
-            SPA_VIDEO_FORMAT_I420, SPA_VIDEO_FORMAT_NV12),
+            5, SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_BGRA,
+            SPA_VIDEO_FORMAT_RGBx, SPA_VIDEO_FORMAT_RGBA,
+            SPA_VIDEO_FORMAT_YUY2),
         SPA_FORMAT_VIDEO_size,      SPA_POD_CHOICE_RANGE_Rectangle(
-            &SPA_RECTANGLE(1920, 1080),
+            &SPA_RECTANGLE(0, 0),
             &SPA_RECTANGLE(1, 1),
             &SPA_RECTANGLE(7680, 4320)),
         SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(
@@ -320,7 +387,17 @@ static uint32_t g_setup_node_id = 0;
 
 static void setup_pw_stream_on_pw_thread(uint32_t node_id) {
     fprintf(stderr, "cs-pw-helper: setup_pw_stream_on_pw_thread node_id=%u\n", node_id);
-    g_pw_stream = pw_stream_new(g_pw_core, "cs-pw-helper-capture", NULL);
+    /* MediaType=Video, Category=Capture, Role=Screen.
+     * The role tells PipeWire this is a screencast capture,
+     * not a V4L2 camera capture. The screencast source
+     * (gnome-remote-desktop / wlroots-portal) will only
+     * autoconnect to streams with the right role. */
+    struct pw_properties *props = pw_properties_new(
+        PW_KEY_MEDIA_TYPE, "Video",
+        PW_KEY_MEDIA_CATEGORY, "Capture",
+        PW_KEY_MEDIA_ROLE, "Screen",
+        NULL);
+    g_pw_stream = pw_stream_new(g_pw_core, "cs-pw-helper-capture", props);
     if (g_pw_stream == NULL) {
         fprintf(stderr, "cs-pw-helper: pw_stream_new failed\n");
         return;
