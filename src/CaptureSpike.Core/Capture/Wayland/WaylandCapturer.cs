@@ -96,17 +96,21 @@ public sealed class WaylandCapturer : ISourceCapturer
 
     /// <summary>
     /// Pick a unique Unix socket path. Includes the
-    /// process id and source id so two takes at the same
-    /// time don't collide. Cleans up stale sockets from
-    /// prior crashed runs.
+    /// process id, a per-take counter, and the source id so
+    /// two takes at the same time (or back-to-back with the
+    /// same source) don't collide. We use a counter rather
+    /// than deleting a possibly-in-use stale socket.
     /// </summary>
+    private static int s_takeCounter;
     private static string PickSocketPath(string sourceId)
     {
         var safeId = new string(sourceId
             .Select(c => char.IsLetterOrDigit(c) || c == '-' ? c : '_').ToArray());
-        var path = $"/tmp/capturespike-pw-{Environment.ProcessId}-{safeId}.sock";
-        try { File.Delete(path); } catch { /* may not exist */ }
-        return path;
+        int n = Interlocked.Increment(ref s_takeCounter);
+        // No File.Delete: a stale socket from another running
+        // instance is none of our business. If we get EADDRINUSE
+        // we should fail loudly rather than stomp someone.
+        return $"/tmp/capturespike-pw-{Environment.ProcessId}-{n}-{safeId}.sock";
     }
 
     public async Task StartAsync(DateTimeOffset t0, CancellationToken ct)
@@ -136,6 +140,19 @@ public sealed class WaylandCapturer : ISourceCapturer
             ?? throw new CaptureException(SourceId,
                 $"Could not start the Wayland screen-capture helper at '{_helperPath}'.");
         _helper.EnableRaisingEvents = true;
+        // If the helper dies before writing the CSWH line,
+        // fail the wait fast instead of waiting the full
+        // 60s timeout. The Exited event fires on a ThreadPool
+        // thread; we capture the exit code and use it in
+        // the error message below.
+        _helper.Exited += (_, _) =>
+        {
+            int code = -1;
+            try { code = _helper?.ExitCode ?? -1; } catch { }
+            _headerTcs.TrySetException(new CaptureException(SourceId,
+                $"cs-pw-helper exited with code {code} before writing the CSWH header. " +
+                $"Stderr: {HelperStderrTail()}"));
+        };
         _ = Task.Run(() => ReadHelperStderrAsync(_helper.StandardError, ct), ct);
 
         // Wait for the helper to print the negotiated
