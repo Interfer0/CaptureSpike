@@ -197,13 +197,36 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
         case SPA_VIDEO_FORMAT_BGRx:
         case SPA_VIDEO_FORMAT_BGR: g_frame_format = SPA_VIDEO_FORMAT_BGRx; break;
         default:
-            fprintf(stderr, "cs-pw-helper: unsupported pixel format %d\n", fmt.format);
-            return;
+            fprintf(stderr, "cs-pw-helper: unsupported pixel format %d (will accept but not parse)\n", fmt.format);
+            g_frame_format = fmt.format;
+            break;
     }
     g_frame_stride = g_frame_width * 4;
     fprintf(stderr, "cs-pw-helper: video %dx%d @ %d/%d fps, format %d\n",
         g_frame_width, g_frame_height, g_framerate_num, g_framerate_den, g_frame_format);
     emit_header_line(g_frame_width, g_frame_height, g_framerate_num, g_framerate_den);
+
+    /* After format negotiation, send buffer configuration
+     * back to PipeWire so it knows how to allocate the
+     * buffer pool. Without this, pw_stream_dequeue_buffer
+     * never returns a buffer. */
+    {
+        uint8_t buf[1024];
+        struct spa_pod_builder b = {0};
+        spa_pod_builder_init(&b, buf, sizeof(buf));
+        const struct spa_pod *params[1];
+        uint32_t n_params = 0;
+        params[n_params++] = spa_pod_builder_add_object(&b,
+            SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
+            SPA_PARAM_BUFFERS_buffers,  SPA_POD_CHOICE_RANGE_Int(8, 2, 32),
+            SPA_PARAM_BUFFERS_blocks,   SPA_POD_Int(1),
+            SPA_PARAM_BUFFERS_size,     SPA_POD_Int(g_frame_stride * g_frame_height),
+            SPA_PARAM_BUFFERS_stride,   SPA_POD_Int(g_frame_stride),
+            SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int((1 << SPA_DATA_MemPtr)));
+        int r = pw_stream_update_params(g_pw_stream, params, n_params);
+        fprintf(stderr, "cs-pw-helper: pw_stream_update_params returned %d\n", r);
+    }
+
     /* We had INACTIVE set; now that the format is
      * negotiated, activate the stream. */
     if (g_pw_stream) {
@@ -266,13 +289,18 @@ static struct spa_pod *g_pod_params[1];
 static void build_format_pod(void) {
     struct spa_pod_builder b = {0};
     spa_pod_builder_init(&b, g_pod_buffer, sizeof(g_pod_buffer));
+    /* Use SPA_PARAM_EnumFormat (not SPA_PARAM_Format) to enumerate
+     * the formats we can accept. The server picks one and sends
+     * us a Format param_changed event with the chosen format. */
     g_pod_params[0] = (struct spa_pod *)spa_pod_builder_add_object(&b,
-        SPA_TYPE_OBJECT_Format, SPA_PARAM_Format,
+        SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
         SPA_FORMAT_mediaType,       SPA_POD_Id(SPA_MEDIA_TYPE_video),
         SPA_FORMAT_mediaSubtype,    SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
         SPA_FORMAT_VIDEO_format,    SPA_POD_CHOICE_ENUM_Id(
-            4, SPA_VIDEO_FORMAT_BGRA, SPA_VIDEO_FORMAT_BGRx,
-            SPA_VIDEO_FORMAT_BGR, SPA_VIDEO_FORMAT_RGBx),
+            8, SPA_VIDEO_FORMAT_BGRA, SPA_VIDEO_FORMAT_BGRx,
+            SPA_VIDEO_FORMAT_BGR, SPA_VIDEO_FORMAT_RGBx,
+            SPA_VIDEO_FORMAT_YUY2, SPA_VIDEO_FORMAT_YV12,
+            SPA_VIDEO_FORMAT_I420, SPA_VIDEO_FORMAT_NV12),
         SPA_FORMAT_VIDEO_size,      SPA_POD_CHOICE_RANGE_Rectangle(
             &SPA_RECTANGLE(1920, 1080),
             &SPA_RECTANGLE(1, 1),
@@ -306,11 +334,22 @@ static void setup_pw_stream_on_pw_thread(uint32_t node_id) {
      * With INACTIVE, the stream pauses at PAUSED state until
      * we call pw_stream_set_active(TRUE). We do that after
      * we receive a Format param. */
+    /* No INACTIVE flag: the source starts streaming
+     * immediately with whatever it picks from our
+     * EnumFormat. We can read the format from
+     * on_stream_param_changed when it fires, and
+     * also from the size of the first frame in
+     * on_stream_process. */
+    /* Use INACTIVE: stay at state 1 (PAUSED) until format
+     * is negotiated, then call pw_stream_set_active(TRUE)
+     * to go to state 2 (STREAMING). This gives us a chance
+     * to call pw_stream_update_params with the buffer
+     * config before any frames flow. */
     if (pw_stream_connect(g_pw_stream,
             SPA_DIRECTION_INPUT, node_id,
             PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_INACTIVE,
             (const struct spa_pod **)g_pod_params, 1) < 0) {
-        fprintf(stderr, "cs-pw-helper: pw_stream_connect with BGRA format failed; "
+        fprintf(stderr, "cs-pw-helper: pw_stream_connect with EnumFormat failed; "
             "trying with NULL params\n");
         if (pw_stream_connect(g_pw_stream,
                 SPA_DIRECTION_INPUT, node_id,
