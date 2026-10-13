@@ -28,20 +28,20 @@ public static class DeviceParsers
     private static readonly Regex GeometryPattern =
         new(@"^(\d+)x(\d+)\+(\d+)\+(\d+)$", RegexOptions.Compiled);
 
-    /// <summary>Prefix used by the window device picker to
-    /// mark a device id as a literal HWND (vs a legacy
-    /// plain-title entry from before WGC support was added).</summary>
+    /// <summary>Prefix used by
+    /// <see cref="DeviceEnumeration.GetWindows"/> to mark
+    /// a device id as a literal HWND (vs a legacy
+    /// plain-title entry from before WGC support was
+    /// added).</summary>
     public const string HwndPrefix = "hwnd:";
 
-    /// <summary>True if the device id is the modern
-    /// HWND form (starts with <see cref="HwndPrefix"/>).</summary>
-    private static readonly string HwndPrefixLower = "hwnd:";
-    private static readonly string HwndPrefixUpper = "HWND:";
-
+    /// <summary>True if the device id is in the
+    /// HWND form (case-insensitive — accepts both
+    /// "hwnd:" and "HWND:").</summary>
     public static bool IsHwndDeviceId(string? deviceId)
     {
         if (string.IsNullOrEmpty(deviceId)) return false;
-        return deviceId.StartsWith(HwndPrefixLower, StringComparison.OrdinalIgnoreCase);
+        return deviceId.StartsWith(HwndPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Parse the "hwnd:0xABCD" form. Returns
@@ -51,16 +51,13 @@ public static class DeviceParsers
     {
         hwnd = IntPtr.Zero;
         if (!IsHwndDeviceId(deviceId)) return false;
-        // Strip the prefix (case-insensitive) to get the
-        // hex portion. We don't use HwndPrefix.Length
-        // directly because we'd lose case-folding
-        // semantics.
+        // Strip the case-insensitive "hwnd:" / "HWND:"
+        // prefix, then any leading "0x" / "0X". The hex
+        // literal remains; NumberStyles.HexNumber parses
+        // it as base 16.
         var raw = deviceId!.Trim();
-        if (raw.StartsWith(HwndPrefixUpper, StringComparison.OrdinalIgnoreCase))
-            raw = raw.Substring(HwndPrefixUpper.Length).Trim();
-        else
-            raw = raw.Substring(HwndPrefixLower.Length).Trim();
-        // Strip the optional "0x" prefix.
+        if (raw.StartsWith(HwndPrefix, StringComparison.OrdinalIgnoreCase))
+            raw = raw.Substring(HwndPrefix.Length).Trim();
         if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
             raw = raw.Substring(2);
         if (!long.TryParse(raw, System.Globalization.NumberStyles.HexNumber,

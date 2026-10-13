@@ -1,43 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2024-2026 Daniel Bigelow
 
-using System.Runtime.InteropServices;
-
 namespace CaptureSpike.Core.Capture;
 
-/// <summary>
-/// Provides the HWND of the application's main window to
-/// native code (specifically, the WGC picker on Windows
-/// needs the HWND to make the picker dialog modal and to
-/// display the picker at all in a desktop app).
-///
-/// The UI layer sets the value at startup. Core code
-/// (notably <see cref="WindowsGraphicsCapturer"/>) reads
-/// it when it needs to talk to a windowing system API.
-///
-/// On non-Windows or before the UI is up, the value is
-/// null and the capturer falls back to no-op or throws
-/// a clear error.
-/// </summary>
-public static class WindowHandleProvider
-{
-    private static nint? _mainWindowHandle;
-
-    /// <summary>
-    /// Set by the UI layer at app startup. The handle is
-    /// the platform window handle (HWND on Windows, X11
-    /// window ID on Linux, etc.). Set to null to clear.
-    /// </summary>
-    public static void SetMainWindowHandle(nint? handle) => _mainWindowHandle = handle;
-
-    /// <summary>
-    /// Read by Core code that needs a window handle. Returns
-    /// null if the handle hasn't been set yet (e.g. the UI
-    /// isn't initialized, or the user is on a platform that
-    /// doesn't have the concept of a main window).
-    /// </summary>
-    public static nint? MainWindowHandle => _mainWindowHandle;
-}
+// WindowHandleProvider was removed when the WGC system
+// picker was removed (Daniel's feedback: 'the picker
+// did not start, nor should it be needed'). The capturer
+// uses the HWND stored in the source's device field
+// directly via IGraphicsCaptureItemInterop.
+//
+// If a future API needs the main window's HWND (e.g.
+// for COM init that requires a parent), reintroduce
+// this class and wire App.axaml.cs to call Set.
 
 /// <summary>
 /// Internal accessor for the ffmpeg binary path. Tests

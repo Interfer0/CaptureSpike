@@ -13,7 +13,6 @@ using global::Windows.Graphics.Capture;
 using global::Windows.Graphics.DirectX;
 using global::Windows.Graphics.DirectX.Direct3D11;
 using CaptureSpike.Core.Capture.Windows;
-using WinRT.Interop;
 #endif
 
 namespace CaptureSpike.Core.Capture;
@@ -24,10 +23,13 @@ namespace CaptureSpike.Core.Capture;
 /// Microsoft-recommended path that captures the actual
 /// GPU-composed pixels of a single window.
 ///
-/// The user picks the window via the system
-/// <see cref="GraphicsCapturePicker"/> dialog (the same
-/// pattern as the Wayland portal dialog on Linux). The
-/// picker is modal to the app's main window.
+/// The window is selected by the user from the source
+/// device dropdown (populated by <see cref="DeviceEnumeration.GetWindows"/>).
+/// The selected HWND is stored in <c>source.Device</c>
+/// as <c>"hwnd:0xABCD"</c>. There is no system picker
+/// at record time — the capturer uses the stored HWND
+/// directly via the IGraphicsCaptureItemInterop COM
+/// interop interface.
 ///
 /// Frames are pulled from a <c>Direct3D11CaptureFramePool</c>
 /// and copied from the GPU surface to a CPU-side BGRA
@@ -57,7 +59,6 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
     private readonly int _framerate;
     private readonly string? _deviceId;
 #if WINDOWS
-    private readonly IntPtr _parentHwnd;
     private D3D11FrameReader? _frameReader;
     private IDisposable? _framePoolDisposable;
     private IDisposable? _sessionDisposable;
@@ -75,9 +76,10 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
 
     /// <summary>
     /// Build a WindowsGraphicsCapturer. On Windows this
-    /// shows the WGC picker dialog and starts capturing
-    /// the chosen window. On non-Windows this throws
-    /// (the capturer is only registered on Windows).
+    /// uses the HWND stored in <c>deviceId</c> (from the
+    /// source device dropdown) and starts capturing.
+    /// On non-Windows this throws (the capturer is
+    /// only registered on Windows).
     /// </summary>
     public WindowsGraphicsCapturer(
         string sourceId,
@@ -91,12 +93,7 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         _ffmpeg = ffmpeg;
         _framerate = framerate;
         _deviceId = deviceId;
-#if WINDOWS
-        _parentHwnd = WindowHandleProvider.MainWindowHandle
-            ?? throw new CaptureException(sourceId,
-                "Cannot start window capture: the application's main window " +
-                "handle is not set. This is a CaptureSpike bug — file an issue.");
-#else
+#if !WINDOWS
         throw new PlatformNotSupportedException(
             "WindowsGraphicsCapturer is only supported on Windows.");
 #endif
@@ -109,13 +106,14 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         throw new PlatformNotSupportedException(
             "WindowsGraphicsCapturer is only supported on Windows.");
 #else
-        // Step 1: get the GraphicsCaptureItem. We prefer
-        // the HWND form (hwnd:0xABCD) that the source
-        // dropdown stores. Legacy palette entries that
-        // store a plain window title (gdigrab format) are
-        // looked up via FindWindow; if that's also a miss
-        // (window was closed), we fall back to the system
-        // picker so the user can re-select.
+        // Step 1: get the GraphicsCaptureItem. The
+        // window is selected by the user from the source
+        // device dropdown (no system picker). The HWND
+        // is stored in source.Device in "hwnd:0xABCD"
+        // form. Legacy entries that store a plain title
+        // are looked up via FindWindow. If neither
+        // resolves, we fail with a clear error so the
+        // user knows to re-pick a window.
         var item = ResolveCaptureItem(ct);
         var (width, height) = (item.Size.Width, item.Size.Height);
 
@@ -389,41 +387,13 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
 
     private GraphicsCaptureItem ResolveCaptureItem(CancellationToken ct)
     {
-        // Diagnostic: log what we got so we can see why
-        // a given path was taken if the user reports a
-        // picker-appearing-when-it-shouldn't bug. Uses
-        // AppLog so the lines show up in the log file
-        // (not just stdout/stderr).
-        AppLog.Current?.WriteLine(
-            $"[cs] ResolveCaptureItem: deviceId='{_deviceId ?? "<null>"}'");
-
-        // Path 1: modern HWND form ("hwnd:0xABCD").
-        // The source dropdown stores this since the
-        // WGC migration. Direct path, no user interaction.
+        // Path 1: modern HWND form ("hwnd:0xABCD"). The
+        // source dropdown stores this since the WGC
+        // migration. Direct path, no user interaction,
+        // no system picker.
         if (DeviceParsers.TryParseHwnd(_deviceId, out var hwnd))
         {
-            AppLog.Current?.WriteLine(
-                $"[cs] Path 1 (HWND): using {hwnd:X}");
-            try
-            {
-                var cap = CreateItemFromWindow(hwnd);
-                AppLog.Current?.WriteLine(
-                    $"[cs] Path 1 (HWND): CreateItemFromWindow returned OK");
-                return cap;
-            }
-            catch (Exception ex)
-            {
-                // The HWND was valid when stored but the
-                // window has been closed since. Fall
-                // through to the picker as a last resort.
-                AppLog.Current?.WriteLine(
-                    $"[cs] stored HWND {hwnd:X} invalid: {ex.Message}");
-            }
-        }
-        else
-        {
-            AppLog.Current?.WriteLine(
-                $"[cs] Path 1 (HWND): TryParseHwnd returned false");
+            return CreateItemFromWindow(hwnd);
         }
 
         // Path 2: legacy plain-title form (the gdigrab
@@ -432,45 +402,26 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         // FindWindowW; if the window is still open, use
         // its current HWND. If FindWindow returns zero,
         // the window is gone.
-        if (!string.IsNullOrWhiteSpace(_deviceId) &&
-            !DeviceParsers.IsHwndDeviceId(_deviceId))
+        if (!string.IsNullOrWhiteSpace(_deviceId))
         {
             var found = FindWindowW(null, _deviceId);
             if (found != IntPtr.Zero)
             {
-                try
-                {
-                    var cap = CreateItemFromWindow(found);
-                    AppLog.Current?.WriteLine(
-                        $"[cs] Path 2 (title): CreateItemFromWindow({found:X}) returned OK");
-                    return cap;
-                }
-                catch (Exception ex)
-                {
-                    AppLog.Current?.WriteLine(
-                        $"[cs] Path 2 (title) {found:X} invalid: {ex.Message}");
-                }
+                return CreateItemFromWindow(found);
             }
         }
 
-        // Path 3: picker. The user gets the system
-        // picker so they can re-select. The HWND they
-        // pick should be saved back to the palette
-        // (TODO: not implemented in this pass; the
-        // picker just records once).
-        AppLog.Current?.WriteLine(
-            $"[cs] Path 3 (picker): falling back to system picker");
-        var picker = new GraphicsCapturePicker();
-        InitializeWithWindow.Initialize(picker, _parentHwnd);
-        var item = picker.PickSingleItemAsync().AsTask(ct).GetAwaiter().GetResult();
-        if (item is null)
-        {
-            throw new CaptureException(SourceId,
-                "Window capture was cancelled (no window was selected in the picker). " +
-                "Re-add the source and pick a window from the device dropdown to avoid " +
-                "the picker in the future.");
-        }
-        return item;
+        // No HWND could be resolved. The user has to
+        // re-pick a window from the source device
+        // dropdown. We do NOT fall back to the system
+        // WGC picker — Daniel's explicit feedback was
+        // "the picker did not start, nor should it be
+        // needed." The right fix is always in the
+        // dropdown.
+        throw new CaptureException(SourceId,
+            $"Could not find the window '{_deviceId}'. " +
+            "Re-open the source and pick a window from the device dropdown. " +
+            "The dropdown is populated with all currently-open windows.");
     }
 
     private IReadOnlyList<string> BuildFfmpegArgs(int width, int height)

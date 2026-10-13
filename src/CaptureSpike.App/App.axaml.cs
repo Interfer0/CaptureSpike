@@ -55,24 +55,6 @@ public partial class App : Application
             // hunting around.
             AppLog.Open();
             desktop.MainWindow = new MainWindow { DataContext = vm };
-#if WINDOWS
-            // Register the main window's HWND with
-            // WindowHandleProvider so the WGC picker
-            // (used by WindowsGraphicsCapturer for
-            // window capture) can be modal to our app.
-            // Done on the dispatcher after the window
-            // is realized, so the HWND is valid.
-            var mainWindow = (Window)desktop.MainWindow;
-            mainWindow.Loaded += (_, _) =>
-            {
-                var hwnd = mainWindow.TryGetPlatformHandle()?.Handle;
-                CaptureSpike.Core.Capture.WindowHandleProvider
-                    .SetMainWindowHandle(hwnd);
-            };
-            mainWindow.Closing += (_, _) =>
-                CaptureSpike.Core.Capture.WindowHandleProvider
-                    .SetMainWindowHandle(null);
-#endif
             SetupTrayIcon(desktop, (Window)desktop.MainWindow, vm);
             vm.Status = $"Log folder: {AppLog.LogDirectory}";
             vm.Log($"Session started. Log folder: {AppLog.LogDirectory}");
