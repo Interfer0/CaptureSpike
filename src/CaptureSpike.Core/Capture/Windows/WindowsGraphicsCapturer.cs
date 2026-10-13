@@ -291,14 +291,25 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
 
     private GraphicsCaptureItem ResolveCaptureItem(CancellationToken ct)
     {
+        // Diagnostic: log what we got so we can see why
+        // a given path was taken if the user reports a
+        // picker-appearing-when-it-shouldn't bug.
+        System.Console.Error.WriteLine(
+            $"[cs] ResolveCaptureItem: deviceId='{_deviceId ?? "<null>"}'");
+
         // Path 1: modern HWND form ("hwnd:0xABCD").
         // The source dropdown stores this since the
         // WGC migration. Direct path, no user interaction.
         if (DeviceParsers.TryParseHwnd(_deviceId, out var hwnd))
         {
+            System.Console.Error.WriteLine(
+                $"[cs] Path 1 (HWND): using {hwnd:X}");
             try
             {
-                return CreateItemFromWindow(hwnd);
+                var item = CreateItemFromWindow(hwnd);
+                System.Console.Error.WriteLine(
+                    $"[cs] Path 1 (HWND): CreateItemFromWindow returned OK");
+                return item;
             }
             catch (Exception ex)
             {
@@ -308,6 +319,11 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
                 System.Console.Error.WriteLine(
                     $"[cs] stored HWND {hwnd:X} invalid: {ex.Message}");
             }
+        }
+        else
+        {
+            System.Console.Error.WriteLine(
+                $"[cs] Path 1 (HWND): TryParseHwnd returned false");
         }
 
         // Path 2: legacy plain-title form (the gdigrab
@@ -324,9 +340,16 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
             {
                 try
                 {
-                    return CreateItemFromWindow(found);
+                    var item = CreateItemFromWindow(found);
+                    System.Console.Error.WriteLine(
+                        $"[cs] Path 2 (title): CreateItemFromWindow({found:X}) returned OK");
+                    return item;
                 }
-                catch { /* fall through to picker */ }
+                catch (Exception ex)
+                {
+                    System.Console.Error.WriteLine(
+                        $"[cs] Path 2 (title) {found:X} invalid: {ex.Message}");
+                }
             }
         }
 
@@ -335,6 +358,8 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         // pick should be saved back to the palette
         // (TODO: not implemented in this pass; the
         // picker just records once).
+        System.Console.Error.WriteLine(
+            $"[cs] Path 3 (picker): falling back to system picker");
         var picker = new GraphicsCapturePicker();
         InitializeWithWindow.Initialize(picker, _parentHwnd);
         var item = picker.PickSingleItemAsync().AsTask(ct).GetAwaiter().GetResult();
