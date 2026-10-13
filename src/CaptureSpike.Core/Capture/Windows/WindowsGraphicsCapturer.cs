@@ -259,35 +259,133 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
 
     /// <summary>
     /// Create a <see cref="GraphicsCaptureItem"/> from a
-    /// raw HWND using the IGraphicsCaptureItemInterop COM
-    /// interface. The .NET WinRT projection doesn't expose
-    /// this as a managed method (e.g.
-    /// <c>GraphicsCaptureItem.CreateFromWindowHandle</c>),
-    /// so we cast the runtime class to the interop
-    /// interface and call CreateForWindow — the same
-    /// pattern the Microsoft sample uses.
+    /// raw HWND. The .NET WinRT projection doesn't expose
+    /// <c>GraphicsCaptureItem.CreateFromWindowHandle</c>
+    /// as a managed method, so we use the
+    /// <c>IGraphicsCaptureItemInterop</c> COM interop
+    /// interface that the activation factory implements.
+    ///
+    /// Path: WinRT activation factory (via
+    /// <c>WinRT.ActivationFactory.Get</c>) → manually
+    /// QueryInterface for the interop IID → call
+    /// <c>CreateForWindow</c> through the COM vtable →
+    /// <c>ABI.Windows.Graphics.Capture.GraphicsCaptureItem.FromAbi</c>
+    /// to wrap the raw pointer in the managed projection.
+    ///
+    /// We use the manual QueryInterface + vtable-call
+    /// path because the IGraphicsCaptureItemInterop
+    /// interface is a custom one (not a CsWinRT-projected
+    /// type) so the higher-level IObjectReference.As&lt;T&gt;()
+    /// helper doesn't know how to instantiate it.
     /// </summary>
     private static GraphicsCaptureItem CreateItemFromWindow(IntPtr hwnd)
     {
-        // The pattern from Composition.WindowsRuntimeHelpers:
-        //   var interop = (IGraphicsCaptureItemInterop)factory;
-        //   var item = interop.CreateForWindow(hwnd, GraphicsCaptureItemGuid);
-        // The cast works because the activation factory
-        // for GraphicsCaptureItem happens to also implement
-        // IGraphicsCaptureItemInterop.
-        var interop = (IGraphicsCaptureItemInterop)(
-            object)typeof(GraphicsCaptureItem);
-        var iid = GraphicsCaptureItemGuid;
-        var itemPtr = interop.CreateForWindow(hwnd, ref iid);
+        // Get the activation factory as an IObjectReference.
+        // The string is the WinRT class name (not the
+        // .NET projection name).
+        var factoryRef = WinRT.ActivationFactory.Get(
+            "Windows.Graphics.Capture.GraphicsCaptureItem");
+        var factoryPtr = factoryRef.GetRef();
         try
         {
-            return (GraphicsCaptureItem)Marshal.GetObjectForIUnknown(itemPtr);
+            // QueryInterface for IGraphicsCaptureItemInterop.
+            // The factory is IActivationFactory (IInspectable)
+            // by default; the IGraphicsCaptureItemInterop is
+            // a separate interface that the same object also
+            // implements.
+            var interopIid = typeof(IGraphicsCaptureItemInterop).GUID;
+            int hr = QueryInterface(factoryPtr, ref interopIid, out var interopPtr);
+            if (hr != 0 || interopPtr == IntPtr.Zero)
+            {
+                throw new InvalidOperationException(
+                    $"QueryInterface for IGraphicsCaptureItemInterop failed (hr=0x{hr:X}). " +
+                    "The activation factory may not implement this interface.");
+            }
+            try
+            {
+                // Call CreateForWindow through the vtable.
+                // IGraphicsCaptureItemInterop inherits IUnknown
+                // (3 methods), then has CreateForWindow at
+                // index 3. Calling convention is the C++
+                // member-function convention: thiscall on
+                // x86 (first arg = this, in ECX), thiscall
+                // doesn't exist on x64 (this is the first
+                // arg). .NET's [UnmanagedFunctionPointer] for
+                // COM is always StdCall. The first arg is
+                // the this pointer (we pass interopPtr).
+                var itemIid = GraphicsCaptureItemGuid;
+                IntPtr itemPtr = CreateForWindowViaVtable(
+                    interopPtr, hwnd, ref itemIid);
+                if (itemPtr == IntPtr.Zero)
+                {
+                    throw new InvalidOperationException(
+                        $"IGraphicsCaptureItemInterop::CreateForWindow({hwnd:X}) returned null.");
+                }
+
+                try
+                {
+                    return ABI.Windows.Graphics.Capture.GraphicsCaptureItem.FromAbi(itemPtr);
+                }
+                catch
+                {
+                    Marshal.Release(itemPtr);
+                    throw;
+                }
+            }
+            finally
+            {
+                Marshal.Release(interopPtr);
+            }
         }
         finally
         {
-            Marshal.Release(itemPtr);
+            factoryRef.Dispose();
         }
     }
+
+    // Raw QueryInterface declaration.
+    [DllImport("ole32.dll")]
+    private static extern int QueryInterface(
+        IntPtr pUnk, ref Guid iid, out IntPtr ppv);
+
+    /// <summary>
+    /// Call IGraphicsCaptureItemInterop::CreateForWindow
+    /// through the vtable. Returns the new
+    /// GraphicsCaptureItem IInspectable* (caller owns
+    /// one ref; FromAbi or Marshal.Release must dispose
+    /// it). Throws on non-S_OK HRESULT.
+    /// </summary>
+    private static IntPtr CreateForWindowViaVtable(
+        IntPtr interopPtr, IntPtr hwnd, ref Guid iid)
+    {
+        // vtable[0..2] = IUnknown (QueryInterface, AddRef, Release).
+        // vtable[3] = CreateForWindow.
+        // vtable[4] = CreateForMonitor.
+        var vtable = Marshal.ReadIntPtr(interopPtr);
+        var methodPtr = Marshal.ReadIntPtr(vtable, 3 * IntPtr.Size);
+
+        var createForWindow = (CreateForWindowDelegate)Marshal.GetDelegateForFunctionPointer(
+            methodPtr, typeof(CreateForWindowDelegate));
+        var hr = createForWindow(interopPtr, hwnd, ref iid, out var ppv);
+        if (hr != 0)
+        {
+            Marshal.ThrowExceptionForHR((int)hr);
+        }
+        return ppv;
+    }
+
+    // Delegate for IGraphicsCaptureItemInterop::CreateForWindow.
+    // Signature: HRESULT CreateForWindow(
+    //     HWND hwnd, REFIID iid, void** ppv);
+    // .NET COM interop convention: return value is HRESULT
+    // (int), first explicit arg is the this pointer
+    // (we pass interopPtr).
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int CreateForWindowDelegate(
+        IntPtr thisPtr,
+        IntPtr hwnd,
+        ref Guid iid,
+        out IntPtr ppv);
 
     private GraphicsCaptureItem ResolveCaptureItem(CancellationToken ct)
     {
