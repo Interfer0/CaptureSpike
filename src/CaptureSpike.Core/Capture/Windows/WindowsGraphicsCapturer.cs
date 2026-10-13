@@ -201,6 +201,8 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(10));
+            AppLog.Current?.WriteLine(
+                $"[cs] WGC: waiting for first frame from device='{_deviceId}'...");
             var winner = await Task.WhenAny(
                 _firstDataTcs.Task, _exitTcs.Task,
                 Task.Delay(Timeout.Infinite, cts.Token)).ConfigureAwait(false);
@@ -213,8 +215,14 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
             }
             if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
             if (winner != _firstDataTcs.Task)
+            {
+                AppLog.Current?.WriteLine(
+                    $"[cs] WGC: no data from device='{_deviceId}' within 10s");
                 throw new CaptureException(SourceId,
                     $"No data from '{SourceId}' within 10s of starting capture.{Environment.NewLine}{ErrorTail()}");
+            }
+            AppLog.Current?.WriteLine(
+                $"[cs] WGC: first frame from device='{_deviceId}' OK, recording started");
         }
         catch
         {
@@ -547,6 +555,12 @@ public sealed class WindowsGraphicsCapturer : ISourceCapturer
             string? line;
             while ((line = await stderr.ReadLineAsync(ct).ConfigureAwait(false)) is not null)
             {
+                // Also write to the app log so the user
+                // can see ffmpeg output. ReadStderrAsync
+                // is the only reader of the stderr pipe
+                // (don't add a second Task.Run, that
+                // would race for the same stream).
+                AppLog.Current?.WriteLine($"[ffmpeg] {line}");
                 lock (_stderrTail)
                 {
                     _stderrTail.Add(line);
