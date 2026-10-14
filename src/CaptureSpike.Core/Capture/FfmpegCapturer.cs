@@ -18,7 +18,7 @@ namespace CaptureSpike.Core.Capture;
 public sealed class FfmpegCapturer : ISourceCapturer
 {
     private readonly string _ffmpeg;
-    private readonly IReadOnlyList<string> _arguments;
+    private IReadOnlyList<string> _arguments;
     private readonly bool _isVideo;
     private Process? _process;
     private readonly List<string> _stderrTail = new();
@@ -40,6 +40,14 @@ public sealed class FfmpegCapturer : ISourceCapturer
         _arguments = arguments;
         _isVideo = kind.IsVideo();
     }
+
+    /// <summary>
+    /// Replace the ffmpeg argument list. Used by
+    /// <see cref="Wayland.WaylandCapturer"/>, which doesn't
+    /// know width/height/framerate until the helper's
+    /// stream header has been read.
+    /// </summary>
+    internal void SetArguments(IReadOnlyList<string> arguments) => _arguments = arguments;
 
     public async Task StartAsync(DateTimeOffset t0, CancellationToken ct)
     {

@@ -60,11 +60,32 @@ APT_PACKAGES=(
     # Tools the app shells out to:
     ffmpeg
     mpv
+    # Wayland screen capture: the bundled cs-pw-helper talks to
+    # the portal and PipeWire, so it needs both at runtime. A
+    # portal *backend* is also required and is not listed here
+    # because it is desktop-specific (gnome/kde/wlroots).
+    xdg-desktop-portal
+    libportal1
 )
 
 if [ "$VERIFY_ONLY" = 0 ]; then
     echo "==> apt-get update"
     sudo apt-get update
+    # PipeWire and GTK3 both got "-t64" suffixes in Ubuntu 24.04 /
+    # Mint 22, and the old names no longer exist there while the new
+    # ones do not exist before it. Resolve whichever this system has
+    # rather than naming one and breaking the other.
+    for pair in \
+        "libpipewire-0.3-0t64 libpipewire-0.3-0" \
+        "libgtk-3-0t64 libgtk-3-0"
+    do
+        for cand in $pair; do
+            if apt-cache show "$cand" >/dev/null 2>&1; then
+                APT_PACKAGES+=("$cand")
+                break
+            fi
+        done
+    done
     echo "==> apt-get install ${APT_PACKAGES[*]}"
     sudo apt-get install -y "${APT_PACKAGES[@]}"
 fi
@@ -115,6 +136,22 @@ done
 
 # --- Build the app ---
 if [ "$VERIFY_ONLY" = 0 ]; then
+    echo
+    echo "==> Building cs-pw-helper (Wayland screen capture)"
+    # Must run before the dotnet build: the app's csproj copies
+    # tools/linux-x64/** into its output, and CaptureFactory looks
+    # for the helper next to the bundled ffmpeg. Without it the app
+    # builds fine and then throws "cs-pw-helper is not bundled with
+    # this build" the first time someone records on Wayland.
+    if ! bash installer/linux/build-helper.sh; then
+        echo "ERROR: cs-pw-helper failed to build." >&2
+        echo "  Install the dev headers and retry:" >&2
+        echo "    sudo apt install -y build-essential pkg-config \\" >&2
+        echo "        libpipewire-0.3-dev libportal-dev \\" >&2
+        echo "        libportal-gtk3-dev libgtk-3-dev" >&2
+        echo "  Everything except Wayland screen capture still works." >&2
+    fi
+
     echo
     echo "==> Building CaptureSpike.App for net10.0"
     dotnet build src/CaptureSpike.App -c Debug -f net10.0

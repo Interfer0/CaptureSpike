@@ -57,7 +57,10 @@ To check dependencies without installing packages, run
 `bash scripts/install-linux.sh --verify`. To install, build, and launch, run
 `bash scripts/install-linux.sh --launch`. The script uses `sudo apt` and is a
 developer setup helper, not an end-user installer. Linux screen capture and
-preview currently require X11; Wayland capture is not supported.
+preview work on both X11 and Wayland. On Wayland, capture goes through
+`xdg-desktop-portal` and PipeWire via a bundled `cs-pw-helper`, which needs a
+portal backend (GNOME, KDE, wlroots) to be installed and will show a "Share"
+dialog asking what to record.
 
 ### Windows
 
@@ -250,9 +253,9 @@ runtime and `ffmpeg`. The user's system must have
 bundle mpv because there's no trustworthy static mpv
 build for Linux with X11 video output.
 
-**Note:** X11 is required. Wayland screen capture is
-not supported yet (the ffmpeg `x11grab` device is
-used).
+**Note:** X11 uses the ffmpeg `x11grab` device. Wayland uses the bundled
+`cs-pw-helper`, which drives `xdg-desktop-portal` and PipeWire; the portal
+opens a system dialog on first capture and each capture gets a fresh one.
 
 #### .deb package (proper install)
 

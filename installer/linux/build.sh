@@ -27,6 +27,47 @@ cd "$REPO_ROOT"
     bash scripts/fetch-tools.sh
 }
 
+# --- cs-pw-helper: the Wayland screen-capture helper ---
+#
+# Screen capture on Wayland goes through xdg-desktop-portal and
+# PipeWire, which the .NET side cannot do directly, so a small C helper
+# does the negotiation and hands raw frames to ffmpeg over a socket. The
+# app's csproj copies everything in tools/linux-x64/ into its output,
+# and CaptureFactory resolves the helper from next to the bundled ffmpeg,
+# so the binary has to exist in tools/linux-x64/ BEFORE the publish.
+#
+# This used to be built by hand only. That meant a clean checkout, a CI
+# run, or an installed build all produced an app that threw
+# "cs-pw-helper is not bundled with this build" the moment someone
+# tried to record on Wayland. So build it here, and fail loudly rather
+# than shipping that.
+#
+# Set CAPTURESPIKE_SKIP_HELPER=1 to skip it (X11-only builds, or a
+# machine without the dev headers).
+if [ "${CAPTURESPIKE_SKIP_HELPER:-0}" = "1" ]; then
+    echo "==> cs-pw-helper: SKIPPED (CAPTURESPIKE_SKIP_HELPER=1)"
+    echo "    NOTE: this build cannot record screen on Wayland."
+else
+    echo "==> cs-pw-helper: building (required for Wayland screen capture)"
+    if ! bash installer/linux/build-helper.sh; then
+        cat >&2 <<'HELPER_ERR'
+
+ERROR: could not build cs-pw-helper, so this build cannot record
+screen on Wayland. Install the build dependencies and retry:
+
+    sudo apt install -y build-essential pkg-config \
+        libpipewire-0.3-dev libportal-dev libportal-gtk3-dev libgtk-3-dev
+
+Or set CAPTURESPIKE_SKIP_HELPER=1 to build an X11-only package anyway.
+HELPER_ERR
+        exit 1
+    fi
+    # make sure the staged copy is executable: the csproj copies
+    # it into the publish output with whatever mode it had.
+    chmod +x "$REPO_ROOT/tools/linux-x64/cs-pw-helper"
+    echo "    staged tools/linux-x64/cs-pw-helper"
+fi
+
 echo "==> Step 1/7: appimagetool"
 TOOLS_DIR="$REPO_ROOT/tools"
 APPIMAGETOOL_DIR="$TOOLS_DIR/appimagetool"
@@ -310,11 +351,21 @@ Architecture: amd64
 Maintainer: Daniel Bigelow <Interfer0@gmail.com>
 Section: video
 Priority: optional
-Depends: libx11-6, libxext6, libpulse0, libegl1, libgbm1, mpv
+Depends: libx11-6, libxext6, libpulse0, libegl1, libgbm1, mpv,
+ xdg-desktop-portal, libportal1,
+ libpipewire-0.3-0t64 | libpipewire-0.3-0,
+ libgtk-3-0t64 | libgtk-3-0
 Description: Multi-source screen and audio recorder
  CaptureSpike records multiple video and audio sources in
  sync (screen, microphone, system audio). Per-take editor
  re-aligns audio by prepending silence.
+ .
+ Screen capture on Wayland sessions is provided by the
+ bundled cs-pw-helper, which talks to xdg-desktop-portal and
+ PipeWire. That needs a portal backend as well as the portal
+ itself: GNOME ships xdg-desktop-portal-gnome, KDE ships
+ xdg-desktop-portal-kde, and so on. Sessions without one
+ cannot record screen, though everything else works.
  .
  Licensed under GPL-3.0-or-later. See /usr/share/licenses/capturespike/LICENSE
  for the full license text.
@@ -339,6 +390,13 @@ if [ -f /opt/capturespike/tools/linux-x64/ffmpeg ]; then
 fi
 if [ -f /opt/capturespike/tools/linux-x64/mpv ]; then
     chmod +x /opt/capturespike/tools/linux-x64/mpv
+fi
+# cs-pw-helper is the Wayland screen-capture helper. It is only
+# present when the package was built with the dev headers available
+# (build.sh skips it on CAPTURESPIKE_SKIP_HELPER=1), so the test
+# has to be conditional.
+if [ -f /opt/capturespike/tools/linux-x64/cs-pw-helper ]; then
+    chmod +x /opt/capturespike/tools/linux-x64/cs-pw-helper
 fi
 if [ -x /usr/bin/update-desktop-database ]; then
     update-desktop-database /usr/share/applications

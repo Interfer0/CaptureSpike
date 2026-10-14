@@ -3,6 +3,7 @@
 
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using CaptureSpike.Core.Capture.Wayland;
 
 namespace CaptureSpike.Core.Capture;
 
@@ -70,11 +71,73 @@ public static class CaptureFactory
 
     private static ISourceCapturer CreateLinux(Project project, ProjectSource source, string outputFile, string ffmpeg)
     {
+        // Wayland screen capture is not yet supported by
+        // the X11 path. The WaylandCapturer composes the
+        // cs-pw-helper subprocess (which talks to
+        // xdg-desktop-portal + PipeWire) with ffmpeg over
+        // a Unix socket. Audio sources stay on the X11
+        // path because PulseAudio is the same on both
+        // display servers. The full Wayland story lives
+        // in docs/WAYLAND.md.
+        var session = LinuxSession.Current;
+        if (source.Kind is SourceKind.Screen or SourceKind.Window
+            && session == LinuxSession.DisplayServer.Wayland)
+        {
+            // The cs-pw-helper binary lives next to ffmpeg
+            // (both bundled in tools/linux-x64/ by
+            // fetch-tools.sh). We look there directly
+            // rather than going through ToolPaths,
+            // which is ffmpeg-specific.
+            var helper = Path.Combine(
+                Path.GetDirectoryName(ffmpeg) ?? "",
+                "cs-pw-helper");
+            if (!File.Exists(helper))
+            {
+                throw new CaptureException(source.Id,
+                    $"cs-pw-helper is not bundled with this build (looked at '{helper}'). " +
+                    "The Wayland screen-capture helper is required on Wayland sessions. " +
+                    "Build the helper from installer/linux/cs-pw-helper/ and copy it next to ffmpeg, " +
+                    "or install CaptureSpike from a build that includes it.");
+            }
+            // XdpOutputType in libportal: XDP_OUTPUT_MONITOR=1<<0=1,
+            // XDP_OUTPUT_WINDOW=1<<1=2, XDP_OUTPUT_VIRTUAL=1<<2=4. This
+            // is what the portal dialog offers the user to choose from, so
+            // a Window source has to ask for window selection. Hardcoding
+            // the monitor value made "Window" silently record the whole
+            // screen, because the dialog only ever offered monitors.
+            var waylandSourceType = source.Kind == SourceKind.Window ? 2 : 1;
+            // Region capture is meaningful on X11, where the device
+            // string is a geometry ffmpeg's x11grab takes as-is. On
+            // Wayland the portal picks the whole output, so we apply
+            // the same geometry as a -vf crop= filter instead. That
+            // way a project that was authored on X11 keeps its region
+            // when run on Wayland, and the other way round.
+            var region = CropRegion.Parse(source.Device);
+            return new WaylandCapturer(
+                source.Id, outputFile, helper, ffmpeg,
+                framerate: project.Fps,
+                sourceType: waylandSourceType,
+                includeCursor: true,
+                crop: region);
+        }
+
         var args = BaseArgs();
         switch (source.Kind)
         {
             case SourceKind.Screen:
             {
+                // x11grab needs the DISPLAY env var. On XWayland
+                // it's set by the session manager; on bare X11
+                // it's set by startx/Xorg. If neither is set
+                // (headless TTY, container, CI), fail with a
+                // clear message rather than a ffmpeg stack trace.
+                if (session is LinuxSession.DisplayServer.Headless or LinuxSession.DisplayServer.Unknown)
+                {
+                    throw new CaptureException(source.Id,
+                        "Screen capture requires a display server. " +
+                        $"Current session: {LinuxSession.CurrentName}. " +
+                        "Run the app from a graphical (X11 or Wayland) session.");
+                }
                 args.AddRange(new[] { "-f", "x11grab", "-framerate", project.Fps.ToString() });
                 var disp = DisplayName();
                 if (DeviceParsers.TryParseGeometry(source.Device, out var geo))
@@ -86,6 +149,12 @@ public static class CaptureFactory
             }
             case SourceKind.Window:
                 // True per-window capture on X11 needs the window geometry (v2).
+                if (session is LinuxSession.DisplayServer.Headless or LinuxSession.DisplayServer.Unknown)
+                {
+                    throw new CaptureException(source.Id,
+                        "Window capture requires a display server. " +
+                        $"Current session: {LinuxSession.CurrentName}.");
+                }
                 args.AddRange(new[] { "-f", "x11grab", "-framerate", project.Fps.ToString(), "-i", DisplayName() });
                 args.AddRange(VideoOutArgs(project, outputFile));
                 break;

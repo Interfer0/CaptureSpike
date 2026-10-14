@@ -342,7 +342,27 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
         psi.ArgumentList.Add("--osd-level=0");
         psi.ArgumentList.Add(startPaused ? "--pause" : "--no-pause");
         if (EmbedWindowHandle != 0)
+        {
+            // Force the X11 video output on a Wayland session.
+            //
+            // --wid is only honoured by mpv's X11 VO. On a Wayland session
+            // mpv's auto-detection picks a Wayland output (gpu/gpu-next,
+            // dmabuf-wayland, wlshm), where --wid is silently ignored and
+            // mpv opens its own independent toplevel window. That window
+            // never follows the playback window, so dragging the window
+            // left the video behind. NativeVideoHost hands us an X11 window
+            // ID because Avalonia runs its X11 backend under XWayland, so
+            // pinning mpv to --vo=x11 makes --wid effective again and
+            // XWayland parents the surface so it moves with the window.
+            //
+            // Scoped to Wayland on purpose: on a real X11 session mpv's
+            // auto-selected VO is already X11-based, and forcing the x11 VO
+            // there would drop us to software scaling for no reason.
+            if (OperatingSystem.IsLinux() &&
+                LinuxSession.Current == LinuxSession.DisplayServer.Wayland)
+                psi.ArgumentList.Add("--vo=x11");
             psi.ArgumentList.Add($"--wid={EmbedWindowHandle}");
+        }
         // Command-line filenames after the first are playlist entries, not
         // simultaneous inputs. lavfi-complex needs one primary file plus
         // external tracks so vidN/aidN all belong to the same playback item.

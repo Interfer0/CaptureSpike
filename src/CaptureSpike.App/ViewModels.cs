@@ -355,7 +355,22 @@ public sealed class PaletteSourceViewModel : ObservableObject
         _save = save;
         _onDeviceChanged = onDeviceChanged;
         Devices.Add(DefaultOption);
-        _selectedDevice = DefaultOption;
+        // Seed from the saved value so the dropdown is not lying while
+        // detection runs (it takes seconds, because it shells out to
+        // xrandr/pactl/ffmpeg). The full entry list only exists after
+        // RefreshDevicesAsync; until then show the saved id verbatim
+        // rather than Default, which is what made a good selection look
+        // like it had been lost.
+        var saved = source?.Device;
+        if (string.IsNullOrEmpty(saved))
+        {
+            _selectedDevice = DefaultOption;
+        }
+        else
+        {
+            _selectedDevice = new DeviceOption(saved!, $"{saved} (detecting…)");
+            Devices.Add(_selectedDevice);
+        }
         RefreshDevicesCommand = new RelayCommand(
             async () => await RefreshDevicesAsync(), () => !IsDetecting);
     }
@@ -389,6 +404,26 @@ public sealed class PaletteSourceViewModel : ObservableObject
     public ObservableCollection<DeviceOption> Devices { get; } = new();
 
     private DeviceOption? _selectedDevice;
+
+    /// <summary>
+    /// Set while <see cref="RefreshDevicesAsync"/> is repopulating
+    /// <see cref="Devices"/> and pushing the restored selection back out.
+    ///
+    /// The device ComboBox is a two-way <c>SelectedItem</c> binding, and
+    /// mutating its ItemsSource makes Avalonia write the control's
+    /// selection back into this property. Those write-backs are not user
+    /// edits: clearing the collection reports <c>null</c>, a recycled
+    /// ComboBox can report the previous row's option, and a refresh that
+    /// completes off the UI thread has its push deferred through
+    /// <c>Dispatcher.Post</c> to a later turn. Without this guard any of
+    /// those was indistinguishable from "the user picked Default" and got
+    /// committed to palette.json, which is how a saved device silently
+    /// reverted to Default, and how adding an unrelated source reset
+    /// every row (Add reloads the whole palette, re-running detection
+    /// for each one).
+    /// </summary>
+    private bool _suppressDeviceWrite;
+
     public DeviceOption? SelectedDevice
     {
         get => _selectedDevice;
@@ -396,6 +431,7 @@ public sealed class PaletteSourceViewModel : ObservableObject
         {
             if (SetField(ref _selectedDevice, value))
             {
+                if (_suppressDeviceWrite) return;
                 Source.Device = string.IsNullOrEmpty(value?.Id) ? null : value.Id;
                 _save();
                 Raise(nameof(DeviceDisplay));
@@ -481,29 +517,46 @@ public sealed class PaletteSourceViewModel : ObservableObject
             catch { ffmpeg = "ffmpeg"; } // let the OS resolve it; failures -> empty list
             var kind = Source.Kind;
             var found = await Task.Run(() => DeviceEnumeration.GetDevices(kind, ffmpeg));
-            // CRITICAL: clear _selectedDevice BEFORE clearing Devices.
-            // When Devices is cleared, the ComboBox's SelectedItem
-            // becomes null and the two-way binding fires the setter
-            // with null. The setter would then write null to
-            // Source.Device and trigger a save — wiping the user's
-            // saved device. Pre-nulling the backing field makes the
-            // setter a no-op (SetField sees null == null) so the
-            // ComboBox's selection-change doesn't touch the source.
-            _selectedDevice = null;
-            Devices.Clear();
-            Devices.Add(DefaultOption);
-            foreach (var d in found) Devices.Add(d);
-            var current = Source.Device;
-            var match = Devices.FirstOrDefault(d => d.Id == current);
-            if (match is null && !string.IsNullOrEmpty(current))
+            // Repopulating Devices makes the two-way SelectedItem binding
+            // write the control's state back into SelectedDevice, and
+            // raising SelectedDevice below pushes ours back out. Both
+            // directions are framework plumbing, not user edits, so the
+            // whole block runs with writes suppressed. See the remark on
+            // _suppressDeviceWrite for what this was costing us.
+            _suppressDeviceWrite = true;
+            try
             {
-                match = new DeviceOption(current, $"{current} (not connected)");
-                Devices.Add(match);
+                _selectedDevice = null;
+                Devices.Clear();
+                Devices.Add(DefaultOption);
+                foreach (var d in found) Devices.Add(d);
+                var current = Source.Device;
+                // Compare on the stored form, not on the raw property.
+                // DefaultOption's Id is "", the setter stores an empty
+                // Id as null, and null never string-equals "", so a
+                // plain d.Id == current could never match Default and
+                // the fallback below would pick it anyway - which also
+                // meant a genuinely saved selection could be reported
+                // as missing. Normalising both sides makes Default,
+                // "no device" and a real Id all round-trip.
+                var want = current ?? "";
+                var match = Devices.FirstOrDefault(d => d.Id == want);
+                // Only a real, previously-known device can be
+                // "not connected". The Wayland placeholder is not a
+                // device at all - the portal picks it - so never
+                // present it as a missing one.
+                if (match is null && !string.IsNullOrEmpty(current)
+                    && current != DeviceEnumeration.WaylandPortalDeviceId)
+                {
+                    match = new DeviceOption(current, $"{current} (not connected)");
+                    Devices.Add(match);
+                }
+                _selectedDevice = match ?? DefaultOption;
             }
-            // Set the backing field directly (no setter) so we
-            // don't recursively trigger the same save path. The
-            // Raise below pushes the new selection to the ComboBox.
-            _selectedDevice = match ?? DefaultOption;
+            finally
+            {
+                _suppressDeviceWrite = false;
+            }
             Raise(nameof(SelectedDevice));
             Raise(nameof(DeviceDisplay));
             DetectionCompleted = true;
@@ -1746,30 +1799,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         // shows.
         foreach (var p in _palette.Sources)
         {
-            // Pass a copy of the entry so the VM can mutate its
-            // own Badge mid-edit without surprising the user with
-            // mid-edit changes to the underlying source from elsewhere.
-            var projectView = new ProjectSource
-            {
-                Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = p.Badge,
-                Device = p.Device,
-            };
-            PaletteSourceViewModel? vm = null;
-            vm = new PaletteSourceViewModel(projectView,
-                () => SavePaletteSource(p.Id, vm!),
-                RefreshSceneDeviceLabels);
-            vm.DeleteCommand = new RelayCommand(
-                () => Mutate(() => DeletePaletteSource(vm!)),
-                () => !IsRecording);
-            vm.OnBadgeChanged = () => { RefreshSceneSources(); RefreshTakes(); };
-            // Re-evaluate the Record gate when any source's missing-device
-            // status flips. Subscribe to PropertyChanged and watch for
-            // IsDeviceMissing — cheap because Raise only fires on change.
-            vm.PropertyChanged += (_, e) =>
-            {
-                if (e.PropertyName == nameof(PaletteSourceViewModel.IsDeviceMissing))
-                    RecomputeBlockingDeviceIssue();
-            };
+            var vm = BuildPaletteVm(p);
             PaletteSources.Add(vm);
             _ = vm.RefreshDevicesAsync(); // fire-and-forget background detection
         }
@@ -1784,6 +1814,40 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         RecomputeBlockingDeviceIssue();
     }
 
+    /// <summary>
+    /// Constructs a single PaletteSourceViewModel for the given entry.
+    /// Used by ReloadPalette and the + Add and delete paths. Factored
+    /// out so the three paths build the VM identically - any change
+    /// here applies to all of them.
+    /// </summary>
+    private PaletteSourceViewModel BuildPaletteVm(ProjectSource p)
+    {
+        // Pass a copy of the entry so the VM can mutate its
+        // own Badge mid-edit without surprising the user with
+        // mid-edit changes to the underlying source from elsewhere.
+        var projectView = new ProjectSource
+        {
+            Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = p.Badge,
+            Device = p.Device,
+        };
+        PaletteSourceViewModel? vm = null;
+        vm = new PaletteSourceViewModel(projectView,
+            () => SavePaletteSource(p.Id, vm!),
+            RefreshSceneDeviceLabels);
+        vm.DeleteCommand = new RelayCommand(
+            () => Mutate(() => DeletePaletteSource(vm!)),
+            () => !IsRecording);
+        vm.OnBadgeChanged = () => { RefreshSceneSources(); RefreshTakes(); };
+        // Re-evaluate the Record gate when any source's missing-device
+        // status flips. Subscribe to PropertyChanged and watch for
+        // IsDeviceMissing — cheap because Raise only fires on change.
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(PaletteSourceViewModel.IsDeviceMissing))
+                RecomputeBlockingDeviceIssue();
+        };
+        return vm;
+    }
     /// <summary>
     /// Persists the user's edits to an entry in the "Available
     /// sources" panel. The panel is bound to the GLOBAL palette
@@ -1801,7 +1865,13 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (globalEntry is null) return;
         DebugPalette($"save: paletteId={paletteId} device={src.Device ?? "<null>"} badge={src.Badge ?? "<null>"}");
         var changed = false;
-        if (globalEntry.Device != src.Device) { globalEntry.Device = src.Device ?? ""; changed = true; }
+        // Compare on a normalised form. The setter stores "no device" as
+        // null while an older palette on disk may hold "", so comparing
+        // raw made every entry look changed and rewrote palette.json on
+        // every detection cycle for every source.
+        var deviceWanted = src.Device ?? "";
+        var deviceOnDisk = globalEntry.Device ?? "";
+        if (deviceOnDisk != deviceWanted) { globalEntry.Device = deviceWanted; changed = true; }
         if (globalEntry.Badge != src.Badge) { globalEntry.Badge = src.Badge ?? ""; changed = true; }
         if (globalEntry.Label != src.Label) { globalEntry.Label = src.Label ?? ""; changed = true; }
         if (!changed) return;
@@ -2296,14 +2366,31 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             // remains independent of the master.
             if (!_palette.Contains(result.Id))
             {
-                _palette.Add(new ProjectSource
+                var added = new ProjectSource
                 {
                     Id = result.Id, Kind = result.Kind, Label = result.Label,
                     Badge = result.Badge, Device = result.Device,
-                });
+                };
+                _palette.Add(added);
                 _palette.Save();
+                // Append the new VM to the panel rather than calling
+                // ReloadPalette, which would destroy and rebuild every
+                // existing row and re-run device detection for all of
+                // them. The device selection each one had cached is at
+                // risk during that window.
+                var vm = BuildPaletteVm(added);
+                Mutate(() =>
+                {
+                    PaletteSources.Add(vm);
+                    _ = vm.RefreshDevicesAsync();
+                });
             }
-            Mutate(ReloadPalette);
+            else
+            {
+                // Already present (re-opened the Add dialog and picked
+                // the same kind) - just leave the panel alone.
+                Mutate(() => { });
+            }
             Status = $"Added source \"{result.Label}\" to the palette.";
         }
         catch (Exception ex)
@@ -2335,7 +2422,10 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                 if (svm.Scene.Sources.Count != before)
                     _store?.SaveScene(svm.Scene);
             }
-            ReloadPalette();
+            // Remove only this VM from the panel rather than calling
+            // ReloadPalette, which would destroy and rebuild every
+            // other row and re-run device detection for all of them.
+            Mutate(() => PaletteSources.Remove(vm));
             RefreshSceneSources();
             Status = $"Deleted source \"{vm.Label}\"";
         }
