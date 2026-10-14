@@ -1799,30 +1799,7 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         // shows.
         foreach (var p in _palette.Sources)
         {
-            // Pass a copy of the entry so the VM can mutate its
-            // own Badge mid-edit without surprising the user with
-            // mid-edit changes to the underlying source from elsewhere.
-            var projectView = new ProjectSource
-            {
-                Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = p.Badge,
-                Device = p.Device,
-            };
-            PaletteSourceViewModel? vm = null;
-            vm = new PaletteSourceViewModel(projectView,
-                () => SavePaletteSource(p.Id, vm!),
-                RefreshSceneDeviceLabels);
-            vm.DeleteCommand = new RelayCommand(
-                () => Mutate(() => DeletePaletteSource(vm!)),
-                () => !IsRecording);
-            vm.OnBadgeChanged = () => { RefreshSceneSources(); RefreshTakes(); };
-            // Re-evaluate the Record gate when any source's missing-device
-            // status flips. Subscribe to PropertyChanged and watch for
-            // IsDeviceMissing — cheap because Raise only fires on change.
-            vm.PropertyChanged += (_, e) =>
-            {
-                if (e.PropertyName == nameof(PaletteSourceViewModel.IsDeviceMissing))
-                    RecomputeBlockingDeviceIssue();
-            };
+            var vm = BuildPaletteVm(p);
             PaletteSources.Add(vm);
             _ = vm.RefreshDevicesAsync(); // fire-and-forget background detection
         }
@@ -1837,6 +1814,40 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         RecomputeBlockingDeviceIssue();
     }
 
+    /// <summary>
+    /// Constructs a single PaletteSourceViewModel for the given entry.
+    /// Used by ReloadPalette and the + Add and delete paths. Factored
+    /// out so the three paths build the VM identically - any change
+    /// here applies to all of them.
+    /// </summary>
+    private PaletteSourceViewModel BuildPaletteVm(ProjectSource p)
+    {
+        // Pass a copy of the entry so the VM can mutate its
+        // own Badge mid-edit without surprising the user with
+        // mid-edit changes to the underlying source from elsewhere.
+        var projectView = new ProjectSource
+        {
+            Id = p.Id, Kind = p.Kind, Label = p.Label, Badge = p.Badge,
+            Device = p.Device,
+        };
+        PaletteSourceViewModel? vm = null;
+        vm = new PaletteSourceViewModel(projectView,
+            () => SavePaletteSource(p.Id, vm!),
+            RefreshSceneDeviceLabels);
+        vm.DeleteCommand = new RelayCommand(
+            () => Mutate(() => DeletePaletteSource(vm!)),
+            () => !IsRecording);
+        vm.OnBadgeChanged = () => { RefreshSceneSources(); RefreshTakes(); };
+        // Re-evaluate the Record gate when any source's missing-device
+        // status flips. Subscribe to PropertyChanged and watch for
+        // IsDeviceMissing — cheap because Raise only fires on change.
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(PaletteSourceViewModel.IsDeviceMissing))
+                RecomputeBlockingDeviceIssue();
+        };
+        return vm;
+    }
     /// <summary>
     /// Persists the user's edits to an entry in the "Available
     /// sources" panel. The panel is bound to the GLOBAL palette
@@ -2355,14 +2366,31 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
             // remains independent of the master.
             if (!_palette.Contains(result.Id))
             {
-                _palette.Add(new ProjectSource
+                var added = new ProjectSource
                 {
                     Id = result.Id, Kind = result.Kind, Label = result.Label,
                     Badge = result.Badge, Device = result.Device,
-                });
+                };
+                _palette.Add(added);
                 _palette.Save();
+                // Append the new VM to the panel rather than calling
+                // ReloadPalette, which would destroy and rebuild every
+                // existing row and re-run device detection for all of
+                // them. The device selection each one had cached is at
+                // risk during that window.
+                var vm = BuildPaletteVm(added);
+                Mutate(() =>
+                {
+                    PaletteSources.Add(vm);
+                    _ = vm.RefreshDevicesAsync();
+                });
             }
-            Mutate(ReloadPalette);
+            else
+            {
+                // Already present (re-opened the Add dialog and picked
+                // the same kind) - just leave the panel alone.
+                Mutate(() => { });
+            }
             Status = $"Added source \"{result.Label}\" to the palette.";
         }
         catch (Exception ex)
@@ -2394,7 +2422,10 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
                 if (svm.Scene.Sources.Count != before)
                     _store?.SaveScene(svm.Scene);
             }
-            ReloadPalette();
+            // Remove only this VM from the panel rather than calling
+            // ReloadPalette, which would destroy and rebuild every
+            // other row and re-run device detection for all of them.
+            Mutate(() => PaletteSources.Remove(vm));
             RefreshSceneSources();
             Status = $"Deleted source \"{vm.Label}\"";
         }
