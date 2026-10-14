@@ -272,6 +272,16 @@ public sealed class WaylandCapturer : ISourceCapturer
                     if (_helperStderr.Length > 8192)
                         _helperStderr.Remove(0, _helperStderr.Length - 8192);
                 }
+                // Mirror into the app log. The helper narrates the whole
+                // capture on stderr - portal state, the negotiated
+                // variant, stream state transitions, buffer mapping - and
+                // previously all of that was kept only in _helperStderr,
+                // which is read solely to build a failure message. On a
+                // successful capture it was discarded, so a source that
+                // "worked" but produced an empty file (a shared window
+                // that never repaints emits no buffers at all) left no
+                // trace anywhere and had to be reproduced by hand.
+                AppLog.Current?.WriteLine("[cs-pw-helper] " + line);
                 // The "CSWH W=... H=... FPS=..." line tells
                 // us the PipeWire stream is up and ffmpeg
                 // can connect.
