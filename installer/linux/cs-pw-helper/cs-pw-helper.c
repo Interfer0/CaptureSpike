@@ -48,6 +48,7 @@
 #include <sys/stat.h>
 
 #include <glib.h>
+#include <gtk/gtk.h>
 #include <gio/gio.h>
 #include <libportal/portal.h>
 #include <libportal/portal-enums.h>
@@ -68,6 +69,23 @@
 #define EXIT_PIPEWIRE_FAILED 3
 #define EXIT_STREAM_ERROR    4
 #define EXIT_USER_CANCELLED  5
+#define EXIT_MULTI_SOURCE    6
+
+/* One Window source records one window. The portal returns one PipeWire
+ * node per selected source, and we drive a single stream into a single
+ * socket for a single ffmpeg, so more than one has to be re-asked.
+ *
+ * We already request a single source: libportal sends "multiple: false"
+ * whenever XDP_SCREENCAST_FLAG_MULTIPLE is not set, and that is the only
+ * option in the SelectSources options dict that constrains the count.
+ * GNOME's picker ignores it, so the request has to be enforced here by
+ * explaining and asking again. */
+#define MAX_SOURCE_RETRIES 3
+
+/* Globals so the session can be restarted after a bad selection. */
+static int   source_type = SOURCE_TYPE_MONITOR;
+static int   include_cursor = 0;
+static int   g_source_retries = 0;
 
 static volatile sig_atomic_t g_interrupted = 0;
 static GMainLoop *g_main_loop = NULL;
@@ -785,15 +803,47 @@ static gboolean on_probe_streams(gpointer user_data) {
         return FALSE;
     }
     GVariant *stream;
-    if (g_variant_iter_next(&iter, "@(ua{sv})", &stream)) {
-        g_variant_get(stream, "(u@a{sv})", &g_pw_node_id, NULL);
-        fprintf(stderr, "cs-pw-helper: probe: using source node id %u\n", g_pw_node_id);
+    /* Count the streams. The portal returns one PipeWire node per
+     * selected source, and this helper drives exactly one of them:
+     * one process writes one rawvideo stream to one socket for one
+     * ffmpeg. Picking N>1 in the dialog therefore has no meaningful
+     * interpretation here, and silently taking the first made the
+     * source look broken with no explanation. Capture N windows by
+     * adding N Window sources instead - each gets its own session and
+     * its own dialog. */
+    uint32_t stream_count = 0;
+    while (g_variant_iter_next(&iter, "@(ua{sv})", &stream)) {
+        if (stream_count == 0) {
+            g_variant_get(stream, "(u@a{sv})", &g_pw_node_id, NULL);
+        }
+        stream_count++;
         g_variant_unref(stream);
+    }
+    if (stream_count > 1) {
+        /* We already ask the portal for a single source: libportal sends
+         * "multiple: false" whenever XDP_SCREENCAST_FLAG_MULTIPLE is not
+         * set (lp.c: call->multiple = flags & XDP_SCREENCAST_FLAG_MULTIPLE),
+         * and there is no other option in the SelectSources dict that
+         * constrains the count. GNOME's picker still lets more than one be
+         * chosen, so the extra streams cannot be prevented from here.
+         *
+         * Refusing outright turned a usable capture into no capture at all,
+         * which is worse: one source capturing one window is still a
+         * correct result. Take the first, say plainly that the rest are
+         * ignored, and point at the supported way to record more. */
+        fprintf(stderr,
+            "cs-pw-helper: warning: the Share dialog returned %u streams. This "
+            "helper records one source to one socket, so only the first will be "
+            "captured and the rest are ignored. To record several windows, add "
+            "one Window source per window - each gets its own Share dialog.\n",
+            stream_count);
     }
     if (g_pw_node_id == 0) {
         fprintf(stderr, "cs-pw-helper: probe: no streams available yet\n");
         return TRUE;
     }
+    fprintf(stderr, "cs-pw-helper: probe: using source node id %u (%u stream%s)\n",
+            g_pw_node_id, stream_count, stream_count == 1 ? "" : "s");
     /* setup_pw_stream uses PW APIs and must run on the PW
      * thread. schedule_pw_setup writes the node_id to
      * g_setup_node_id, sets g_setup_pending=1, and signals
@@ -813,6 +863,50 @@ static void *pw_thread_fn(void *arg) {
     return NULL;
 }
 
+static void begin_screencast_session(void);
+
+/* Number of sources the user picked in the Share dialog. The node ids come
+ * back on the Start response, so this is available before any PipeWire
+ * setup - which is where we want it, so a bad selection costs a dialog
+ * rather than a half-built stream. */
+static uint32_t count_session_streams(void) {
+    if (!g_session) return 0;
+    GVariant *streams = xdp_session_get_streams(g_session);
+    if (!streams) return 0;
+    GVariantIter iter;
+    uint32_t n = 0;
+    if (g_variant_iter_init(&iter, streams)) {
+        GVariant *s;
+        while (g_variant_iter_next(&iter, "@(ua{sv})", &s)) { n++; g_variant_unref(s); }
+    }
+    return n;
+}
+
+/* Explain, then let the user retry. A warning rather than an error
+ * because nothing has been recorded yet and the fix is a click away. */
+static void explain_multi_source(uint32_t n) {
+    GtkWidget *w = gtk_message_dialog_new(
+        NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
+        "This capture source can record only one window");
+    GtkMessageDialog *d = GTK_MESSAGE_DIALOG(w);
+    gtk_message_dialog_format_secondary_text(
+        d,
+        "You chose %u sources in the Share dialog.\n\n"
+        "Nothing has been recorded. Pick a single window or monitor when the "
+        "next dialog opens.\n\n"
+        "To record more than one window at the same time, add another Window "
+        "source in CaptureSpike. Each source gets its own Share dialog, so "
+        "each can record a different window.",
+        n);
+    gtk_window_set_title(GTK_WINDOW(w), "CaptureSpike - too many sources selected");
+    /* gtk_dialog_run() blocks until the dialog is closed and returns, so
+     * destroy it once here. Do not also connect "response" to
+     * gtk_widget_destroy: that is a second destroy on the same widget and
+     * GTK asserts on it. */
+    gtk_dialog_run(GTK_DIALOG(w));
+    gtk_widget_destroy(w);
+}
+
 static void on_session_start_finish(GObject *source, GAsyncResult *result, gpointer user_data) {
     (void)user_data;
     XdpSession *session = XDP_SESSION(source);
@@ -825,6 +919,35 @@ static void on_session_start_finish(GObject *source, GAsyncResult *result, gpoin
         exit(EXIT_USER_CANCELLED);
     }
     fprintf(stderr, "cs-pw-helper: session started\n");
+
+    /* Enforce one source per capture, before touching PipeWire, so a
+     * multi-selection never gets as far as a stream that could not have
+     * produced anything useful. */
+    uint32_t picked = count_session_streams();
+    if (picked > 1) {
+        if (g_source_retries < MAX_SOURCE_RETRIES) {
+            g_source_retries++;
+            fprintf(stderr,
+                "cs-pw-helper: %u sources selected; this source records one. "
+                "Re-asking (attempt %d of %d).\n",
+                picked, g_source_retries, MAX_SOURCE_RETRIES);
+            explain_multi_source(picked);
+            xdp_session_close(g_session);
+            g_clear_object(&g_session);
+            fprintf(stderr, "cs-pw-helper: opening a fresh Share dialog...\n");
+            begin_screencast_session();
+            return;
+        }
+        fprintf(stderr,
+            "cs-pw-helper: still %u sources selected after %d attempts. "
+            "This source records exactly one; select a single window.\n",
+            picked, MAX_SOURCE_RETRIES);
+        if (g_main_loop) g_main_loop_quit(g_main_loop);
+        exit(EXIT_MULTI_SOURCE);
+    }
+    if (picked == 1)
+        fprintf(stderr, "cs-pw-helper: one source selected, as required\n");
+
     int fd = xdp_session_open_pipewire_remote(session);
     if (fd < 0) {
         fprintf(stderr, "cs-pw-helper: xdp_session_open_pipewire_remote failed\n");
@@ -890,6 +1013,19 @@ static void on_create_session_finish(GObject *source, GAsyncResult *result, gpoi
     xdp_session_start(g_session, NULL, NULL, on_session_start_finish, NULL);
 }
 
+/* Ask the portal for a source set and open the Share dialog. Called once
+ * from main and again for each retry after a multi-selection. */
+static void begin_screencast_session(void) {
+    xdp_portal_create_screencast_session(
+        g_portal,
+        source_type,
+        XDP_SCREENCAST_FLAG_NONE,
+        include_cursor ? XDP_CURSOR_MODE_EMBEDDED : XDP_CURSOR_MODE_HIDDEN,
+        XDP_PERSIST_MODE_NONE,
+        NULL, NULL,
+        on_create_session_finish, NULL);
+}
+
 static void usage(const char *argv0) {
     fprintf(stderr,
         "Usage: %s [OPTIONS]\n"
@@ -905,9 +1041,10 @@ static void usage(const char *argv0) {
 }
 
 int main(int argc, char *argv[]) {
-    int source_type = SOURCE_TYPE_MONITOR;
+    /* source_type and include_cursor are file-scope so that
+     * begin_screencast_session() can restart the session after a
+     * multi-selection; do not shadow them here. */
     int framerate = 30;
-    int include_cursor = 0;
 
     static struct option long_opts[] = {
         {"socket",      required_argument, 0, 's'},
@@ -1014,14 +1151,11 @@ int main(int argc, char *argv[]) {
         g_main_loop = g_main_loop_new(NULL, FALSE);
     } else {
         fprintf(stderr, "cs-pw-helper: requesting screen capture (this opens a system dialog)...\n");
-        xdp_portal_create_screencast_session(
-            g_portal,
-            source_type,
-            XDP_SCREENCAST_FLAG_NONE,
-            include_cursor ? XDP_CURSOR_MODE_EMBEDDED : XDP_CURSOR_MODE_HIDDEN,
-            XDP_PERSIST_MODE_NONE,
-            NULL, NULL,
-            on_create_session_finish, NULL);
+        /* GTK is only needed for the "you picked too many sources"
+         * dialog, and only on this path. --node-id test mode skips it. */
+        int argc_gtk = 0;
+        gtk_init(&argc_gtk, NULL);
+        begin_screencast_session();
 
         g_main_loop = g_main_loop_new(NULL, FALSE);
     }
