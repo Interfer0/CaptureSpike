@@ -136,11 +136,15 @@ public sealed class FilterGraphBuilderTests
         Assert.DoesNotContain("anullsrc", graph);
         Assert.DoesNotContain("color=size=", graph);
         // Video inputs are vid1 (screen) and vid2 (cam).
-        // They are scaled to 640x360 cells. Offsets normalized
+        // They are fit proportionally into 640x360 cells with black
+        // padding. Offsets normalized
         // by smallest (mic @ 30ms): screen 100-30=70ms, cam
         // 50-30=20ms.
-        Assert.Contains("[vid1]setpts=PTS+0.070/TB,scale=640:360[vp0]", graph);
-        Assert.Contains("[vid2]setpts=PTS+0.020/TB,scale=640:360[vp1]", graph);
+        const string fitAndPad =
+            "scale=640:360:force_original_aspect_ratio=decrease," +
+            "pad=640:360:(ow-iw)/2:(oh-ih)/2:color=black";
+        Assert.Contains($"[vid1]setpts=PTS+0.070/TB,{fitAndPad}[vp0]", graph);
+        Assert.Contains($"[vid2]setpts=PTS+0.020/TB,{fitAndPad}[vp1]", graph);
         // xstack tiles them in 2 columns, output [vo].
         Assert.Contains("xstack=inputs=2:layout=0_0|640_0[vo]", graph);
         // Audio inputs are aid1 (mic) and aid2 (sys). Mic is
