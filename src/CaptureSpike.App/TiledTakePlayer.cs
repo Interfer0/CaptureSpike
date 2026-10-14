@@ -176,6 +176,21 @@ public sealed class TiledTakePlayer : IPlayer
         if (_engine is not null) return;
         if (_sources.Count == 0)
             throw new InvalidOperationException("No sources to play.");
+
+        // Drop sources that produced an unusable file before building the
+        // graph. mpv takes the whole take down if any single input fails to
+        // load, and a 0-byte input is exactly that: it exists, so the
+        // File.Exists checks in MpvPlaybackEngine let it through, but mpv
+        // cannot demux it. Filtering here keeps the graph's [i:v] and
+        // [N+i:a] labels aligned with the file list below, since both are
+        // derived from this one filtered list.
+        var playable = _sources
+            .Where(s => PlayableSources.IsUsable(s.FilePath))
+            .ToList();
+        if (playable.Count == 0)
+            throw new InvalidOperationException(
+                "Every source in this take is empty or missing, so there is nothing to play.");
+
         var engine = new MpvPlaybackEngine
         {
             EmbedWindowHandle = _embedHandle,
@@ -192,13 +207,13 @@ public sealed class TiledTakePlayer : IPlayer
         // everything on first call.
         var muted = new HashSet<string>(_muted);
         var graph = FilterGraphBuilder.BuildTakeGraph(
-            _sources.Select(s => s.TakeSource).ToList(),
+            playable.Select(s => s.TakeSource).ToList(),
             muted);
         // Pass files to mpv in a deterministic order so the
         // graph's [i:v] and [N+i:a] labels match mpv's
         // file-position labels. Videos first, then audios.
-        var videoSources = _sources.Where(s => s.TakeSource.Kind.IsVideo()).ToList();
-        var audioSources = _sources.Where(s => s.TakeSource.Kind.IsAudio()).ToList();
+        var videoSources = playable.Where(s => s.TakeSource.Kind.IsVideo()).ToList();
+        var audioSources = playable.Where(s => s.TakeSource.Kind.IsAudio()).ToList();
         var filePaths = videoSources.Select(s => s.FilePath)
             .Concat(audioSources.Select(s => s.FilePath))
             .ToList();
