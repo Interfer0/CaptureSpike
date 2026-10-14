@@ -389,6 +389,26 @@ public sealed class PaletteSourceViewModel : ObservableObject
     public ObservableCollection<DeviceOption> Devices { get; } = new();
 
     private DeviceOption? _selectedDevice;
+
+    /// <summary>
+    /// Set while <see cref="RefreshDevicesAsync"/> is repopulating
+    /// <see cref="Devices"/> and pushing the restored selection back out.
+    ///
+    /// The device ComboBox is a two-way <c>SelectedItem</c> binding, and
+    /// mutating its ItemsSource makes Avalonia write the control's
+    /// selection back into this property. Those write-backs are not user
+    /// edits: clearing the collection reports <c>null</c>, a recycled
+    /// ComboBox can report the previous row's option, and a refresh that
+    /// completes off the UI thread has its push deferred through
+    /// <c>Dispatcher.Post</c> to a later turn. Without this guard any of
+    /// those was indistinguishable from "the user picked Default" and got
+    /// committed to palette.json, which is how a saved device silently
+    /// reverted to Default, and how adding an unrelated source reset
+    /// every row (Add reloads the whole palette, re-running detection
+    /// for each one).
+    /// </summary>
+    private bool _suppressDeviceWrite;
+
     public DeviceOption? SelectedDevice
     {
         get => _selectedDevice;
@@ -396,6 +416,7 @@ public sealed class PaletteSourceViewModel : ObservableObject
         {
             if (SetField(ref _selectedDevice, value))
             {
+                if (_suppressDeviceWrite) return;
                 Source.Device = string.IsNullOrEmpty(value?.Id) ? null : value.Id;
                 _save();
                 Raise(nameof(DeviceDisplay));
@@ -481,29 +502,36 @@ public sealed class PaletteSourceViewModel : ObservableObject
             catch { ffmpeg = "ffmpeg"; } // let the OS resolve it; failures -> empty list
             var kind = Source.Kind;
             var found = await Task.Run(() => DeviceEnumeration.GetDevices(kind, ffmpeg));
-            // CRITICAL: clear _selectedDevice BEFORE clearing Devices.
-            // When Devices is cleared, the ComboBox's SelectedItem
-            // becomes null and the two-way binding fires the setter
-            // with null. The setter would then write null to
-            // Source.Device and trigger a save — wiping the user's
-            // saved device. Pre-nulling the backing field makes the
-            // setter a no-op (SetField sees null == null) so the
-            // ComboBox's selection-change doesn't touch the source.
-            _selectedDevice = null;
-            Devices.Clear();
-            Devices.Add(DefaultOption);
-            foreach (var d in found) Devices.Add(d);
-            var current = Source.Device;
-            var match = Devices.FirstOrDefault(d => d.Id == current);
-            if (match is null && !string.IsNullOrEmpty(current))
+            // Repopulating Devices makes the two-way SelectedItem binding
+            // write the control's state back into SelectedDevice, and
+            // raising SelectedDevice below pushes ours back out. Both
+            // directions are framework plumbing, not user edits, so the
+            // whole block runs with writes suppressed. See the remark on
+            // _suppressDeviceWrite for what this was costing us.
+            _suppressDeviceWrite = true;
+            try
             {
-                match = new DeviceOption(current, $"{current} (not connected)");
-                Devices.Add(match);
+                _selectedDevice = null;
+                Devices.Clear();
+                Devices.Add(DefaultOption);
+                foreach (var d in found) Devices.Add(d);
+                var current = Source.Device;
+                var match = Devices.FirstOrDefault(d => d.Id == current);
+                if (match is null && !string.IsNullOrEmpty(current))
+                {
+                    match = new DeviceOption(current, $"{current} (not connected)");
+                    Devices.Add(match);
+                }
+                // DefaultOption has an empty Id, and a source with
+                // Device == null never compares equal to it, so the
+                // Default case has to be handled by the fallback rather
+                // than by the FirstOrDefault match.
+                _selectedDevice = match ?? DefaultOption;
             }
-            // Set the backing field directly (no setter) so we
-            // don't recursively trigger the same save path. The
-            // Raise below pushes the new selection to the ComboBox.
-            _selectedDevice = match ?? DefaultOption;
+            finally
+            {
+                _suppressDeviceWrite = false;
+            }
             Raise(nameof(SelectedDevice));
             Raise(nameof(DeviceDisplay));
             DetectionCompleted = true;
