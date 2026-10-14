@@ -43,6 +43,15 @@ public static class PwStreamProtocol
         /// reported as Bgra for both.
         /// </summary>
         Bgrx = 3,
+        /// <summary>
+        /// RGB with an undefined fourth byte. Byte order is R,G,R,X - the
+        /// opposite channel order from <see cref="Bgrx"/>. Only test-mode
+        /// sources (and certain v4l2 cameras) negotiate this; the previous
+        /// code mapped it to Bgrx and the recorded file had its R and B
+        /// channels swapped. FFMpeg's <c>rgb0</c> input format is the
+        /// correct label for this layout.
+        /// </summary>
+        Rgbx = 4,
     }
 
     /// <summary>
@@ -91,9 +100,24 @@ public static class PwStreamProtocol
                 case "W" when int.TryParse(kv[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var pw): w = pw; break;
                 case "H" when int.TryParse(kv[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var ph): h = ph; break;
                 case "FPS" when double.TryParse(kv[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pf): fps = pf; break;
-                case "FMT" when uint.TryParse(kv[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var pu)
-                                && Enum.IsDefined(typeof(PixelFormat), pu):
-                    fmt = (PixelFormat)pu; break;
+                case "FMT":
+                    if (uint.TryParse(kv[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var pu)
+                        && Enum.IsDefined(typeof(PixelFormat), pu))
+                    {
+                        fmt = (PixelFormat)pu;
+                    }
+                    // FMT present but unparseable or unknown. Log and
+                    // fall through to the default rather than silently
+                    // dropping the hint - that hid a real helper-vs-
+                    // parser drift in the past.
+                    else
+                    {
+                        AppLog.Current?.WriteLine(
+                            $"[cs-pw-helper] CSWH line has unknown FMT={kv[1]}; " +
+                            "falling back to Bgra. This is a protocol drift " +
+                            "between the helper and this .NET layer.");
+                    }
+                    break;
             }
         }
         if (w <= 0 || h <= 0 || fps <= 0) return null;

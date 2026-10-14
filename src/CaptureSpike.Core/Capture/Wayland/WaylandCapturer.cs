@@ -94,6 +94,13 @@ public sealed class WaylandCapturer : ISourceCapturer
     private readonly TaskCompletionSource<PwStreamProtocol.StreamHeader> _headerTcs =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _disposed;
+    // Set after the helper is spawned and the CSWH wait is in flight.
+    // StartAsync is single-use: the header TCS, the stderr reader
+    // task, and the helper process are all per-instance, and a second
+    // call races against the first on every one of them. Throwing here
+    // is louder and earlier than letting that race surface as a hang
+    // or a duplicate Exited.
+    private bool _started;
 
     public string SourceId { get; }
     public SourceKind Kind { get; }
@@ -166,6 +173,10 @@ public sealed class WaylandCapturer : ISourceCapturer
     public async Task StartAsync(DateTimeOffset t0, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_started)
+            throw new InvalidOperationException(
+                $"WaylandCapturer {SourceId} has already been started.");
+        _started = true;
 
         // Spawn the helper. It opens the Unix socket and
         // listens; the portal dialog appears async (we
@@ -255,6 +266,10 @@ public sealed class WaylandCapturer : ISourceCapturer
         {
             PwStreamProtocol.PixelFormat.Bgr0 => "bgr0",
             PwStreamProtocol.PixelFormat.Bgrx => "bgr0",
+            // Rgbx is R,G,B,X - the opposite of Bgrx. ffmpeg names
+            // this "rgb0" (a 32-bit packed format with an undefined
+            // 4th byte). The decoder produces a clean RGB image.
+            PwStreamProtocol.PixelFormat.Rgbx => "rgb0",
             _ => "bgra",
         };
 

@@ -24,6 +24,7 @@ public sealed class PwStreamFormatTests
     [InlineData("1", PwStreamProtocol.PixelFormat.Bgra)]
     [InlineData("2", PwStreamProtocol.PixelFormat.Bgr0)]
     [InlineData("3", PwStreamProtocol.PixelFormat.Bgrx)]
+    [InlineData("4", PwStreamProtocol.PixelFormat.Rgbx)]
     public void FmtField_IsParsed(string code, PwStreamProtocol.PixelFormat expected)
     {
         var header = PwStreamProtocol.TryParseHeaderLine(
@@ -86,6 +87,10 @@ public sealed class PwStreamFormatTests
     [InlineData("bgra", PwStreamProtocol.PixelFormat.Bgra)]
     [InlineData("bgr0", PwStreamProtocol.PixelFormat.Bgr0)]
     [InlineData("bgr0", PwStreamProtocol.PixelFormat.Bgrx)]
+    // Rgbx is R,G,B,X - opposite channel order from Bgrx. ffmpeg's
+    // rgb0 is the correct 32-bit packed label; previously this mapped
+    // to bgr0 and produced a recording with R and B channels swapped.
+    [InlineData("rgb0", PwStreamProtocol.PixelFormat.Rgbx)]
     public void FfmpegPixFmt_IsDerivedFromTheReportedFormat(
         string expectedArg, PwStreamProtocol.PixelFormat format)
     {

@@ -153,11 +153,16 @@ static void on_sigint(int sig) {
 static unsigned protocol_format_code(void) {
     switch (g_frame_format) {
         case SPA_VIDEO_FORMAT_BGRx:
-        case SPA_VIDEO_FORMAT_RGB:   return 3; /* Bgrx: undefined 4th byte */
+        case SPA_VIDEO_FORMAT_xBGR: return 3; /* Bgrx */
         case SPA_VIDEO_FORMAT_BGRA:
-        case SPA_VIDEO_FORMAT_RGBA:  return 1; /* Bgra */
-        case SPA_VIDEO_FORMAT_BGR:   return 2; /* Bgr0 */
-        default:                     return 1;
+        case SPA_VIDEO_FORMAT_xRGB: return 1; /* Bgra */
+        case SPA_VIDEO_FORMAT_BGR:  return 2; /* Bgr0 */
+        case SPA_VIDEO_FORMAT_RGB:
+        case SPA_VIDEO_FORMAT_RGBx: return 4; /* Rgbx: R,G,B,X (opposite of Bgrx) */
+        default:
+            fprintf(stderr, "cs-pw-helper: protocol_format_code: unknown spa video format %d, "
+                    "reporting BGRA; this is a protocol drift\n", g_frame_format);
+            return 1;
     }
 }
 
@@ -196,6 +201,7 @@ static gboolean on_accept_client(GIOChannel *source, GIOCondition condition, gpo
 
 static int retry_next_variant(void *data);
 static void retry_next_variant_idle(void *data);
+static void teardown_pw_resources(void);
 
 /* True if the pipewire error string indicates a resource or connection
  * problem rather than a buffer-shape rejection. The variant walk is for
@@ -537,7 +543,14 @@ static int g_process_call_count = 0;
  * The screencast source hands us SPA_DATA_MemFd buffers, so d->data is
  * NULL and the pixels live in a shared memfd that we have to map
  * ourselves. All buffers of a stream share one fd and differ only by
- * mapoffset, so we map the whole fd once and index into it. */
+ * mapoffset, so we map the whole fd once and index into it.
+ *
+ * PW-THREAD ONLY: map_buffer_data, g_map_fd_cache, g_map_base and
+ * g_map_len are all touched only from the PipeWire data loop. They
+ * do not need locking today. If anything ever reads them from another
+ * thread (the GLib main loop, say), they will need a mutex - the
+ * shared-memfd mmap is not itself thread-safe, only the page table
+ * is, and the index operation assumes the base is stable. */
 static void *g_map_fd_cache = NULL;
 static void *g_map_base = NULL;
 static size_t g_map_len = 0;
@@ -846,20 +859,6 @@ static const struct pw_core_events core_events = {
 };
 
 
-/* Run pw_loop_iterate with a small budget. We call this
- * from a GLib timer source so PW events fire on the main
- * thread (the same thread that called the other PW APIs). */
-static int pw_iterate_count = 0;
-static gboolean pw_iterate(gpointer user_data) {
-    (void)user_data;
-    if (g_pw_loop == NULL) return FALSE;  /* stop */
-    int r = pw_loop_iterate(g_pw_loop, -1);
-    if (++pw_iterate_count <= 5 || (pw_iterate_count % 100) == 0) {
-        fprintf(stderr, "cs-pw-helper: pw_iterate #%d returned %d\n", pw_iterate_count, r);
-    }
-    return TRUE;  /* keep ticking */
-}
-
 static gboolean on_probe_streams(gpointer user_data) {
     (void)user_data;
     fprintf(stderr, "cs-pw-helper: on_probe_streams fired\n");
@@ -1014,6 +1013,13 @@ static void on_session_start_finish(GObject *source, GAsyncResult *result, gpoin
             explain_multi_source(picked);
             xdp_session_close(g_session);
             g_clear_object(&g_session);
+            /* Today the multi-source check sits before the PW init
+             * block, so this call is a no-op. If a future reordering
+             * moves the check down, teardown_pw_resources() will
+             * clean up the first session's resources cleanly instead
+             * of leaking pw_context/pw_core/pw_main_loop and a
+             * pthread. */
+            teardown_pw_resources();
             fprintf(stderr, "cs-pw-helper: opening a fresh Share dialog...\n");
             begin_screencast_session();
             return;
@@ -1095,6 +1101,43 @@ static void on_create_session_finish(GObject *source, GAsyncResult *result, gpoi
 
 /* Ask the portal for a source set and open the Share dialog. Called once
  * from main and again for each retry after a multi-selection. */
+/* Tear down every PipeWire resource this helper may have allocated.
+ *
+ * Mirrors the cleanup block in main() but is safe to call when nothing
+ * is initialised: each step checks for non-NULL. Called from the
+ * multi-source retry path so that, if that check is ever moved past
+ * the PW init block, a re-ask of the Share dialog still tears down
+ * the first set of resources cleanly rather than leaking. Today the
+ * check sits before PW init and the call is a no-op. */
+static void teardown_pw_resources(void) {
+    if (g_pw_thread_started) {
+        /* pw_main_loop_quit makes the next pw_loop_iterate return;
+         * the PW thread then exits its loop and returns from
+         * pw_thread_fn. Block on join so the resources it held are
+         * released by this function, not by the next one. */
+        if (g_pw_main_loop) pw_main_loop_quit(g_pw_main_loop);
+        pthread_join(g_pw_thread, NULL);
+        g_pw_thread_started = 0;
+    }
+    if (g_pw_stream) { pw_stream_destroy(g_pw_stream); g_pw_stream = NULL; }
+    if (g_pw_core)   { pw_core_disconnect(g_pw_core);   g_pw_core = NULL; }
+    if (g_pw_context) { pw_context_destroy(g_pw_context); g_pw_context = NULL; }
+    if (g_pw_main_loop) {
+        pw_main_loop_destroy(g_pw_main_loop);
+        g_pw_main_loop = NULL;
+        g_pw_loop = NULL;
+    }
+    /* pw_deinit is not called here: there is no pw_reinit and the
+     * process is about to either exit or start a new PW session on
+     * top of the same one. Globals that the new session must see
+     * start from their defaults are reset explicitly. */
+    g_pw_event_source = NULL;
+    g_pw_node_id = 0;
+    g_have_format = 0;
+    g_header_emitted = 0;
+    if (g_map_base) { munmap(g_map_base, g_map_len); g_map_base = NULL; g_map_len = 0; g_map_fd_cache = NULL; }
+}
+
 static void begin_screencast_session(void) {
     xdp_portal_create_screencast_session(
         g_portal,
@@ -1264,6 +1307,12 @@ int main(int argc, char *argv[]) {
     if (g_pw_context) pw_context_destroy(g_pw_context);
     if (g_pw_main_loop) pw_main_loop_destroy(g_pw_main_loop);
     pw_deinit();
+
+    /* Unmap any shared buffer still resident. The kernel reclaims on
+     * process death anyway, but explicit cleanup keeps valgrind and
+     * asan runs honest and matches the lifecycle we set up in
+     * map_buffer_data. */
+    if (g_map_base) { munmap(g_map_base, g_map_len); g_map_base = NULL; g_map_len = 0; g_map_fd_cache = NULL; }
 
     if (g_session) g_object_unref(g_session);
     if (g_portal) g_object_unref(g_portal);
