@@ -503,8 +503,13 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
     }
     switch (fmt.format) {
         case SPA_VIDEO_FORMAT_BGRA: g_frame_format = SPA_VIDEO_FORMAT_BGRA; break;
-        case SPA_VIDEO_FORMAT_BGRx:
-        case SPA_VIDEO_FORMAT_BGR: g_frame_format = SPA_VIDEO_FORMAT_BGRx; break;
+        case SPA_VIDEO_FORMAT_BGRx: g_frame_format = SPA_VIDEO_FORMAT_BGRx; break;
+        /* BGR (and RGB) are 24-bit packed, not 32-bit. They get the
+         * default case so g_frame_format stays as the source gave it,
+         * and the bytes_per_pixel switch below can give them 3 bytes.
+         * The previous version collapsed BGR into BGRx here, which
+         * made the 3-byte path dead code and would have made ffmpeg
+         * read 25% past each row for a true BGR source. */
         default:
             g_frame_format = fmt.format;
             break;
