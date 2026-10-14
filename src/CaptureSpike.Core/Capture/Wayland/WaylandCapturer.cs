@@ -133,7 +133,13 @@ public sealed class WaylandCapturer : ISourceCapturer
     {
         SourceId = sourceId;
         _region = crop;
-        Kind = SourceKind.Screen;
+        // sourceType maps to libportal's XdpScreenCastSourceType:
+        // 1 = XDP_OUTPUT_MONITOR (Screen), 2 = XDP_OUTPUT_WINDOW (Window).
+        // Reflect the actual kind so downstream code (e.g. take
+        // metadata, FilterGraphBuilder dispatch) sees Window when
+        // the source is a window. The previous version hardcoded
+        // Screen, which would mislabel window captures.
+        Kind = sourceType == 2 ? SourceKind.Window : SourceKind.Screen;
         OutputFile = outputFile;
         _helperPath = helperPath;
         _framerate = framerate;
