@@ -377,7 +377,17 @@ public sealed class WaylandCapturer : ISourceCapturer
 
     private string HelperStderrTail()
     {
-        var s = _helperStderr.ToString().TrimEnd();
-        return s.Length == 0 ? "(no helper output captured)" : s;
+        // _helperStderr is mutated under lock by the reader task.
+        // StringBuilder is not thread-safe, so the read here has to
+        // hold the same lock or it can throw IndexOutOfRangeException
+        // when the reader is mid-append-and-trim. Both call sites
+        // (the Exited handler on a ThreadPool thread and the
+        // header-wait timeout) are real entry points because the
+        // reader is running on a different task.
+        lock (_helperStderr)
+        {
+            var s = _helperStderr.ToString().TrimEnd();
+            return s.Length == 0 ? "(no helper output captured)" : s;
+        }
     }
 }

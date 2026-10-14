@@ -592,6 +592,14 @@ static void on_stream_process(void *data) {
                 g_frame_stride = stride;
                 fprintf(stderr, "cs-pw-helper: derived format from first frame: %dx%d stride=%d\n",
                     g_frame_width, g_frame_height, g_frame_stride);
+                /* Mark the header as emitted so the Format event, if
+                 * it arrives later, does not write a second CSWH line.
+                 * The first-frame fallback may be wrong about the
+                 * pixel format (we assume BGRA when in fact the
+                 * source might be BGRx), but the .NET parser takes
+                 * the first CSWH it sees and ignores the rest, so
+                 * a single correct line is what we want. */
+                g_header_emitted = 1;
                 emit_header_line(g_frame_width, g_frame_height, g_framerate_num, g_framerate_den);
             }
             pw_stream_queue_buffer(g_pw_stream, b);
@@ -636,8 +644,18 @@ static void on_stream_process(void *data) {
         }
         if (write_all(g_client_fd, (char *)pixels + offset, d->chunk->size) < 0) {
             fprintf(stderr, "cs-pw-helper: write to socket failed: %s\n", strerror(errno));
-            pw_stream_queue_buffer(g_pw_stream, buf);
+            /* The ffmpeg consumer is gone: output closed, disk full,
+             * or the helper is being torn down. Without this the
+             * PipeWire data loop keeps calling on_stream_process,
+             * which fails in the same way, until the process is killed
+             * with SIGINT - the previous fix made other paths quit
+             * the main loop, this one slipped through. Quit the loop
+             * with a non-zero exit code so the .NET side reports this
+             * rather than treating it as a clean exit. Don't requeue
+             * the buffer: it would just sit in the pool. */
+            g_exit_code = EXIT_STREAM_ERROR;
             g_interrupted = 1;
+            if (g_main_loop) g_main_loop_quit(g_main_loop);
             return;
         }
         pw_stream_queue_buffer(g_pw_stream, buf);
@@ -787,7 +805,16 @@ static void on_signal_event(void *data, uint64_t count) {
 
 static void schedule_pw_setup(uint32_t node_id) {
     g_setup_node_id = node_id;
+    /* Test mode has __sync_synchronize() between the g_setup_node_id
+     * and g_setup_pending writes and again before the implicit signal;
+     * the portal path used to skip them. The PW thread reads
+     * g_setup_node_id and g_setup_pending separately, so without a
+     * release barrier it can observe g_setup_pending == 1 with
+     * g_setup_node_id still at its default. C11 race; works on x86 by
+     * accident, races on weakly-ordered architectures. */
+    __sync_synchronize();
     g_setup_pending = 1;
+    __sync_synchronize();
     /* Wake the PW loop. Our event handler (on_signal_event)
      * is called on the PW thread. */
     if (g_pw_event_source) {
