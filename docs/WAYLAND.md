@@ -1,14 +1,27 @@
 # Wayland screen capture
 
-## Status: design phase + C helper skeleton
+## Status: working
 
-This document describes the design for adding Wayland
-screen capture to CaptureSpike. The C helper
-(`installer/linux/cs-pw-helper/`) is started but
-incomplete — the synchronous portal call is a
-placeholder, the real async flow needs to be wired
-up, and we can't test the actual capture without a
-real Wayland session.
+Wayland screen capture is implemented and verified end to end. The portal
+flow runs, PipeWire buffer negotiation succeeds, frames reach ffmpeg over a
+Unix socket, and takes play back normally.
+
+Known limitations, all recorded in the repo issues rather than hidden here:
+
+- **One source per capture.** A Window source records one window. The portal
+  allows selecting several in one dialog even though the client sends
+  `multiple: false`; the helper detects that, explains, and asks again rather
+  than recording nothing.
+- **No region selection.** The portal can offer a region, but the Wayland path
+  ignores `Source.Device` entirely, so there is no crop filter yet.
+- **A static source records nothing.** Wayland screencast is damage-driven, so
+  a shared window that never repaints produces a 0-byte file. Playback skips
+  empty sources rather than failing the take.
+- **Playback uses software scaling.** mpv is pinned to `--vo=x11` so that
+  `--wid` works at all; see the playback section below.
+
+This document describes the design. Where it disagrees with the code, the code
+wins — file an issue.
 
 ## Implementation plan (revised)
 

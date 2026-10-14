@@ -19,7 +19,8 @@ only because early docs promised one. It is **out of scope for this project**.
 
 ## Stack
 
-- .NET 10, C#, Avalonia 11. Windows first, Linux Mint (X11) second.
+- .NET 10, C#, Avalonia 12. Windows first, Linux Mint second — X11 and Wayland
+  both work. On Wayland, Avalonia runs its X11 backend under XWayland.
 - Capture: `ffmpeg` subprocesses everywhere; `NAudio` (WASAPI) on Windows for mic and
   system-audio loopback. Set `CAPTURESPIKE_SYNTHETIC=1` to record generated test
   signals instead of real devices (used by the headless test).
