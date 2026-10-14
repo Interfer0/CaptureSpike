@@ -29,7 +29,7 @@ public static class PwStreamProtocol
 {
     /// <summary>
     /// Pixel format codes from the wire protocol.
-    /// Must match the C helper's g_frame_format values.
+    /// Must match the C helper's protocol_format_code().
     /// </summary>
     public enum PixelFormat : uint
     {
@@ -52,6 +52,24 @@ public static class PwStreamProtocol
         /// correct label for this layout.
         /// </summary>
         Rgbx = 4,
+        /// <summary>
+        /// RGBA: real alpha (not 0xFF padding like BGRx). Same byte layout
+        /// as Bgra in memory, but a different name. ffmpeg accepts
+        /// <c>bgra</c> for both, so the mapping reuses Bgra. Reserved here
+        /// for future ffmpeg-side distinction (some encoders care about
+        /// the alpha).
+        /// </summary>
+        Rgba = 5,
+        /// <summary>
+        /// YUYV 4:2:2 packed. ffmpeg's <c>yuyv422</c>. Rare on screencast
+        /// sources (cameras use it, the portal typically does not) but
+        /// listed in the EnumFormat so the source can pick it.
+        /// </summary>
+        Yuyv = 6,
+        /// <summary>
+        /// YUV 4:2:0 planar. ffmpeg's <c>yuv420p</c>. Same caveat as Yuyv.
+        /// </summary>
+        I420 = 7,
     }
 
     /// <summary>

@@ -276,6 +276,16 @@ public sealed class WaylandCapturer : ISourceCapturer
             // this "rgb0" (a 32-bit packed format with an undefined
             // 4th byte). The decoder produces a clean RGB image.
             PwStreamProtocol.PixelFormat.Rgbx => "rgb0",
+            // Rgba has the same byte layout as Bgra in memory; ffmpeg's
+            // "bgra" demuxer accepts it as-is. Real alpha vs. undefined
+            // padding is a labelling difference, not a decoding one.
+            PwStreamProtocol.PixelFormat.Rgba => "bgra",
+            // YUV: the helper has a bytes-per-pixel mismatch bug for these
+            // (3 bytes/px for I420, 2 for YUYV) so we don't expect to
+            // see them on the wire, but the names exist so a future
+            // fix lands in one place.
+            PwStreamProtocol.PixelFormat.Yuyv => "yuyv422",
+            PwStreamProtocol.PixelFormat.I420 => "yuv420p",
             _ => "bgra",
         };
 

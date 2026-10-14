@@ -156,9 +156,12 @@ static unsigned protocol_format_code(void) {
         case SPA_VIDEO_FORMAT_xBGR: return 3; /* Bgrx */
         case SPA_VIDEO_FORMAT_BGRA:
         case SPA_VIDEO_FORMAT_xRGB: return 1; /* Bgra */
-        case SPA_VIDEO_FORMAT_BGR:  return 2; /* Bgr0 */
+        case SPA_VIDEO_FORMAT_BGR:  return 2; /* Bgr0 (3 bytes/pixel packed) */
         case SPA_VIDEO_FORMAT_RGB:
-        case SPA_VIDEO_FORMAT_RGBx: return 4; /* Rgbx: R,G,B,X (opposite of Bgrx) */
+        case SPA_VIDEO_FORMAT_RGBx: return 4; /* Rgbx (R,G,B,X or packed) */
+        case SPA_VIDEO_FORMAT_RGBA: return 5; /* Rgba (real alpha) */
+        case SPA_VIDEO_FORMAT_YUY2: return 6; /* YUYV 4:2:2 packed */
+        case SPA_VIDEO_FORMAT_I420: return 7; /* YUV 4:2:0 planar */
         default:
             fprintf(stderr, "cs-pw-helper: protocol_format_code: unknown spa video format %d, "
                     "reporting BGRA; this is a protocol drift\n", g_frame_format);
@@ -507,16 +510,23 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
             break;
     }
     /* Compute per-format stride. BGRA/BGRx/RGBx/RGBA = 4 bytes/pixel,
-     * YUY2 = 2. The width*4 default is only right for the BGRA family. */
+     * BGR/RGB = 3 bytes/pixel packed, YUY2 = 2 bytes/pixel, planar
+     * YUV (I420/YV12) = 1 byte/pixel average. The width*4 default
+     * is only right for the BGRA family; getting this wrong leaves
+     * ffmpeg reading the wrong stride and the picture desyncs by the
+     * first partial frame. */
     int bytes_per_pixel;
     switch (g_frame_format) {
         case SPA_VIDEO_FORMAT_BGRA:
         case SPA_VIDEO_FORMAT_BGRx:
         case SPA_VIDEO_FORMAT_RGBA:
         case SPA_VIDEO_FORMAT_RGBx:
+        case SPA_VIDEO_FORMAT_xRGB:
+        case SPA_VIDEO_FORMAT_xBGR:
+            bytes_per_pixel = 4; break;
         case SPA_VIDEO_FORMAT_BGR:
         case SPA_VIDEO_FORMAT_RGB:
-            bytes_per_pixel = 4; break;
+            bytes_per_pixel = 3; break;
         case SPA_VIDEO_FORMAT_YUY2:
         case SPA_VIDEO_FORMAT_YVYU:
         case SPA_VIDEO_FORMAT_UYVY:
@@ -648,12 +658,38 @@ static void on_stream_process(void *data) {
             continue;
         }
         /* The frame starts at chunk->offset inside the block. For a full
-         * screencast frame that offset is 0 and the block is contiguous,
-         * which is what ffmpeg's rawvideo demuxer expects. */
+         * screencast frame that offset is 0 and the block is contiguous.
+         *
+         * For damage-aware sources (most compositors under Wayland)
+         * chunk->size is the dirty rectangle in bytes, not the full
+         * frame. ffmpeg's rawvideo demuxer expects exactly
+         * stride*height bytes per frame; if we hand it a partial, the
+         * picture desyncs on the next frame because ffmpeg's internal
+         * cursor has read past where the next frame starts. Pad with
+         * zeros when the chunk is short so ffmpeg sees a full frame
+         * every time.
+         *
+         * YUV formats (I420, NV12, YUY2) have a different per-row stride
+         * and per-plane layout. We don't emit them - the EnumFormat
+         * does not list them, the screencast source wouldn't pick one
+         * and the bytes_per_pixel and stride math above are for the
+         * raw/RGB family only. If a future source does negotiate one,
+         * the helper should bail rather than emit garbled frames. */
+        size_t frame_size = (size_t)g_frame_stride * (size_t)g_frame_height;
+        if (d->chunk->size > frame_size) {
+            /* Larger than a full frame: the chunk is for a bigger
+             * block than we asked for. Don't truncate: that would
+             * desync the next frame too. Drop the buffer and log. */
+            fprintf(stderr, "cs-pw-helper: process: chunk->size %u > frame %zu; "
+                    "dropping frame (format %d)\n",
+                    d->chunk->size, frame_size, g_frame_format);
+            pw_stream_queue_buffer(g_pw_stream, buf);
+            continue;
+        }
         offset = d->chunk->offset;
         if (++g_process_call_count <= 8) {
-            fprintf(stderr, "cs-pw-helper: process: writing %u bytes at offset %u "
-                    "to client_fd=%d\n", d->chunk->size, offset, g_client_fd);
+            fprintf(stderr, "cs-pw-helper: process: writing %u/%zu bytes at offset %u "
+                    "to client_fd=%d\n", d->chunk->size, frame_size, offset, g_client_fd);
         }
         if (write_all(g_client_fd, (char *)pixels + offset, d->chunk->size) < 0) {
             fprintf(stderr, "cs-pw-helper: write to socket failed: %s\n", strerror(errno));
@@ -670,6 +706,29 @@ static void on_stream_process(void *data) {
             g_interrupted = 1;
             if (g_main_loop) g_main_loop_quit(g_main_loop);
             return;
+        }
+        /* Pad with zeros if the chunk was a partial (damage) update.
+         * The first write above already consumed d->chunk->size bytes
+         * from the source; the remaining frame_size - chunk_size bytes
+         * are zeros in the mmap, so the next read of frame_size bytes
+         * from g_map_base + offset is correct as long as the rest of
+         * the frame is still mapped (it is - map_buffer_data maps the
+         * whole fd once). */
+        if (d->chunk->size < frame_size) {
+            static const char zeros[4096];
+            size_t pad = frame_size - d->chunk->size;
+            while (pad > 0) {
+                size_t chunk = pad < sizeof(zeros) ? pad : sizeof(zeros);
+                if (write_all(g_client_fd, zeros, chunk) < 0) {
+                    fprintf(stderr, "cs-pw-helper: write (zero pad) to socket failed: %s\n",
+                            strerror(errno));
+                    g_exit_code = EXIT_STREAM_ERROR;
+                    g_interrupted = 1;
+                    if (g_main_loop) g_main_loop_quit(g_main_loop);
+                    return;
+                }
+                pad -= chunk;
+            }
         }
         pw_stream_queue_buffer(g_pw_stream, buf);
     }
@@ -835,12 +894,18 @@ static void schedule_pw_setup(uint32_t node_id) {
     }
 }
 
-/* Called from the PW thread after pw_main_loop_run returns. */
+/* Called from the PW thread when its loop exits. The work that
+ * used to live here (g_setup_pending -> setup_pw_stream_on_pw_thread)
+ * is now done via on_signal_event, which fires on the PW thread
+ * before pw_main_loop_run ever starts its wait, so the signal-event
+ * path has a strictly wider window than this one. Kept as a no-op
+ * for now in case a future refactor needs a "do work after
+ * pw_main_loop_run returns" hook. */
 static void pw_thread_check_setup(void) {
-    if (g_setup_pending) {
-        g_setup_pending = 0;
-        setup_pw_stream_on_pw_thread(g_setup_node_id);
-    }
+    /* intentionally empty: the on_signal_event callback is the
+     * single point where setup_pw_stream_on_pw_thread runs, and
+     * schedule_pw_setup signals it directly. */
+    (void)0;
 }
 
 static void on_core_done(void *data, uint32_t id, int seq) {
@@ -1255,22 +1320,17 @@ int main(int argc, char *argv[]) {
             return EXIT_PIPEWIRE_FAILED;
         }
         g_pw_thread_started = 1;
-        /* Schedule setup on the PW thread. We use
-         * __sync_synchronize() to make sure the writes
-         * to g_setup_node_id and g_setup_pending are
-         * visible to the PW thread before the signal
-         * wakes it. */
-        g_setup_node_id = (uint32_t)node_id_override;
-        __sync_synchronize();
-        g_setup_pending = 1;
-        __sync_synchronize();
-        fprintf(stderr, "cs-pw-helper: test mode pre-signal: g_setup_node_id=%u g_setup_pending=%d\n",
-            g_setup_node_id, g_setup_pending);
+        /* Use the same setup path as the portal flow. The double
+         * write of g_setup_node_id and g_setup_pending happens
+         * inside schedule_pw_setup under the right memory barriers;
+         * the test-mode block used to inline both writes plus a
+         * third sync_synchronize call, which was a maintenance
+         * hazard (a future change to the function had to be
+         * remembered in two places). */
         if (g_pw_event_source == NULL) {
             g_pw_event_source = pw_loop_add_event(g_pw_loop, on_signal_event, NULL);
         }
-        if (g_pw_event_source) pw_loop_signal_event(g_pw_loop, g_pw_event_source);
-        fprintf(stderr, "cs-pw-helper: test mode post-signal\n");
+        schedule_pw_setup((uint32_t)node_id_override);
         // The main loop must exist before any path that might call
         // g_main_loop_quit() - notably on_stream_state_changed, the
         // multi-source retry, and the variant walk's "all failed"
@@ -1300,7 +1360,14 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "cs-pw-helper: entering main loop\n");
     g_main_loop_run(g_main_loop);
     fprintf(stderr, "cs-pw-helper: main loop exited\n");
-
+    /* GLib paths (bail_resource, on_stream_process write failure,
+     * retry_next_variant "all failed") only quit the GLib loop. The
+     * PipeWire thread is parked in pw_main_loop_run, so without
+     * pw_main_loop_quit the pthread_join below would block forever
+     * and the helper would hang at exit. teardown_pw_resources()
+     * does the same, but it's only reachable from the multi-source
+     * retry path; this is the normal-exit path. */
+    if (g_pw_main_loop) pw_main_loop_quit(g_pw_main_loop);
     if (g_pw_thread_started) pthread_join(g_pw_thread, NULL);
     if (g_pw_stream) pw_stream_destroy(g_pw_stream);
     if (g_pw_core) pw_core_disconnect(g_pw_core);
