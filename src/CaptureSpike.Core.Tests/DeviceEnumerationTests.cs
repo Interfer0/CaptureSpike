@@ -52,6 +52,43 @@ public sealed class DeviceEnumerationTests
         Assert.False(DeviceParsers.TryParseGeometry("not a window title", out _));
     }
 
+    /// <summary>
+    /// Regression test for the bug where
+    /// <c>TryParseHwnd("hwnd:0x12b0dba")</c> returned
+    /// false because <c>long.TryParse(..., NumberStyles.HexNumber)</c>
+    /// doesn't accept the <c>0x</c> prefix as part of a
+    /// hex literal. The picker then fell through to the
+    /// system WGC picker, which the user does not want
+    /// at record time.
+    /// </summary>
+    [Fact]
+    public void TryParseHwnd_StripsPrefix()
+    {
+        // The exact format DeviceEnumeration.GetWindows
+        // produces. Lowercase hex, with the 0x prefix.
+        Assert.True(DeviceParsers.TryParseHwnd("hwnd:0x12b0dba", out var hwnd));
+        Assert.Equal(0x12b0dba, hwnd.ToInt64());
+
+        // Uppercase hex.
+        Assert.True(DeviceParsers.TryParseHwnd("hwnd:0x12B0DBA", out var hwnd2));
+        Assert.Equal(0x12B0DBA, hwnd2.ToInt64());
+
+        // HWND-prefix variant (the "HWND:" form).
+        Assert.True(DeviceParsers.TryParseHwnd("HWND:0xABCDEF", out var hwnd3));
+        Assert.Equal(0xABCDEF, hwnd3.ToInt64());
+
+        // 32-bit HWND (0) and full 64-bit.
+        Assert.True(DeviceParsers.TryParseHwnd("hwnd:0x0", out var zero));
+        Assert.Equal(IntPtr.Zero, zero);
+
+        // Non-hwnd device ids must be rejected.
+        Assert.False(DeviceParsers.TryParseHwnd("", out _));
+        Assert.False(DeviceParsers.TryParseHwnd(null, out _));
+        Assert.False(DeviceParsers.TryParseHwnd("1920x1080+0+0", out _));
+        Assert.False(DeviceParsers.TryParseHwnd("Notepad", out _));
+        Assert.False(DeviceParsers.TryParseHwnd("hwnd:not-hex", out _));
+    }
+
     [Fact]
     public void ParsePactlSources_SkipsMonitors()
     {

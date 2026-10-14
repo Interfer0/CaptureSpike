@@ -7,6 +7,12 @@
     <RootNamespace>CaptureSpike.Core</RootNamespace>
     <!-- Lets the Windows TFM compile on Linux/macOS (compile-only; never run here). -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- WindowsGraphicsCapturer / D3D11FrameReader use
+         `unsafe` for the row-pitch pointer math on the
+         mapped staging texture. Required for the
+         Windows TFM; harmless on the Linux TFM (the
+         WGC code is #if WINDOWS-guarded). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- WINDOWS is defined only for the Windows TFM, where NAudio.Wasapi is available. -->
     <DefineConstants Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041'">$(DefineConstants);WINDOWS</DefineConstants>
   </PropertyGroup>
@@ -22,5 +28,13 @@
     <PackageReference Include="NAudio" Version="2.2.1"
                       Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041'" />
   </ItemGroup>
+
+  <!-- Microsoft.Windows.SDK.NET is automatically provided
+       by the .NET 10 SDK for the net10.0-windows10.0.19041
+       TFM (it's part of the Windows targeting pack, like
+       Microsoft.Windows.SDK.NET.Ref 10.0.19041.57). No
+       explicit PackageReference is needed. The Windows
+       Graphics.Capture types (Windows.Graphics.Capture.*)
+       are part of the projection. -->
 
 </Project>

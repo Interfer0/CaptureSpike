@@ -55,15 +55,34 @@ public partial class MainWindow : Window
 
         // Don't lose the take if the window is closed mid-recording:
         // stop gracefully (writes take.json, finalizes files) before closing.
+        //
+        // IMPORTANT: Avalonia's Closing handler can't
+        // truly wait for async work — setting e.Cancel
+        // and then awaiting in the handler doesn't
+        // actually defer the close. The window closes
+        // as soon as the handler returns, regardless
+        // of e.Cancel. So we use a different pattern:
+        // call Hide() to keep the app alive, stop the
+        // recording asynchronously, then Close() once
+        // the stop is complete.
         Closing += async (_, e) =>
         {
             if (DataContext is MainViewModel vm && vm.IsRecording)
             {
                 e.Cancel = true;
+                Hide();
                 try { await vm.StopRecordingAsync(); }
                 catch { /* Status already reports the failure */ }
                 finally { Close(); }
             }
+        };
+
+        // Playback is shown as a separate top-level window. Close it only
+        // when this close request is not being deferred for recording shutdown.
+        Closing += (_, e) =>
+        {
+            if (!e.Cancel && DataContext is MainViewModel vm)
+                vm.ClosePlaybackWindow();
         };
 
         // Remember size, position, and maximized state for next launch.

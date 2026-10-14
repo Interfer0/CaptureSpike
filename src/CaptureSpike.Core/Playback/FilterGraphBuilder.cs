@@ -145,7 +145,8 @@ public static class FilterGraphBuilder
                 var ms = v.EffectiveOffsetMs - minOffsetMs;
                 var inputLabel = $"vid{allVideos.IndexOf(v) + 1}";
                 sb.Append(CultureInfo.InvariantCulture,
-                    $"[{inputLabel}]setpts=PTS+{Sec(ms)}/TB,scale={cellW}:{cellH}[{PLabel(i)}];");
+                    $"[{inputLabel}]setpts=PTS+{Sec(ms)}/TB,scale={cellW}:{cellH}:force_original_aspect_ratio=decrease," +
+                    $"pad={cellW}:{cellH}:(ow-iw)/2:(oh-ih)/2:color=black[{PLabel(i)}];");
             }
             // Stack the cells: xstack=inputs=N:layout=0_0|w0_0|w0_h0|...
             // We use the explicit grid by giving each cell its

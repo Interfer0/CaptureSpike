@@ -227,12 +227,23 @@ public static class CaptureFactory
                 break;
             }
             case SourceKind.Window:
-                if (string.IsNullOrWhiteSpace(source.Device))
-                    throw new CaptureException(source.Id,
-                        "Window capture needs a window title in the source's device setting.");
-                args.AddRange(new[] { "-f", "gdigrab", "-framerate", project.Fps.ToString(), "-i", $"title={source.Device}" });
-                args.AddRange(VideoOutArgs(project, outputFile));
-                break;
+                // Window capture on Windows uses the modern
+                // Windows.Graphics.Capture API instead of
+                // gdigrab. WGC captures the actual GPU-
+                // composed pixels of a single window, which
+                // gdigrab can't (UWP/Edge/DirectX-only
+                // surfaces fail, minimized windows fail).
+                // The window is selected by the user from
+                // the source's device dropdown (the same
+                // dropdown that lists open windows). The
+                // capturer uses the HWND stored in
+                // source.Device (prefixed with "hwnd:") to
+                // start capture without any further user
+                // interaction. Legacy palette entries that
+                // store a plain window title are migrated
+                // to the HWND form in-memory.
+                return new WindowsGraphicsCapturer(
+                    source.Id, outputFile, ffmpeg, project.Fps, source.Device);
             case SourceKind.Webcam:
                 args.AddRange(new[] { "-f", "dshow", "-framerate", "30", "-i",
                     $"video={source.Device ?? FirstDShowVideoDevice(ffmpeg)}" });

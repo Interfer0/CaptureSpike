@@ -2671,6 +2671,11 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     private string? _playerError;
     private string? _playerDisplayName;
 
+    public void ClosePlaybackWindow()
+    {
+        _tiledWindow?.Close();
+    }
+
     /// <summary>What the preview is currently playing, e.g. "Take 05 · screen.mp4".</summary>
     private string _nowPlaying = "";
     public string NowPlayingText { get => _nowPlaying; set => SetField(ref _nowPlaying, value); }
