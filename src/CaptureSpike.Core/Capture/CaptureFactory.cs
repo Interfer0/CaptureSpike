@@ -99,10 +99,17 @@ public static class CaptureFactory
                     "Build the helper from installer/linux/cs-pw-helper/ and copy it next to ffmpeg, " +
                     "or install CaptureSpike from a build that includes it.");
             }
+            // XdpOutputType in libportal: XDP_OUTPUT_MONITOR=1<<0=1,
+            // XDP_OUTPUT_WINDOW=1<<1=2, XDP_OUTPUT_VIRTUAL=1<<2=4. This
+            // is what the portal dialog offers the user to choose from, so
+            // a Window source has to ask for window selection. Hardcoding
+            // the monitor value made "Window" silently record the whole
+            // screen, because the dialog only ever offered monitors.
+            var waylandSourceType = source.Kind == SourceKind.Window ? 2 : 1;
             return new WaylandCapturer(
                 source.Id, outputFile, helper, ffmpeg,
                 framerate: project.Fps,
-                sourceType: 1, /* monitor */
+                sourceType: waylandSourceType,
                 includeCursor: true);
         }
 
