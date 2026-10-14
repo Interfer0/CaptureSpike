@@ -155,6 +155,16 @@ static void on_stream_state_changed(void *data,
     if (new == PW_STREAM_STATE_ERROR || new == PW_STREAM_STATE_UNCONNECTED) {
         g_interrupted = 1;
     }
+    /* We connected with PW_STREAM_FLAG_INACTIVE so the stream
+     * pauses at PAUSED until we activate it. The PipeWire
+     * tutorial example calls pw_stream_set_active(true) here
+     * to start the format negotiation. Without this the
+     * source never sends a Format event and the stream sits
+     * at PAUSED forever. */
+    if (new == PW_STREAM_STATE_PAUSED && g_pw_stream != NULL) {
+        fprintf(stderr, "cs-pw-helper: PAUSED -> calling pw_stream_set_active(TRUE) to start negotiation\n");
+        pw_stream_set_active(g_pw_stream, true);
+    }
     /* Fallback: if we transitioned to STREAMING but
      * on_stream_param_changed never set our format
      * (e.g. the source accepted the format without
@@ -254,14 +264,24 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
             SPA_PARAM_BUFFERS_blocks,   SPA_POD_Int(1),
             SPA_PARAM_BUFFERS_size,     SPA_POD_Int(g_frame_stride * g_frame_height),
             SPA_PARAM_BUFFERS_stride,   SPA_POD_Int(g_frame_stride),
-            SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int((1 << SPA_DATA_MemPtr)));
-        /* Meta: timing information (pts, duration). The
-         * compositor fills this in for each frame. We don't
-         * need VideoCrop/Cursor for screen capture. */
+            /* Allow MemPtr, MemFd, DmaBuf. The source picks
+             * one. Some screencast sources use DmaBuf for
+             * zero-copy; MemPtr is the most portable. */
+            SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(
+                (1 << SPA_DATA_MemPtr) | (1 << SPA_DATA_MemFd) | (1 << SPA_DATA_DmaBuf)));
+        /* Meta: timing + crop information. Compositors
+         * (especially Wayland screencast sources) require
+         * both SPA_META_Header and SPA_META_VideoCrop to be
+         * requested. Without VideoCrop, the buffer allocation
+         * can fail with EINVAL. */
         g_buffers_params[g_buffers_n_params++] = spa_pod_builder_add_object(&b,
             SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
             SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
             SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_header)));
+        g_buffers_params[g_buffers_n_params++] = spa_pod_builder_add_object(&b,
+            SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+            SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoCrop),
+            SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_region)));
         g_buffers_built = 1;
     }
 
@@ -318,8 +338,16 @@ static void on_stream_process(void *data) {
         struct spa_buffer *sbuf = buf->buffer;
         struct spa_data *d = &sbuf->datas[0];
         if (d->data == NULL || d->chunk == NULL || d->chunk->size == 0) {
+            if (++g_process_call_count <= 8) {
+                fprintf(stderr, "cs-pw-helper: process: data=NULL or chunk->size=0 (data=%p chunk=%p size=%u)\n",
+                    (void*)d->data, (void*)d->chunk, d->chunk ? d->chunk->size : 0);
+            }
             pw_stream_queue_buffer(g_pw_stream, buf);
             continue;
+        }
+        if (++g_process_call_count <= 8) {
+            fprintf(stderr, "cs-pw-helper: process: writing %u bytes to client_fd=%d\n",
+                d->chunk->size, g_client_fd);
         }
         if (write_all(g_client_fd, d->data, d->chunk->size) < 0) {
             fprintf(stderr, "cs-pw-helper: write to socket failed: %s\n", strerror(errno));
@@ -520,18 +548,22 @@ static gboolean on_probe_streams(gpointer user_data) {
     (void)user_data;
     fprintf(stderr, "cs-pw-helper: on_probe_streams fired\n");
     if (g_pw_node_id != 0) return FALSE;
-    /* Enter the PW thread's context to call PW APIs. */
-    pw_loop_enter(g_pw_loop);
+    /* xdp_session_get_streams is a D-Bus call (handled by
+     * GLib), not a PipeWire API. It does NOT need the PW
+     * thread's context. The old code wrapped it in
+     * pw_loop_enter/leave which is what was producing the
+     * "pthread_equal(impl->thread, thread_id) failed" warnings
+     * and, more importantly, was forcing the negotiation onto
+     * the wrong thread, which is why on_stream_param_changed
+     * (Format) never fired. */
     GVariant *streams = xdp_session_get_streams(g_session);
     if (streams == NULL) {
         fprintf(stderr, "cs-pw-helper: probe: xdp_session_get_streams returned NULL, retry in 1s\n");
-        pw_loop_leave(g_pw_loop);
         return TRUE;
     }
     GVariantIter iter;
     if (!g_variant_iter_init(&iter, streams)) {
         fprintf(stderr, "cs-pw-helper: probe: g_variant_iter_init failed\n");
-        pw_loop_leave(g_pw_loop);
         return FALSE;
     }
     GVariant *stream;
@@ -542,15 +574,14 @@ static gboolean on_probe_streams(gpointer user_data) {
     }
     if (g_pw_node_id == 0) {
         fprintf(stderr, "cs-pw-helper: probe: no streams available yet\n");
-        pw_loop_leave(g_pw_loop);
         return TRUE;
     }
-    /* We need to call setup_pw_stream (which uses PW APIs)
-     * on the PW thread, not this one. schedule_pw_setup wakes
-     * the PW thread by calling pw_main_loop_quit; the thread's
-     * loop function then runs setup and re-enters pw_main_loop_run. */
+    /* setup_pw_stream uses PW APIs and must run on the PW
+     * thread. schedule_pw_setup writes the node_id to
+     * g_setup_node_id, sets g_setup_pending=1, and signals
+     * the PW loop. The PW thread's on_signal_event callback
+     * runs setup_pw_stream_on_pw_thread on the right thread. */
     schedule_pw_setup(g_pw_node_id);
-    pw_loop_leave(g_pw_loop);
     return FALSE;
 }
 
