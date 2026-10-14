@@ -45,9 +45,11 @@ public sealed class WaylandDeviceEnumerationTests
             var devices = DeviceEnumeration.GetDevices(SourceKind.Screen, "ffmpeg");
 
             var entry = Assert.Single(devices);
-            // Empty Id: CaptureFactory's Wayland branch ignores
-            // Source.Device, so a fabricated geometry would be a lie.
-            Assert.Equal("", entry.Id);
+            // Not the empty id: that belongs to "Default", and a
+            // placeholder sharing it cannot be matched back when the
+            // list is rebuilt, so the selection would always come back
+            // as Default. See WaylandDeviceIdTests.
+            Assert.Equal(DeviceEnumeration.WaylandPortalDeviceId, entry.Id);
             Assert.Contains("Share dialog", entry.Label);
         }
         finally
@@ -66,7 +68,7 @@ public sealed class WaylandDeviceEnumerationTests
             var devices = DeviceEnumeration.GetDevices(SourceKind.Window, "ffmpeg");
 
             var entry = Assert.Single(devices);
-            Assert.Equal("", entry.Id);
+            Assert.Equal(DeviceEnumeration.WaylandPortalDeviceId, entry.Id);
             Assert.Contains("Share dialog", entry.Label);
         }
         finally

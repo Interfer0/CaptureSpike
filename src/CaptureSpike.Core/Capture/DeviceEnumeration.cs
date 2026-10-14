@@ -132,6 +132,20 @@ public static class DeviceParsers
 /// </summary>
 public static class DeviceEnumeration
 {
+    /// <summary>
+    /// Id for the "the portal decides" placeholder on Wayland.
+    ///
+    /// This has to be distinct from the empty string, which is what
+    /// "Default" uses. The device picker persists the selected Id, and
+    /// an empty Id is stored as null, so a placeholder sharing that Id
+    /// could never be matched back when the list is rebuilt - the
+    /// selection would silently come back as Default.
+    ///
+    /// CaptureFactory's Wayland branch ignores Source.Device either way;
+    /// this value only has to survive a round trip through the UI.
+    /// </summary>
+    public const string WaylandPortalDeviceId = "wayland:portal";
+
     public static IReadOnlyList<DeviceOption> GetDevices(SourceKind kind, string ffmpeg)
     {
         try
@@ -313,16 +327,20 @@ public static class DeviceEnumeration
             _ => Array.Empty<DeviceOption>(),
         };
 
-        /// <summary>
-        /// Stand-in for the monitor list on Wayland. The id is empty, which
-        /// is what the Wayland branch of CaptureFactory expects: it ignores
-        /// Source.Device entirely and lets the portal decide.
-        /// </summary>
-        private static IReadOnlyList<DeviceOption> GetWaylandScreens() =>
-            new[] { new DeviceOption("", "Screen (choose in the Share dialog)") };
+/// <summary>
+    /// Stand-in for the monitor list on Wayland. There is no X11-style
+    /// monitor list to enumerate: xrandr is often absent, and under
+    /// XWayland it reports the XWayland root rather than the
+    /// compositor's real outputs. Screen capture goes through
+    /// xdg-desktop-portal and the portal dialog is what lets the user
+    /// pick an output, so we report one honest entry instead of a wrong
+    /// monitor list.
+    /// </summary>
+    private static IReadOnlyList<DeviceOption> GetWaylandScreens() =>
+        new[] { new DeviceOption(DeviceEnumeration.WaylandPortalDeviceId, "Screen (choose in the Share dialog)") };
 
-        private static IReadOnlyList<DeviceOption> GetWaylandWindows() =>
-            new[] { new DeviceOption("", "Window (choose in the Share dialog)") };
+    private static IReadOnlyList<DeviceOption> GetWaylandWindows() =>
+        new[] { new DeviceOption(DeviceEnumeration.WaylandPortalDeviceId, "Window (choose in the Share dialog)") };
 
         private static string Run(string file, string args, int timeoutMs = 8000)
         {

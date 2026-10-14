@@ -355,7 +355,22 @@ public sealed class PaletteSourceViewModel : ObservableObject
         _save = save;
         _onDeviceChanged = onDeviceChanged;
         Devices.Add(DefaultOption);
-        _selectedDevice = DefaultOption;
+        // Seed from the saved value so the dropdown is not lying while
+        // detection runs (it takes seconds, because it shells out to
+        // xrandr/pactl/ffmpeg). The full entry list only exists after
+        // RefreshDevicesAsync; until then show the saved id verbatim
+        // rather than Default, which is what made a good selection look
+        // like it had been lost.
+        var saved = source?.Device;
+        if (string.IsNullOrEmpty(saved))
+        {
+            _selectedDevice = DefaultOption;
+        }
+        else
+        {
+            _selectedDevice = new DeviceOption(saved!, $"{saved} (detecting…)");
+            Devices.Add(_selectedDevice);
+        }
         RefreshDevicesCommand = new RelayCommand(
             async () => await RefreshDevicesAsync(), () => !IsDetecting);
     }
@@ -516,16 +531,26 @@ public sealed class PaletteSourceViewModel : ObservableObject
                 Devices.Add(DefaultOption);
                 foreach (var d in found) Devices.Add(d);
                 var current = Source.Device;
-                var match = Devices.FirstOrDefault(d => d.Id == current);
-                if (match is null && !string.IsNullOrEmpty(current))
+                // Compare on the stored form, not on the raw property.
+                // DefaultOption's Id is "", the setter stores an empty
+                // Id as null, and null never string-equals "", so a
+                // plain d.Id == current could never match Default and
+                // the fallback below would pick it anyway - which also
+                // meant a genuinely saved selection could be reported
+                // as missing. Normalising both sides makes Default,
+                // "no device" and a real Id all round-trip.
+                var want = current ?? "";
+                var match = Devices.FirstOrDefault(d => d.Id == want);
+                // Only a real, previously-known device can be
+                // "not connected". The Wayland placeholder is not a
+                // device at all - the portal picks it - so never
+                // present it as a missing one.
+                if (match is null && !string.IsNullOrEmpty(current)
+                    && current != DeviceEnumeration.WaylandPortalDeviceId)
                 {
                     match = new DeviceOption(current, $"{current} (not connected)");
                     Devices.Add(match);
                 }
-                // DefaultOption has an empty Id, and a source with
-                // Device == null never compares equal to it, so the
-                // Default case has to be handled by the fallback rather
-                // than by the FirstOrDefault match.
                 _selectedDevice = match ?? DefaultOption;
             }
             finally
@@ -1829,7 +1854,13 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         if (globalEntry is null) return;
         DebugPalette($"save: paletteId={paletteId} device={src.Device ?? "<null>"} badge={src.Badge ?? "<null>"}");
         var changed = false;
-        if (globalEntry.Device != src.Device) { globalEntry.Device = src.Device ?? ""; changed = true; }
+        // Compare on a normalised form. The setter stores "no device" as
+        // null while an older palette on disk may hold "", so comparing
+        // raw made every entry look changed and rewrote palette.json on
+        // every detection cycle for every source.
+        var deviceWanted = src.Device ?? "";
+        var deviceOnDisk = globalEntry.Device ?? "";
+        if (deviceOnDisk != deviceWanted) { globalEntry.Device = deviceWanted; changed = true; }
         if (globalEntry.Badge != src.Badge) { globalEntry.Badge = src.Badge ?? ""; changed = true; }
         if (globalEntry.Label != src.Label) { globalEntry.Label = src.Label ?? ""; changed = true; }
         if (!changed) return;
