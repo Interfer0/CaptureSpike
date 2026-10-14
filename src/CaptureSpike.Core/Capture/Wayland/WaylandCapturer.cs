@@ -33,6 +33,53 @@ namespace CaptureSpike.Core.Capture.Wayland;
 /// <see cref="FfmpegCapturer"/>'s progress parsing
 /// (frame=N&gt;0 on stdout). We don't reimplement it.
 /// </summary>
+
+/// <summary>
+/// A rectangular crop applied to a captured stream, expressed in the
+/// same coordinate space as the stream itself. The Wayland portal
+/// decides what the stream covers; this lets a project that was
+/// authored on X11 (where <c>Source.Device</c> was a
+/// <c>WxH+X+Y</c> geometry handed to ffmpeg) still produce a region
+/// capture when run on Wayland, by cropping the negotiated stream
+/// after the fact instead of asking the portal for it.
+/// </summary>
+public readonly record struct CropRegion(int Width, int Height, int X, int Y)
+{
+    /// <summary>
+    /// Parses a <c>WxH+X+Y</c> device string into a crop, or null if
+    /// the string is empty or malformed. Used for both the X11
+    /// <c>x11grab</c> device and the Wayland crop, so a project
+    /// configured on either platform keeps its region on the other.
+    /// </summary>
+    public static CropRegion? Parse(string? device)
+    {
+        if (string.IsNullOrWhiteSpace(device)) return null;
+        var s = device.Trim();
+        var x = s.IndexOf('+');
+        if (x < 0) return null;
+        var x2 = s.IndexOf('+', x + 1);
+        if (x2 < 0) return null;
+        var sizePart = s.AsSpan(0, x).ToString();
+        var xPart = s.AsSpan(x + 1, x2 - x - 1).ToString();
+        var yPart = s.AsSpan(x2 + 1).ToString();
+        var wh = sizePart.Split('x', 'X');
+        if (wh.Length != 2) return null;
+        if (!int.TryParse(wh[0], out var w) || w <= 0) return null;
+        if (!int.TryParse(wh[1], out var h) || h <= 0) return null;
+        if (!int.TryParse(xPart, out var cx) || cx < 0) return null;
+        if (!int.TryParse(yPart, out var cy) || cy < 0) return null;
+        return new CropRegion(w, h, cx, cy);
+    }
+
+    /// <summary>
+    /// ffmpeg <c>-vf crop=W:H:X:Y</c> arguments for this region, or
+    /// empty when no crop is needed.
+    /// </summary>
+    public string[] ToFfmpegArgs() =>
+        Width > 0 && Height > 0
+            ? new[] { "-vf", $"crop={Width}:{Height}:{X}:{Y}" }
+            : Array.Empty<string>();
+}
 public sealed class WaylandCapturer : ISourceCapturer
 {
     private readonly string _helperPath;
@@ -40,6 +87,7 @@ public sealed class WaylandCapturer : ISourceCapturer
     private readonly int _framerate;
     private readonly int _sourceType;
     private readonly bool _includeCursor;
+    private readonly CropRegion? _region;
     private readonly FfmpegCapturer _inner;
     private Process? _helper;
     private readonly StringBuilder _helperStderr = new();
@@ -73,9 +121,11 @@ public sealed class WaylandCapturer : ISourceCapturer
         string ffmpeg,
         int framerate,
         int sourceType = 1,
-        bool includeCursor = false)
+        bool includeCursor = false,
+        CropRegion? crop = null)
     {
         SourceId = sourceId;
+        _region = crop;
         Kind = SourceKind.Screen;
         OutputFile = outputFile;
         _helperPath = helperPath;
@@ -189,10 +239,28 @@ public sealed class WaylandCapturer : ISourceCapturer
     /// (libx264, yuv420p) is the same as the X11 path;
     /// the input side uses rawvideo over the Unix
     /// socket.</summary>
+    /// <summary>
+    /// Maps a protocol pixel format to the ffmpeg <c>-pix_fmt</c> value.
+    ///
+    /// Bgrx and Bgr0 are the same packed layout with an undefined fourth
+    /// byte, which ffmpeg names "bgr0". Bgra carries a real alpha and
+    /// stays "bgra". The decoded result is identical for Bgrx and Bgra
+    /// because the fourth byte is discarded on the way to yuv420p, but
+    /// labelling it correctly is what makes a BGRx source and a BGRA
+    /// source distinguishable in a bug report - Screen capture negotiates
+    /// BGRx, Window capture negotiates BGRA.
+    /// </summary>
+    public static string PixelFormatToFfmpegArg(PwStreamProtocol.PixelFormat format) =>
+        format switch
+        {
+            PwStreamProtocol.PixelFormat.Bgr0 => "bgr0",
+            PwStreamProtocol.PixelFormat.Bgrx => "bgr0",
+            _ => "bgra",
+        };
+
     private IReadOnlyList<string> BuildFfmpegArgs(PwStreamProtocol.StreamHeader header)
     {
-        var pixFmt = header.Format == PwStreamProtocol.PixelFormat.Bgr0
-            ? "bgr0" : "bgra";
+        var pixFmt = PixelFormatToFfmpegArg(header.Format);
         var args = new List<string>
         {
             "-hide_banner", "-loglevel", "warning",
@@ -217,6 +285,15 @@ public sealed class WaylandCapturer : ISourceCapturer
             "-crf", "18", "-pix_fmt", "yuv420p", "-r", _framerate.ToString(),
             "-y", OutputFile,
         };
+        // Region/geometry drop: x11grab takes its region straight from
+        // the device string, so a project configured on X11 captures a
+        // sub-region. On Wayland the portal picks the whole output
+        // instead, and dropping Source.Device silently expands the
+        // capture to whatever was selected in the dialog. Apply the
+        // configured crop as a filter so a region chosen on either
+        // platform survives the other.
+        if (_region is { } r)
+            args.InsertRange(args.Count - 1, r.ToFfmpegArgs());
         return args;
     }
 

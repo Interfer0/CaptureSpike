@@ -106,11 +106,19 @@ public static class CaptureFactory
             // the monitor value made "Window" silently record the whole
             // screen, because the dialog only ever offered monitors.
             var waylandSourceType = source.Kind == SourceKind.Window ? 2 : 1;
+            // Region capture is meaningful on X11, where the device
+            // string is a geometry ffmpeg's x11grab takes as-is. On
+            // Wayland the portal picks the whole output, so we apply
+            // the same geometry as a -vf crop= filter instead. That
+            // way a project that was authored on X11 keeps its region
+            // when run on Wayland, and the other way round.
+            var region = CropRegion.Parse(source.Device);
             return new WaylandCapturer(
                 source.Id, outputFile, helper, ffmpeg,
                 framerate: project.Fps,
                 sourceType: waylandSourceType,
-                includeCursor: true);
+                includeCursor: true,
+                crop: region);
         }
 
         var args = BaseArgs();
