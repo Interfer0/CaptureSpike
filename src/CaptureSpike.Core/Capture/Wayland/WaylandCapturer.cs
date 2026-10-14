@@ -333,7 +333,11 @@ public sealed class WaylandCapturer : ISourceCapturer
             }
             catch { }
         }
-        try { File.Delete(_socketPath); } catch { }
+        // Socket cleanup is intentionally omitted: PickSocketPath
+        // picks a unique per-take path and the helper created the
+        // inode at startup. Unlinking here can race with a concurrent
+        // recording that just chose the same counter value, and the
+        // /tmp filesystem will reap the socket on its own.
     }
 
     public async ValueTask DisposeAsync()
@@ -348,7 +352,13 @@ public sealed class WaylandCapturer : ISourceCapturer
             try { if (!helper.HasExited) helper.Kill(entireProcessTree: true); } catch { }
             helper.Dispose();
         }
-        try { File.Delete(_socketPath); } catch { }
+        // Do NOT unlink the socket here. PickSocketPath generates a
+        // unique per-take path with a process id and Interlocked counter,
+        // and the helper creates the inode at startup; the same record
+        // is also created by File.Delete in older code, which yanks the
+        // socket out from under a concurrent helper bind. Letting the
+        // filesystem clean it up at process exit is the only safe choice
+        // for a path another recording in this process might also touch.
     }
 
     private async Task ReadHelperStderrAsync(StreamReader stderr, CancellationToken ct)
