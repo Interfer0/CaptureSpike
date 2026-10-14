@@ -1164,16 +1164,31 @@ int main(int argc, char *argv[]) {
         }
         if (g_pw_event_source) pw_loop_signal_event(g_pw_loop, g_pw_event_source);
         fprintf(stderr, "cs-pw-helper: test mode post-signal\n");
-        g_main_loop = g_main_loop_new(NULL, FALSE);
+        // The main loop must exist before any path that might call
+        // g_main_loop_quit() - notably on_stream_state_changed, the
+        // multi-source retry, and the variant walk's "all failed"
+        // path. It is assigned at the top of main() and only assigned
+        // once; this branch is the original test-mode assignment and
+        // is kept for clarity. The bug it caused when first introduced
+        // was that any quit call before the assignment was a no-op
+        // because the guard `if (g_main_loop)` short-circuited, and the
+        // variant walk then re-armed itself forever.
+        if (g_main_loop == NULL) g_main_loop = g_main_loop_new(NULL, FALSE);
     } else {
         fprintf(stderr, "cs-pw-helper: requesting screen capture (this opens a system dialog)...\n");
         /* GTK is only needed for the "you picked too many sources"
          * dialog, and only on this path. --node-id test mode skips it. */
         int argc_gtk = 0;
         gtk_init(&argc_gtk, NULL);
+        // Set up the main loop before the async session flow, so the
+        // variant walk's "all failed" quit, the multi-source retry's
+        // failure paths, and on_stream_state_changed's ERROR handler
+        // can all actually exit. Assigning it after begin_screencast_session
+        // made every quit a no-op while the helper was in the middle of
+        // walking variants, and the loop re-armed itself forever,
+        // writing the same line to stderr ~70 million times.
+        if (g_main_loop == NULL) g_main_loop = g_main_loop_new(NULL, FALSE);
         begin_screencast_session();
-
-        g_main_loop = g_main_loop_new(NULL, FALSE);
     }
     fprintf(stderr, "cs-pw-helper: entering main loop\n");
     g_main_loop_run(g_main_loop);
