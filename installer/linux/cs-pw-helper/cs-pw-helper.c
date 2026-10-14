@@ -70,6 +70,11 @@
 #define EXIT_STREAM_ERROR    4
 #define EXIT_USER_CANCELLED  5
 #define EXIT_MULTI_SOURCE    6
+/* The variant walk can only recover from a buffer-shape error (the
+ * source rejected our pod). A resource error means the source or the
+ * PipeWire connection is unhappy for a different reason - the same
+ * pod tried against the same node will keep failing. Bail out. */
+#define EXIT_RESOURCE_ERROR  7
 
 /* One Window source records one window. The portal returns one PipeWire
  * node per selected source, and we drive a single stream into a single
@@ -88,6 +93,7 @@ static int   include_cursor = 0;
 static int   g_source_retries = 0;
 
 static volatile sig_atomic_t g_interrupted = 0;
+static volatile sig_atomic_t g_exit_code = EXIT_OK;
 static GMainLoop *g_main_loop = NULL;
 static XdpPortal *g_portal = NULL;
 static XdpSession *g_session = NULL;
@@ -190,6 +196,33 @@ static gboolean on_accept_client(GIOChannel *source, GIOCondition condition, gpo
 
 static int retry_next_variant(void *data);
 static void retry_next_variant_idle(void *data);
+
+/* True if the pipewire error string indicates a resource or connection
+ * problem rather than a buffer-shape rejection. The variant walk is for
+ * the latter; for the former, the next variant will hit the same error
+ * on the same node. Bail out, do not walk. */
+static int is_resource_error(const char *err) {
+    if (err == NULL) return 0;
+    /* errno names that pipewire strings to its errors (e.g. "16
+     * (Device or resource busy)"). Match by the human-readable tail
+     * because the numeric part is preceded by a sign and variable
+     * padding. */
+    return strstr(err, "Device or resource busy") != NULL  /* EBUSY  */
+        || strstr(err, "Bad file descriptor") != NULL      /* EBADF  */
+        || strstr(err, "Resource temporarily unavailable") != NULL /* EAGAIN */
+        || strstr(err, "Connection refused") != NULL        /* ECONNREFUSED */
+        || strstr(err, "Connection reset") != NULL           /* ECONNRESET */
+        || strstr(err, "Broken pipe") != NULL;              /* EPIPE  */
+}
+
+static void bail_resource(const char *err) {
+    fprintf(stderr, "cs-pw-helper: stream failed with a non-negotiation error "
+            "(\"%s\"); the variant walk is for buffer-shape errors and will not "
+            "recover from a resource problem. Giving up.\n", err ? err : "no reason given");
+    g_exit_code = EXIT_RESOURCE_ERROR;
+    g_interrupted = 1;
+    if (g_main_loop) g_main_loop_quit(g_main_loop);
+}
 static void setup_pw_stream_on_pw_thread(uint32_t node_id);
 
 /* ---- Buffer negotiation variants -------------------------------------
@@ -395,6 +428,10 @@ static void on_stream_state_changed(void *data,
     fprintf(stderr, "cs-pw-helper: stream state %d -> %d (%s)\n", old, new, err ? err : "ok");
 
     if (new == PW_STREAM_STATE_ERROR || new == PW_STREAM_STATE_UNCONNECTED) {
+        if (is_resource_error(err)) {
+            bail_resource(err);
+            return;
+        }
         fprintf(stderr, "cs-pw-helper: stream failed (%s); advancing to the next "
                 "negotiation variant\n", err ? err : "no reason given");
         /* Deferred: we must not destroy the stream from inside its own
@@ -1207,5 +1244,5 @@ int main(int argc, char *argv[]) {
     if (g_listen_fd >= 0) close(g_listen_fd);
     unlink(g_socket_path);
 
-    return EXIT_OK;
+    return g_exit_code ? g_exit_code : EXIT_OK;
 }
