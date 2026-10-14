@@ -291,13 +291,38 @@ public static class DeviceEnumeration
     {
         internal static IReadOnlyList<DeviceOption> Get(SourceKind kind) => kind switch
         {
-            SourceKind.Screen => GetMonitors(),
-            SourceKind.Window => Array.Empty<DeviceOption>(), // per-window capture is v2
+            // On Wayland there is no X11-style monitor list to enumerate.
+            // xrandr is either absent, or under XWayland it reports the
+            // XWayland root window rather than the compositor's real
+            // outputs, so parsing it produced a bogus single entry or
+            // threw. Screen capture goes through xdg-desktop-portal and
+            // the portal dialog is what lets the user pick an output, so
+            // report one honest entry instead of a wrong monitor list.
+            SourceKind.Screen => LinuxSession.Current == LinuxSession.DisplayServer.Wayland
+                ? GetWaylandScreens()
+                : GetMonitors(),
+            // Per-window capture goes through the same portal dialog with
+            // window selection requested, so there is nothing to enumerate
+            // here either.
+            SourceKind.Window => LinuxSession.Current == LinuxSession.DisplayServer.Wayland
+                ? GetWaylandWindows()
+                : Array.Empty<DeviceOption>(),
             SourceKind.Webcam => GetCameras(),
             SourceKind.Microphone => GetPulseSources(),
             SourceKind.SystemAudio => GetPulseSinks(),
             _ => Array.Empty<DeviceOption>(),
         };
+
+        /// <summary>
+        /// Stand-in for the monitor list on Wayland. The id is empty, which
+        /// is what the Wayland branch of CaptureFactory expects: it ignores
+        /// Source.Device entirely and lets the portal decide.
+        /// </summary>
+        private static IReadOnlyList<DeviceOption> GetWaylandScreens() =>
+            new[] { new DeviceOption("", "Screen (choose in the Share dialog)") };
+
+        private static IReadOnlyList<DeviceOption> GetWaylandWindows() =>
+            new[] { new DeviceOption("", "Window (choose in the Share dialog)") };
 
         private static string Run(string file, string args, int timeoutMs = 8000)
         {
