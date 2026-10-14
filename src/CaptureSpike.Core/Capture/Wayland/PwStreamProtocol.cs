@@ -13,7 +13,9 @@ namespace CaptureSpike.Core.Capture.Wayland;
 /// the producer side.
 ///
 /// Wire format on stderr (one line):
-///   "CSWH W={width} H={height} FPS={fps}\n"
+///   "CSWH W={width} H={height} FPS={fps} FMT={format}\n"
+///
+/// FMT is optional so a helper built before it existed still parses.
 ///
 /// On the Unix socket itself, there is NO header — the
 /// helper writes a flat stream of raw BGRA/BGR0 frames
@@ -33,6 +35,14 @@ public static class PwStreamProtocol
     {
         Bgra = 1,
         Bgr0 = 2,
+        /// <summary>
+        /// BGR with an undefined fourth byte. Screen capture negotiates
+        /// this one, Window capture negotiates <see cref="Bgra"/>. Both
+        /// are four bytes per pixel in the same byte order, so the decoded
+        /// output is identical; only the label differed and it was being
+        /// reported as Bgra for both.
+        /// </summary>
+        Bgrx = 3,
     }
 
     /// <summary>
@@ -71,6 +81,7 @@ public static class PwStreamProtocol
 
         int w = 0, h = 0;
         double fps = 0;
+        var fmt = (PixelFormat?)null;
         for (int i = 1; i < parts.Length; i++)
         {
             var kv = parts[i].Split('=', 2);
@@ -80,12 +91,19 @@ public static class PwStreamProtocol
                 case "W" when int.TryParse(kv[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var pw): w = pw; break;
                 case "H" when int.TryParse(kv[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var ph): h = ph; break;
                 case "FPS" when double.TryParse(kv[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pf): fps = pf; break;
+                case "FMT" when uint.TryParse(kv[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var pu)
+                                && Enum.IsDefined(typeof(PixelFormat), pu):
+                    fmt = (PixelFormat)pu; break;
             }
         }
         if (w <= 0 || h <= 0 || fps <= 0) return null;
 
         var (num, den) = FpsToRational(fps);
-        return new StreamHeader(w, h, PixelFormat.Bgra, num, den);
+        // FMT is optional. A helper built before the field existed does
+        // not send it, and such a helper only ever emitted BGRx for
+        // Screen, so Bgra is the safer of the two guesses here: the
+        // decoder output is identical either way.
+        return new StreamHeader(w, h, fmt ?? PixelFormat.Bgra, num, den);
     }
 
     /// <summary>Convert a double fps back to a num/den

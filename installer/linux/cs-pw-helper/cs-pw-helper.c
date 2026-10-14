@@ -140,9 +140,25 @@ static void on_sigint(int sig) {
     g_interrupted = 1;
 }
 
+/* Protocol format codes, matching PwStreamProtocol.PixelFormat on the
+ * .NET side. FMT is reported so the consumer labels the stream
+ * correctly: Screen capture negotiates BGRx and Window capture BGRA,
+ * and they were both being reported as BGRA. */
+static unsigned protocol_format_code(void) {
+    switch (g_frame_format) {
+        case SPA_VIDEO_FORMAT_BGRx:
+        case SPA_VIDEO_FORMAT_RGB:   return 3; /* Bgrx: undefined 4th byte */
+        case SPA_VIDEO_FORMAT_BGRA:
+        case SPA_VIDEO_FORMAT_RGBA:  return 1; /* Bgra */
+        case SPA_VIDEO_FORMAT_BGR:   return 2; /* Bgr0 */
+        default:                     return 1;
+    }
+}
+
 static void emit_header_line(int width, int height, int fps_num, int fps_den) {
     double fps = fps_den > 0 ? (double)fps_num / (double)fps_den : 0.0;
-    fprintf(stderr, "CSWH W=%d H=%d FPS=%.2f\n", width, height, fps);
+    fprintf(stderr, "CSWH W=%d H=%d FPS=%.2f FMT=%u\n",
+            width, height, fps, protocol_format_code());
     fflush(stderr);
 }
 
