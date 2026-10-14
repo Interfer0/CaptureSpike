@@ -32,7 +32,7 @@ public static class FilterGraphBuilder
             throw new InvalidOperationException("Take has no unmuted sources to play.");
 
         var live = videos.Concat(audios).ToList();
-        var minOffsetMs = take.Sources.Min(s => s.OffsetMs);
+        var minOffsetMs = take.Sources.Min(s => s.EffectiveOffsetMs);
 
         var sb = new StringBuilder();
 
@@ -41,7 +41,7 @@ public static class FilterGraphBuilder
         {
             var first = videos[0];
             sb.Append(CultureInfo.InvariantCulture,
-                $"[vid{VidIndex(allVideos, first)}]setpts=PTS+{Sec(first.OffsetMs - minOffsetMs)}/TB,scale={project.OutputWidth}:{project.OutputHeight}[vbase];");
+                $"[vid{VidIndex(allVideos, first)}]setpts=PTS+{Sec(first.EffectiveOffsetMs - minOffsetMs)}/TB,scale={project.OutputWidth}:{project.OutputHeight}[vbase];");
 
             var composed = "[vbase]";
             for (var i = 1; i < videos.Count; i++)
@@ -53,7 +53,7 @@ public static class FilterGraphBuilder
                 var x = (int)Math.Round(layout.X * project.OutputWidth);
                 var y = (int)Math.Round(layout.Y * project.OutputHeight);
                 sb.Append(CultureInfo.InvariantCulture,
-                    $"[vid{VidIndex(allVideos, v)}]setpts=PTS+{Sec(v.OffsetMs - minOffsetMs)}/TB,scale={w}:{h}[vpip{i}];");
+                    $"[vid{VidIndex(allVideos, v)}]setpts=PTS+{Sec(v.EffectiveOffsetMs - minOffsetMs)}/TB,scale={w}:{h}[vpip{i}];");
                 sb.Append($"{composed}[vpip{i}]overlay={x}:{y}[vout{i}];");
                 composed = $"[vout{i}]";
             }
@@ -66,11 +66,11 @@ public static class FilterGraphBuilder
             for (var i = 0; i < audios.Count; i++)
             {
                 var a = audios[i];
-                var ms = (int)Math.Round(a.OffsetMs - minOffsetMs);
+                var ms = (int)Math.Round(a.EffectiveOffsetMs - minOffsetMs);
                 sb.Append($"[aid{AidIndex(allAudios, a)}]adelay=delays={ms}:all=1,aresample=48000[a{i}];");
             }
             if (audios.Count == 1)
-                sb.Append($"[aid{AidIndex(allAudios, audios[0])}]adelay=delays={(int)Math.Round(audios[0].OffsetMs - minOffsetMs)}:all=1,aresample=48000[ao];");
+                sb.Append($"[aid{AidIndex(allAudios, audios[0])}]adelay=delays={(int)Math.Round(audios[0].EffectiveOffsetMs - minOffsetMs)}:all=1,aresample=48000[ao];");
             else
                 sb.Append($"[a0]{string.Concat(Enumerable.Range(1, audios.Count - 1).Select(i => $"[a{i}]"))}amix=inputs={audios.Count}:normalize=0[ao];");
         }
@@ -99,7 +99,7 @@ public static class FilterGraphBuilder
             throw new InvalidOperationException("Take has no unmuted sources to play.");
         // Keep the timeline origin stable across mute/unmute rebuilds. If
         // the earliest source is muted, the remaining tracks must not shift.
-        var minOffsetMs = sources.Min(s => s.OffsetMs);
+        var minOffsetMs = sources.Min(s => s.EffectiveOffsetMs);
 
         var sb = new StringBuilder();
         var allVideos = all.Where(s => s.Kind.IsVideo()).ToList();
@@ -142,7 +142,7 @@ public static class FilterGraphBuilder
             for (var i = 0; i < videos.Count; i++)
             {
                 var v = videos[i];
-                var ms = v.OffsetMs - minOffsetMs;
+                var ms = v.EffectiveOffsetMs - minOffsetMs;
                 var inputLabel = $"vid{allVideos.IndexOf(v) + 1}";
                 sb.Append(CultureInfo.InvariantCulture,
                     $"[{inputLabel}]setpts=PTS+{Sec(ms)}/TB,scale={cellW}:{cellH}[{PLabel(i)}];");
@@ -184,7 +184,7 @@ public static class FilterGraphBuilder
             for (var i = 0; i < audios.Count; i++)
             {
                 var a = audios[i];
-                var ms = a.OffsetMs - minOffsetMs;
+                var ms = a.EffectiveOffsetMs - minOffsetMs;
                 var inputLabel = $"aid{allAudios.IndexOf(a) + 1}";
                 sb.Append(CultureInfo.InvariantCulture,
                     $"[{inputLabel}]adelay=delays={ms:F0}:all=1,aresample=48000[{AOutLabel(i)}];");
