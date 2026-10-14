@@ -10,6 +10,12 @@ src/CaptureSpike.App/Assets/capturespike-icon.png
 dist/
 *.zip
 
+# cs-pw-helper build artifacts. The binary is staged into tools/ by
+# installer/linux/build-helper.sh; tools/*/ above keeps the staged copy
+# out of git.
+installer/linux/cs-pw-helper/cs-pw-helper
+installer/linux/cs-pw-helper/*.o
+
 # User data files (not source)
 palette.json
 installer/tools/
