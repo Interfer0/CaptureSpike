@@ -71,7 +71,11 @@ internal sealed class SingleInstance : IDisposable
         try
         {
             // Throws IOException when another process holds it.
-            fs.Lock(0, 1);
+            // FileStream.Lock is Linux-only in practice (the fcntl
+            // backing it has no macOS equivalent) - gate at the call
+            // site so the call is genuinely Linux-only and the
+            // CA1416 analyzer is happy.
+            if (OperatingSystem.IsLinux()) fs.Lock(0, 1);
         }
         catch (IOException)
         {
@@ -100,7 +104,8 @@ internal sealed class SingleInstance : IDisposable
     public void Dispose()
     {
         if (_lockFile is null) return;
-        try { _lockFile.Unlock(0, 1); } catch { }
+        // Same platform gate as TryAcquire above.
+        try { if (OperatingSystem.IsLinux()) _lockFile.Unlock(0, 1); } catch { }
         try { _lockFile.Dispose(); } catch { }
         _lockFile = null;
         try { File.Delete(_path); } catch { }
