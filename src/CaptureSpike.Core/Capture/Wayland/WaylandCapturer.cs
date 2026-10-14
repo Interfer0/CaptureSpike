@@ -207,7 +207,11 @@ public sealed class WaylandCapturer : ISourceCapturer
             "-pix_fmt", pixFmt,
             "-video_size", $"{header.Width}x{header.Height}",
             "-framerate", header.FramerateFps.ToString("F2", System.Globalization.CultureInfo.InvariantCulture),
-            "-i", _socketPath,
+            // "unix://" is required: ffmpeg's default file protocol calls
+            // open(), and open() on a Unix socket fails with ENXIO
+            // ("No such device or address"), so the input never opens. The
+            // unix protocol does the socket()/connect() dance instead.
+            "-i", "unix://" + _socketPath,
             // Output: same as the X11 path.
             "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
             "-crf", "18", "-pix_fmt", "yuv420p", "-r", _framerate.ToString(),

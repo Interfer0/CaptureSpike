@@ -44,6 +44,8 @@
 
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 #include <glib.h>
 #include <gio/gio.h>
@@ -53,6 +55,7 @@
 #include <pipewire/pipewire.h>
 #include <pipewire/stream.h>
 #include <spa/param/video/format-utils.h>
+#include <spa/param/latency.h>
 #include <spa/utils/result.h>
 
 #define SOURCE_TYPE_MONITOR 1
@@ -89,6 +92,9 @@ static int g_frame_format = 0;
 static int g_frame_stride = 0;
 static int g_framerate_num = 30;
 static int g_framerate_den = 1;
+/* The --framerate the caller asked for. A screencast source reports a
+ * variable framerate, so this is what we fall back to. */
+static int g_requested_fps = 30;
 static uint32_t g_pw_node_id = 0;
 
 static struct spa_hook g_remote_listener;
@@ -148,51 +154,252 @@ static gboolean on_accept_client(GIOChannel *source, GIOCondition condition, gpo
     return FALSE;
 }
 
+static int retry_next_variant(void *data);
+static void retry_next_variant_idle(void *data);
+static void setup_pw_stream_on_pw_thread(uint32_t node_id);
+
+/* ---- Buffer negotiation variants -------------------------------------
+ *
+ * The portal hands us a fd to a PipeWire daemon that hosts the screencast
+ * source in another process. There is no session manager on that remote to
+ * negotiate buffers for us, so we have to answer with our own
+ * SPA_PARAM_Buffers pod and hope the source fixates it. Which pod shape a
+ * given compositor source accepts is not something the spec pins down, so
+ * instead of guessing one shape and paying a portal "Share" click per
+ * attempt, we walk a table of candidates: on every stream error we destroy
+ * the stream, advance to the next candidate and reconnect. One Share click
+ * therefore reports which shape actually works.
+ *
+ * Why the previous single shape failed, from the pipewire daemon log:
+ *
+ *   source offers : buffers 16/2/16, blocks 1, align 16, dataType MemFd|DmaBuf
+ *   we requested  : buffers 8/2/8, blocks 1, size 8294400, stride 7680,
+ *                   dataType MemPtr|DmaBuf
+ *
+ * The source fixated nothing against our pod ("output param 0"), so
+ * pw_buffers_negotiate()'s param_filter() fell through to
+ * "return -EINVAL" -> "error alloc buffers: Invalid argument". Two
+ * suspects: the explicit size/stride the source will not match, and
+ * MemPtr, which a cross-process source can never hand out because the
+ * memory would live in our address space, not ours to read. The variants
+ * below vary those two independently so the culprit is unambiguous.
+ */
+
+enum neg_flags {
+    NEG_WANT_SIZE     = 1 << 0,  /* include SPA_PARAM_BUFFERS_size */
+    NEG_WANT_STRIDE   = 1 << 1,  /* include SPA_PARAM_BUFFERS_stride */
+    NEG_WANT_ALIGN    = 1 << 2,  /* include SPA_PARAM_BUFFERS_align */
+    NEG_WANT_LATENCY  = 1 << 3,  /* also send SPA_PARAM_Latency */
+    NEG_WANT_METAS    = 1 << 4,  /* send Header + VideoCrop metas */
+    NEG_NO_BUFFERS    = 1 << 6,  /* send no Buffers pod at all */
+};
+
+struct neg_variant {
+    const char *name;
+    uint32_t flags;
+    uint32_t n_buffers;   /* requested buffer count (min 2) */
+    uint32_t data_types;  /* mask of 1u << SPA_DATA_* */
+};
+
+static const struct neg_variant g_variants[] = {
+    /* Exactly what the source advertises. Port 70 of the gnome-shell
+     * screencast node offers:
+     *   buffers 16/2/16, blocks 1, align 16, dataType Int 4
+     * and spa_data_type is MemPtr=1, MemFd=2, DmaBuf=3, so Int 4 is
+     * 1<<SPA_DATA_MemFd - MemFd and nothing else. Asking for MemPtr or
+     * DmaBuf therefore has an empty intersection with the only type the
+     * source offers, the source fixates nothing, and pw_buffers_negotiate()
+     * bails out with -EINVAL. So: MemFd, its buffer count, its alignment. */
+    { "memfd mirror",
+      NEG_WANT_METAS | NEG_WANT_ALIGN, 16, 1u << SPA_DATA_MemFd },
+    /* Same, plus the size/stride we derive from the negotiated format. */
+    { "memfd +size+stride",
+      NEG_WANT_METAS | NEG_WANT_ALIGN | NEG_WANT_SIZE | NEG_WANT_STRIDE,
+      16, 1u << SPA_DATA_MemFd },
+    /* MemFd together with MemPtr: harmless if the source ignores it, and
+     * MAP_BUFFERS-style consumers may prefer it. */
+    { "memfd|memptr",
+      NEG_WANT_METAS | NEG_WANT_ALIGN, 16,
+      (1u << SPA_DATA_MemFd) | (1u << SPA_DATA_MemPtr) },
+    /* Every type, in case a compositor is more permissive. */
+    { "all-types",
+      NEG_WANT_METAS | NEG_WANT_ALIGN, 16,
+      (1u << SPA_DATA_MemFd) | (1u << SPA_DATA_MemPtr) | (1u << SPA_DATA_DmaBuf) },
+    /* MemFd without the metas, to check whether a rejected meta is the
+     * problem. The source offers Busy, VideoCrop, Cursor, Header and
+     * VideoDamage; if one of those is mandatory we would see it here. */
+    { "memfd bare", 0, 16, 1u << SPA_DATA_MemFd },
+    /* MemFd with our own buffer count instead of the source's. */
+    { "memfd buffers=8", NEG_WANT_METAS, 8, 1u << SPA_DATA_MemFd },
+    /* DmaBuf, for compositors that hand out dmabufs instead. */
+    { "dmabuf-only", NEG_WANT_METAS | NEG_WANT_ALIGN, 8, 1u << SPA_DATA_DmaBuf },
+    /* MemFd plus an explicit latency. */
+    { "memfd +latency",
+      NEG_WANT_METAS | NEG_WANT_ALIGN | NEG_WANT_LATENCY, 16, 1u << SPA_DATA_MemFd },
+    /* MemPtr, for a source running in our own process. */
+    { "memptr-only", NEG_WANT_METAS | NEG_WANT_ALIGN, 8, 1u << SPA_DATA_MemPtr },
+    /* Hand the daemon nothing and let its defaults apply. */
+    { "no buffers pod", NEG_NO_BUFFERS, 0, 0 },
+};
+
+#define N_VARIANTS ((int)(sizeof(g_variants) / sizeof(g_variants[0])))
+
+static int g_variant = -1;        /* -1 = no attempt made yet */
+static int g_have_format = 0;
+static int g_header_emitted = 0;
+static uint32_t g_active_node = 0;
+
+/* Send the SPA_PARAM_Buffers / Meta / Latency pod for the current variant.
+ *
+ * IMPORTANT: the pods are built in STATIC storage. PipeWire keeps the pod
+ * pointers and dereferences them after this function returns, so stack
+ * storage would be a use-after-free. pw_stream_update_params() copies the
+ * pod immediately, but we keep it static anyway to stay safe if that
+ * changes. */
+static void apply_negotiation_variant(void) {
+    static uint8_t pod_storage[2048];
+    static struct spa_pod *params[8];
+    const struct neg_variant *v;
+    struct spa_pod_builder b = {0};
+    int n = 0, r;
+    uint64_t latency_ns;
+
+    if (g_variant < 0 || g_variant >= N_VARIANTS) return;
+    v = &g_variants[g_variant];
+
+    spa_pod_builder_init(&b, pod_storage, sizeof(pod_storage));
+
+    if (!SPA_FLAG_IS_SET(v->flags, NEG_NO_BUFFERS)) {
+        /* push_object/pop rather than add_object: the properties of this
+         * object are conditional, and spa_pod_builder_add_object() closes
+         * its frame, so anything appended after it lands outside the object
+         * and produces a malformed pod. */
+        struct spa_pod_frame f;
+        spa_pod_builder_push_object(&b, &f,
+            SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers);
+        spa_pod_builder_add(&b,
+            SPA_PARAM_BUFFERS_buffers,
+            SPA_POD_CHOICE_RANGE_Int(v->n_buffers, 2, v->n_buffers), 0);
+        spa_pod_builder_add(&b, SPA_PARAM_BUFFERS_blocks, SPA_POD_Int(1), 0);
+        if (SPA_FLAG_IS_SET(v->flags, NEG_WANT_SIZE))
+            spa_pod_builder_add(&b, SPA_PARAM_BUFFERS_size,
+                SPA_POD_Int((uint32_t)g_frame_stride * (uint32_t)g_frame_height), 0);
+        if (SPA_FLAG_IS_SET(v->flags, NEG_WANT_STRIDE))
+            spa_pod_builder_add(&b, SPA_PARAM_BUFFERS_stride,
+                SPA_POD_Int(g_frame_stride), 0);
+        if (SPA_FLAG_IS_SET(v->flags, NEG_WANT_ALIGN))
+            spa_pod_builder_add(&b, SPA_PARAM_BUFFERS_align, SPA_POD_Int(16), 0);
+        spa_pod_builder_add(&b, SPA_PARAM_BUFFERS_dataType,
+            SPA_POD_CHOICE_FLAGS_Int(v->data_types), 0);
+        params[n++] = spa_pod_builder_pop(&b, &f);
+
+        if (SPA_FLAG_IS_SET(v->flags, NEG_WANT_METAS)) {
+            params[n++] = spa_pod_builder_add_object(&b,
+                SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+                SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
+                SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_header)));
+            params[n++] = spa_pod_builder_add_object(&b,
+                SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+                SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoCrop),
+                SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_region)));
+        }
+    }
+
+    if (SPA_FLAG_IS_SET(v->flags, NEG_WANT_LATENCY)) {
+        if (g_framerate_num > 0 && g_framerate_den > 0)
+            latency_ns = (1000000000ULL * (uint64_t)g_framerate_den) / (uint64_t)g_framerate_num;
+        else
+            latency_ns = 1000000000ULL / 30;
+        /* The direction must match the stream's or stream.c's add_param()
+         * drops the pod as a locked param of the wrong direction. */
+        params[n++] = spa_pod_builder_add_object(&b,
+            SPA_TYPE_OBJECT_ParamLatency, SPA_PARAM_Latency,
+            SPA_PARAM_LATENCY_direction, SPA_POD_Id(SPA_DIRECTION_INPUT),
+            SPA_PARAM_LATENCY_minNs, SPA_POD_Long(latency_ns),
+            SPA_PARAM_LATENCY_maxNs, SPA_POD_Long(latency_ns));
+    }
+
+    r = pw_stream_update_params(g_pw_stream, (const struct spa_pod **)params, n);
+    fprintf(stderr, "cs-pw-helper: variant %d (%s): update_params -> %d [%d pods, "
+            "buffers=%u types=0x%x%s]\n",
+            g_variant, v->name, r, n, v->n_buffers, v->data_types,
+            g_have_format ? ", format known" : ", no format yet");
+}
+
+/* Destroy the current stream, move to the next negotiation variant and
+ * reconnect to the same source node. Runs on the PipeWire thread via
+ * pw_loop_invoke(), i.e. after the failing state_changed callback has
+ * returned, so destroying the stream here is safe. */
+static void retry_next_variant_idle(void *data) {
+    (void)data;
+    retry_next_variant(NULL);
+}
+
+static int retry_next_variant(void *data) {
+    (void)data;
+    if (g_pw_stream) {
+        pw_stream_destroy(g_pw_stream);
+        g_pw_stream = NULL;
+    }
+    g_have_format = 0;
+    g_variant++;
+    if (g_variant >= N_VARIANTS) {
+        fprintf(stderr, "cs-pw-helper: all %d negotiation variants failed\n", N_VARIANTS);
+        g_interrupted = 1;
+        if (g_main_loop) g_main_loop_quit(g_main_loop);
+        return 0;
+    }
+    fprintf(stderr, "cs-pw-helper: === retrying with variant %d (%s) ===\n",
+            g_variant, g_variants[g_variant].name);
+    setup_pw_stream_on_pw_thread(g_active_node);
+    return 0;
+}
+
 static void on_stream_state_changed(void *data,
         enum pw_stream_state old, enum pw_stream_state new, const char *err) {
     (void)data; (void)old;
     fprintf(stderr, "cs-pw-helper: stream state %d -> %d (%s)\n", old, new, err ? err : "ok");
+
     if (new == PW_STREAM_STATE_ERROR || new == PW_STREAM_STATE_UNCONNECTED) {
-        g_interrupted = 1;
+        fprintf(stderr, "cs-pw-helper: stream failed (%s); advancing to the next "
+                "negotiation variant\n", err ? err : "no reason given");
+        /* Deferred: we must not destroy the stream from inside its own
+         * state_changed callback. */
+        pw_loop_add_idle(g_pw_loop, true, retry_next_variant_idle, NULL);
+        return;
     }
-    /* We connected with PW_STREAM_FLAG_INACTIVE so the stream
-     * pauses at PAUSED until we activate it. The PipeWire
-     * tutorial example calls pw_stream_set_active(true) here
-     * to start the format negotiation. Without this the
-     * source never sends a Format event and the stream sits
-     * at PAUSED forever. */
+
+    /* We connect with PW_STREAM_FLAG_INACTIVE, so the stream parks at
+     * PAUSED and nothing has been negotiated yet. Answer with the buffer
+     * pod BEFORE activating: activating is what starts the link's buffer
+     * negotiation, and a negotiation started against an empty buffer set is
+     * what produced "error alloc buffers: Invalid argument" before.
+     *
+     * Most variants deliberately omit size/stride so they are already
+     * complete here, before any format is known. The two that want an
+     * explicit size are re-sent by on_stream_param_changed() once the
+     * format is known, which triggers a renegotiation. */
     if (new == PW_STREAM_STATE_PAUSED && g_pw_stream != NULL) {
-        fprintf(stderr, "cs-pw-helper: PAUSED -> calling pw_stream_set_active(TRUE) to start negotiation\n");
+        apply_negotiation_variant();
         pw_stream_set_active(g_pw_stream, true);
     }
-    /* Fallback: if we transitioned to STREAMING but
-     * on_stream_param_changed never set our format
-     * (e.g. the source accepted the format without
-     * firing a param event), emit a default CSWH so
-     * the C# side can start ffmpeg. The default is
-     * 1920x1080 BGRA at the requested framerate. */
-    if (new == PW_STREAM_STATE_STREAMING && g_frame_width == 0) {
-        fprintf(stderr,
-            "cs-pw-helper: WARNING: stream is up but no format "
-            "negotiated; emitting fallback CSWH %dx%d BGRA @ %d/%d\n",
-            1920, 1080, g_framerate_num, g_framerate_den);
-        g_frame_width = 1920;
-        g_frame_height = 1080;
-        g_frame_format = SPA_VIDEO_FORMAT_BGRA;
-        g_frame_stride = 1920 * 4;
-        emit_header_line(g_frame_width, g_frame_height, g_framerate_num, g_framerate_den);
+
+    if (new == PW_STREAM_STATE_STREAMING) {
+        fprintf(stderr, "cs-pw-helper: *** STREAMING with variant %d (%s) ***\n",
+                g_variant, (g_variant >= 0 && g_variant < N_VARIANTS)
+                    ? g_variants[g_variant].name : "?");
+        g_interrupted = 0;
     }
 }
 
 static void on_stream_param_changed(void *data, uint32_t id, const struct spa_pod *param) {
-    (void)data; (void)id;
-    fprintf(stderr, "cs-pw-helper: on_stream_param_changed id=%u param=%p\n", id, (void*)param);
-    /* The stream may send multiple param events:
-     *   - SPA_PARAM_Format (3): the negotiated format
-     *   - SPA_PARAM_Buffers (5): the buffer pool config
-     *   - SPA_PARAM_Latency (6): latency info
-     * We only care about Format. The rest are bookkeeping. */
+    (void)data;
+    /* Only SPA_PARAM_Format matters here. The stream also emits Props (2)
+     * and Latency (15) events, and answering those with a buffers pod is
+     * what left several stale buffer variants on the node last time. */
+    if (id != SPA_PARAM_Format) return;
     if (param == NULL) return;
+
     struct spa_video_info_raw fmt = {0};
     if (spa_format_video_raw_parse(param, &fmt) < 0) {
         fprintf(stderr, "cs-pw-helper: failed to parse video format\n");
@@ -202,18 +409,28 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
     g_frame_height = fmt.size.height;
     g_framerate_num = fmt.framerate.num;
     g_framerate_den = fmt.framerate.denom;
+    /* Screencast sources are driven by compositor repaints, not a clock,
+     * so they report the framerate as 0/1 ("as fast as frames arrive").
+     * The .NET side needs a real rate to build ffmpeg's -framerate, and it
+     * rejects a header whose FPS is not greater than zero, so fall back to
+     * the rate the caller asked for on the command line. */
+    if (g_framerate_num <= 0 || g_framerate_den <= 0) {
+        fprintf(stderr, "cs-pw-helper: source reports a variable framerate "
+                "(%d/%d); using the requested %d fps\n",
+                fmt.framerate.num, fmt.framerate.denom, g_requested_fps);
+        g_framerate_num = g_requested_fps;
+        g_framerate_den = 1;
+    }
     switch (fmt.format) {
         case SPA_VIDEO_FORMAT_BGRA: g_frame_format = SPA_VIDEO_FORMAT_BGRA; break;
         case SPA_VIDEO_FORMAT_BGRx:
         case SPA_VIDEO_FORMAT_BGR: g_frame_format = SPA_VIDEO_FORMAT_BGRx; break;
         default:
-            fprintf(stderr, "cs-pw-helper: unsupported pixel format %d (will accept but not parse)\n", fmt.format);
             g_frame_format = fmt.format;
             break;
     }
-    /* Compute per-format stride. BGRA/BGRx/RGBx/RGBA = 4
-     * bytes/pixel, YUY2 = 2 bytes/pixel. The width*4 default
-     * is only correct for the BGRA family. */
+    /* Compute per-format stride. BGRA/BGRx/RGBx/RGBA = 4 bytes/pixel,
+     * YUY2 = 2. The width*4 default is only right for the BGRA family. */
     int bytes_per_pixel;
     switch (g_frame_format) {
         case SPA_VIDEO_FORMAT_BGRA:
@@ -228,12 +445,6 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
         case SPA_VIDEO_FORMAT_UYVY:
         case SPA_VIDEO_FORMAT_VYUY:
             bytes_per_pixel = 2; break;
-        case SPA_VIDEO_FORMAT_I420:
-        case SPA_VIDEO_FORMAT_YV12:
-        case SPA_VIDEO_FORMAT_NV12:
-        case SPA_VIDEO_FORMAT_NV21:
-            bytes_per_pixel = 1; /* avg, used for size; stride is width for Y */
-            break;
         default:
             bytes_per_pixel = 4;
     }
@@ -241,64 +452,53 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
     fprintf(stderr, "cs-pw-helper: video %dx%d stride=%d @ %d/%d fps, format %d\n",
         g_frame_width, g_frame_height, g_frame_stride,
         g_framerate_num, g_framerate_den, g_frame_format);
-    emit_header_line(g_frame_width, g_frame_height, g_framerate_num, g_framerate_den);
-
-    /* IMPORTANT: the SPA_PARAM_Buffers + SPA_PARAM_Meta pods
-     * are written into STATIC storage. PipeWire's negotiation
-     * thread dereferences these pointers after this function
-     * returns, so stack storage (the previous bug) caused
-     * a use-after-free that killed the stream. */
-    static uint8_t g_buffers_pod[1024];
-    static struct spa_pod *g_buffers_params[4];
-    static int g_buffers_n_params = 0;
-    static int g_buffers_built = 0;
-
-    if (!g_buffers_built) {
-        struct spa_pod_builder b = {0};
-        spa_pod_builder_init(&b, g_buffers_pod, sizeof(g_buffers_pod));
-        g_buffers_n_params = 0;
-        /* Buffers: how many, what size, what stride, what data type. */
-        g_buffers_params[g_buffers_n_params++] = spa_pod_builder_add_object(&b,
-            SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
-            SPA_PARAM_BUFFERS_buffers,  SPA_POD_CHOICE_RANGE_Int(8, 2, 32),
-            SPA_PARAM_BUFFERS_blocks,   SPA_POD_Int(1),
-            SPA_PARAM_BUFFERS_size,     SPA_POD_Int(g_frame_stride * g_frame_height),
-            SPA_PARAM_BUFFERS_stride,   SPA_POD_Int(g_frame_stride),
-            /* Allow MemPtr, MemFd, DmaBuf. The source picks
-             * one. Some screencast sources use DmaBuf for
-             * zero-copy; MemPtr is the most portable. */
-            SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(
-                (1 << SPA_DATA_MemPtr) | (1 << SPA_DATA_MemFd) | (1 << SPA_DATA_DmaBuf)));
-        /* Meta: timing + crop information. Compositors
-         * (especially Wayland screencast sources) require
-         * both SPA_META_Header and SPA_META_VideoCrop to be
-         * requested. Without VideoCrop, the buffer allocation
-         * can fail with EINVAL. */
-        g_buffers_params[g_buffers_n_params++] = spa_pod_builder_add_object(&b,
-            SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
-            SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
-            SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_header)));
-        g_buffers_params[g_buffers_n_params++] = spa_pod_builder_add_object(&b,
-            SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
-            SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoCrop),
-            SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_region)));
-        g_buffers_built = 1;
+    if (!g_header_emitted) {
+        g_header_emitted = 1;
+        emit_header_line(g_frame_width, g_frame_height, g_framerate_num, g_framerate_den);
     }
-
-    int r = pw_stream_update_params(g_pw_stream, g_buffers_params, g_buffers_n_params);
-    fprintf(stderr, "cs-pw-helper: pw_stream_update_params returned %d\n", r);
-
-    /* We had INACTIVE set; now that the format is
-     * negotiated and buffers are configured, activate
-     * the stream. The state goes 2 (PAUSED) -> 3 (STREAMING)
-     * and on_process starts firing. */
-    if (g_pw_stream) {
-        fprintf(stderr, "cs-pw-helper: (no-op) pw_stream_set_active(TRUE) since no INACTIVE\n");
-        pw_stream_set_active(g_pw_stream, true);
-    }
+    g_have_format = 1;
+    apply_negotiation_variant();
 }
 
 static int g_process_call_count = 0;
+/* Resolve a spa_data to a CPU pointer.
+ *
+ * The screencast source hands us SPA_DATA_MemFd buffers, so d->data is
+ * NULL and the pixels live in a shared memfd that we have to map
+ * ourselves. All buffers of a stream share one fd and differ only by
+ * mapoffset, so we map the whole fd once and index into it. */
+static void *g_map_fd_cache = NULL;
+static void *g_map_base = NULL;
+static size_t g_map_len = 0;
+
+static void *map_buffer_data(struct spa_data *d) {
+    if (d->data != NULL) return d->data;
+    if (d->fd < 0) return NULL;
+
+    if (g_map_fd_cache != (void *)(intptr_t)d->fd) {
+        struct stat st;
+        off_t size;
+        void *base;
+        if (g_map_base != NULL) { munmap(g_map_base, g_map_len); g_map_base = NULL; g_map_len = 0; }
+        if (fstat(d->fd, &st) < 0 || st.st_size <= 0) return NULL;
+        size = st.st_size;
+        base = mmap(NULL, (size_t)size, PROT_READ, MAP_SHARED, d->fd, 0);
+        if (base == MAP_FAILED) {
+            fprintf(stderr, "cs-pw-helper: mmap(fd=%d, %lld) failed: %s\n",
+                    (int)d->fd, (long long)size, strerror(errno));
+            g_map_fd_cache = NULL;
+            return NULL;
+        }
+        g_map_base = base;
+        g_map_len = (size_t)size;
+        g_map_fd_cache = (void *)(intptr_t)d->fd;
+        fprintf(stderr, "cs-pw-helper: mapped shared buffer fd=%d size=%lld\n",
+                (int)d->fd, (long long)size);
+    }
+    if ((size_t)d->mapoffset >= g_map_len) return NULL;
+    return (char *)g_map_base + d->mapoffset;
+}
+
 static void on_stream_process(void *data) {
     (void)data;
     if (++g_process_call_count <= 3) {
@@ -337,19 +537,33 @@ static void on_stream_process(void *data) {
     while ((buf = pw_stream_dequeue_buffer(g_pw_stream)) != NULL) {
         struct spa_buffer *sbuf = buf->buffer;
         struct spa_data *d = &sbuf->datas[0];
-        if (d->data == NULL || d->chunk == NULL || d->chunk->size == 0) {
+        void *pixels;
+        uint32_t offset;
+        if (d->chunk == NULL || d->chunk->size == 0) {
             if (++g_process_call_count <= 8) {
-                fprintf(stderr, "cs-pw-helper: process: data=NULL or chunk->size=0 (data=%p chunk=%p size=%u)\n",
-                    (void*)d->data, (void*)d->chunk, d->chunk ? d->chunk->size : 0);
+                fprintf(stderr, "cs-pw-helper: process: chunk missing or size=0\n");
             }
             pw_stream_queue_buffer(g_pw_stream, buf);
             continue;
         }
-        if (++g_process_call_count <= 8) {
-            fprintf(stderr, "cs-pw-helper: process: writing %u bytes to client_fd=%d\n",
-                d->chunk->size, g_client_fd);
+        pixels = map_buffer_data(d);
+        if (pixels == NULL) {
+            if (++g_process_call_count <= 8) {
+                fprintf(stderr, "cs-pw-helper: process: no CPU access (type=%u fd=%d)\n",
+                        (unsigned)d->type, (int)d->fd);
+            }
+            pw_stream_queue_buffer(g_pw_stream, buf);
+            continue;
         }
-        if (write_all(g_client_fd, d->data, d->chunk->size) < 0) {
+        /* The frame starts at chunk->offset inside the block. For a full
+         * screencast frame that offset is 0 and the block is contiguous,
+         * which is what ffmpeg's rawvideo demuxer expects. */
+        offset = d->chunk->offset;
+        if (++g_process_call_count <= 8) {
+            fprintf(stderr, "cs-pw-helper: process: writing %u bytes at offset %u "
+                    "to client_fd=%d\n", d->chunk->size, offset, g_client_fd);
+        }
+        if (write_all(g_client_fd, (char *)pixels + offset, d->chunk->size) < 0) {
             fprintf(stderr, "cs-pw-helper: write to socket failed: %s\n", strerror(errno));
             pw_stream_queue_buffer(g_pw_stream, buf);
             g_interrupted = 1;
@@ -376,35 +590,35 @@ static uint8_t g_pod_buffer[1024];
 static struct spa_pod *g_pod_params[1];
 
 /* Build the format POD once at startup. We declare a reasonable
- * default (BGRA at the compositor's preferred size/framerate)
- * and let the source push its preferred format. */
-static void build_format_pod(void) {
-    struct spa_pod_builder b = {0};
-    spa_pod_builder_init(&b, g_pod_buffer, sizeof(g_pod_buffer));
-    /* Use SPA_PARAM_EnumFormat (not SPA_PARAM_Format) to enumerate
-     * the formats we can accept. The server picks one and sends
-     * us a Format param_changed event with the chosen format. */
-    g_pod_params[0] = (struct spa_pod *)spa_pod_builder_add_object(&b,
-        SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
-        SPA_FORMAT_mediaType,       SPA_POD_Id(SPA_MEDIA_TYPE_video),
-        SPA_FORMAT_mediaSubtype,    SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-        /* BGRA/BGRx/RGBx/RGBA are preferred for screencast
-         * (gnome-remote-desktop, wlroots-portal). YUY2 is a
-         * fallback for V4L2 cameras in --node-id test mode.
-         * Order matters: the first one is the default. */
-        SPA_FORMAT_VIDEO_format,    SPA_POD_CHOICE_ENUM_Id(
-            5, SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_BGRA,
-            SPA_VIDEO_FORMAT_RGBx, SPA_VIDEO_FORMAT_RGBA,
-            SPA_VIDEO_FORMAT_YUY2),
-        SPA_FORMAT_VIDEO_size,      SPA_POD_CHOICE_RANGE_Rectangle(
-            &SPA_RECTANGLE(0, 0),
-            &SPA_RECTANGLE(1, 1),
-            &SPA_RECTANGLE(7680, 4320)),
-        SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(
-            &SPA_FRACTION(30, 1),
-            &SPA_FRACTION(0, 1),
-            &SPA_FRACTION(240, 1)));
-}
+     * default (BGRA at the compositor's preferred size/framerate)
+     * and let the source push its preferred format. */
+    static void build_format_pod(void) {
+        struct spa_pod_builder b = {0};
+        spa_pod_builder_init(&b, g_pod_buffer, sizeof(g_pod_buffer));
+        /* Use SPA_PARAM_EnumFormat (not SPA_PARAM_Format) to enumerate
+         * the formats we can accept. The server picks one and sends
+         * us a Format param_changed event with the chosen format. */
+        g_pod_params[0] = (struct spa_pod *)spa_pod_builder_add_object(&b,
+            SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+            SPA_FORMAT_mediaType,       SPA_POD_Id(SPA_MEDIA_TYPE_video),
+            SPA_FORMAT_mediaSubtype,    SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
+            /* BGRA/BGRx/RGBx/RGBA are preferred for screencast
+             * (gnome-remote-desktop, wlroots-portal). YUY2 is a
+             * fallback for V4L2 cameras in --node-id test mode.
+             * Order matters: the first one is the default. */
+            SPA_FORMAT_VIDEO_format,    SPA_POD_CHOICE_ENUM_Id(
+                6, SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_BGRA,
+                SPA_VIDEO_FORMAT_RGBx, SPA_VIDEO_FORMAT_RGBA,
+                SPA_VIDEO_FORMAT_YUY2, SPA_VIDEO_FORMAT_I420),
+            SPA_FORMAT_VIDEO_size,      SPA_POD_CHOICE_RANGE_Rectangle(
+                &SPA_RECTANGLE(0, 0),
+                &SPA_RECTANGLE(1, 1),
+                &SPA_RECTANGLE(7680, 4320)),
+            SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(
+                &SPA_FRACTION(30, 1),
+                &SPA_FRACTION(0, 1),
+                &SPA_FRACTION(240, 1)));
+    }
 
 /* setup_pw_stream must be called on the PipeWire thread. We
  * use pw_loop_signal_event to wake the loop with our own signal.
@@ -415,6 +629,10 @@ static uint32_t g_setup_node_id = 0;
 
 static void setup_pw_stream_on_pw_thread(uint32_t node_id) {
     fprintf(stderr, "cs-pw-helper: setup_pw_stream_on_pw_thread node_id=%u\n", node_id);
+    g_active_node = node_id;
+    if (g_variant < 0) g_variant = 0;
+    fprintf(stderr, "cs-pw-helper: negotiation variant %d (%s)\n",
+            g_variant, g_variants[g_variant].name);
     /* MediaType=Video, Category=Capture, Role=Screen.
      * The role tells PipeWire this is a screencast capture,
      * not a V4L2 camera capture. The screencast source
@@ -722,6 +940,7 @@ int main(int argc, char *argv[]) {
     }
     g_framerate_num = framerate;
     g_framerate_den = 1;
+    g_requested_fps = framerate > 0 ? framerate : 30;
 
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);
