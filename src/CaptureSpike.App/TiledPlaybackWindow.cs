@@ -180,13 +180,31 @@ public sealed class TiledPlaybackWindow : Window
         var result = new Dictionary<string, nint>();
         foreach (var src in _sources)
         {
-            // Only the first video source's id maps to the
-            // actual embed handle. Everything else is 0
-            // (audio / ignored). The single-mpv engine
-            // internally uses the first non-zero value.
-            result[src.SourceId] = src.IsVideo && handle != 0 && !result.Any() ? handle : nint.Zero;
+            // Embedding targets the first VIDEO source specifically -
+            // not "the first source in the list". The previous
+            // !result.Any() guard assumed the first _source listed
+            // was a video, which is false whenever take.Sources puts
+            // an audio source (e.g. mic) first. In that case the guard
+            // tripped on iteration 0, and iteration 1 (the actual
+            // video) also got handle 0 because result was non-empty.
+            // The mpv embed window stayed zero, mpv opened its own
+            // toplevel, and the user saw 'videos play in a different
+            // window'. Filter on IsVideo, not on dictionary order.
+            result[src.SourceId] =
+                src.IsVideo && handle != 0 && !HasAnyVideoHandle(result)
+                    ? handle
+                    : nint.Zero;
         }
         return result;
+    }
+
+    private static bool HasAnyVideoHandle(Dictionary<string, nint> result)
+    {
+        foreach (var v in result.Values)
+        {
+            if (v != nint.Zero) return true;
+        }
+        return false;
     }
 
     /// <summary>Highlights / de-highlights a track row when it's muted.</summary>
