@@ -361,7 +361,18 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
             if (OperatingSystem.IsLinux() &&
                 LinuxSession.Current == LinuxSession.DisplayServer.Wayland)
                 psi.ArgumentList.Add("--vo=x11");
-            psi.ArgumentList.Add($"--wid={EmbedWindowHandle}");
+            /* Cast through uint32_t so a "high-bit-set" HWND on Windows
+             * doesn't show up as a negative int64 to mpv. mpv's
+             * w32_common.c has `if (w32->opts->WinID >= 0)` and treats
+             * a negative wid as "don't embed", opening its own window
+             * instead. (libmpv docs already require casting to
+             * intptr_t; this adds the uint32 step that the Qt
+             * reference example uses. Affects ~50% of HWNDs on
+             * 64-bit Windows because the kernel hands them out
+             * sequentially and many user-mode windows live above
+             * 0x80000000.) */
+            uint wid32 = (uint)(ulong)EmbedWindowHandle;
+            psi.ArgumentList.Add($"--wid={wid32}");
         }
         // Command-line filenames after the first are playlist entries, not
         // simultaneous inputs. lavfi-complex needs one primary file plus
