@@ -207,25 +207,28 @@ public sealed class MpvPlaybackEngine : IPlaybackEngine, IPlayer
             }
             if (!_loaded) return;
 
-            if (IsTiledLaunch)
-            {
-                _tiledGraph = FilterGraphBuilder.BuildTakeGraph(_take.Sources, _muted);
-                var response = await RequireIpc()
-                    .CommandAsync(["set_property", "lavfi-complex", _tiledGraph], ct)
-                    .ConfigureAwait(false);
-                if (!response.TryGetProperty("error", out var error) ||
-                    error.GetString() != "success")
-                {
-                    if (wasMuted) _muted.Add(sourceId); else _muted.Remove(sourceId);
-                    _tiledGraph = FilterGraphBuilder.BuildTakeGraph(_take.Sources, _muted);
-                    var reason = error.ValueKind == System.Text.Json.JsonValueKind.String
-                        ? error.GetString()
-                        : "unknown mpv error";
-                    throw new InvalidOperationException($"mpv could not update the mute graph: {reason}");
-                }
-                return;
-            }
-
+            // Killing and respawning mpv may seem expensive, but it's the
+            // ONLY way to keep the embedded window intact on Windows:
+            // `set_property lavfi-complex` (which the previous code path
+            // took for tiled launches) makes mpv call vo_reconfig, which
+            // destroys the embedded window and creates a toplevel one.
+            // The user then sees a "white box" left behind in the
+            // playback window (the empty STATIC HWND) and a separate
+            // mpv window showing the video.
+            //
+            // A full restart runs the configured StartMpvAsync, which
+            // re-runs --wid=<EmbedWindowHandle>, so the new mpv window
+            // parents back into the same Avalonia MpvVideoHost child
+            // HWND. The cost is ~150ms of mpv respawn; the user clicks
+            // a track and the video plays in the same place as before.
+            //
+            // We rebuild the graph from BuildTakeGraph(sources, muted)
+            // because the caller's original graph string (BuildEngineAsync
+            // in TiledTakePlayer) embedded the original mute state -
+            // there's no way to reach it from here. BuildTakeGraph doesn't
+            // need Project/Scene - it handles video tiles and audio mix
+            // independently, which is exactly what the tiled path uses.
+            _tiledGraph = FilterGraphBuilder.BuildTakeGraph(_take.Sources, _muted);
             var pos = _positionSec;
             var wasPaused = _paused;
             await StartMpvAsync(pos, wasPaused, ct).ConfigureAwait(false);
