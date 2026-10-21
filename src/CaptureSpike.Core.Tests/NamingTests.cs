@@ -138,4 +138,53 @@ public sealed class NamingTests
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
+
+    [Fact]
+    public void Open_RepairsUnsuffixedFavoriteTakeId_WhenFolderIsSuffixed()
+    {
+        // Daniel's bug: scene.json stored the favorite as the
+        // UN-suffixed take id ("Take 03") but the folder on disk
+        // had the "-favorite" suffix ("Take 03-favorite"). The
+        // migration's remap can't fix this because the literal
+        // "Take 03" isn't in the migration's remap (the remap keys
+        // off folder names, and "Take 03-favorite" was already
+        // migrated). ResolveFavoriteFolderName recovers the
+        // suffixed folder name by stable take number so the
+        // strip-old step in ToggleFavoriteRow targets an existing
+        // folder; otherwise the OLD favorite keeps its "-favorite"
+        // suffix on disk, which DaVinci Resolve's favorites
+        // filter still picks up.
+        var dir = NewTempDir("cs-favfix");
+        try
+        {
+            var sceneDir = Path.Combine(dir, "scenes", "Intro");
+            var takesDir = Path.Combine(sceneDir, "takes");
+            var takeDir = Path.Combine(takesDir, "Take 03-favorite");
+            Directory.CreateDirectory(takeDir);
+            File.WriteAllText(Path.Combine(dir, "project.json"),
+                """{"name":"Mig","sources":[]}""");
+            // scene.json points at the un-suffixed name. Reproduces the
+            // legacy state Daniel ended up with after a migration that
+            // didn't repair FavoriteTakeId.
+            File.WriteAllText(Path.Combine(sceneDir, "scene.json"),
+                """{"id":"Intro","title":"Intro","folderName":"Intro","order":0,"notes":"","favoriteTakeId":"Take 03","sources":[]}""");
+            // take.json inside Take 03-favorite has Id matching the
+            // folder (this is the norm; the bug is in scene.json).
+            File.WriteAllText(Path.Combine(takeDir, "take.json"),
+                """{"id":"Take 03-favorite","number":3,"sceneId":"Intro","startedAt":"2026-10-04T22:30:15+00:00","durationSeconds":10,"sources":[]}""");
+
+            var store = ProjectStore.Open(dir);
+
+            // Migration must rewrite FavoriteTakeId to match the
+            // folder on disk so ToggleFavoriteRow's strip-old step
+            // can find it.
+            var scene = store.LoadScenes().Single();
+            Assert.Equal("Take 03-favorite", scene.FavoriteTakeId);
+
+            // Reopening is idempotent.
+            var reopened = ProjectStore.Open(dir);
+            Assert.Equal("Take 03-favorite", reopened.LoadScenes().Single().FavoriteTakeId);
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
 }

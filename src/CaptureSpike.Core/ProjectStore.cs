@@ -156,9 +156,29 @@ public sealed class ProjectStore
             }
 
             var remap = MigrateTakeFolders(folderName, scene);
-            if (scene.FavoriteTakeId is not null &&
-                remap.TryGetValue(scene.FavoriteTakeId, out var newFav))
+            if (scene.FavoriteTakeId is not null)
+            {
+                // First try the literal remap (handles the case where the
+                // favorite's folder itself was renamed by the migration).
+                if (!remap.TryGetValue(scene.FavoriteTakeId, out var newFav))
+                {
+                    // No literal remap hit. The favorite was stored in
+                    // scene.json as the un-suffixed form ("Take 03") while
+                    // the folder on disk was the suffixed form ("Take 03-favorite").
+                    // A previous app version (before the favorite-via-folder
+                    // convention was tightened) wrote the un-suffixed form
+                    // without ever renaming the folder on disk. Find the
+                    // folder on disk that corresponds to this take id and
+                    // adopt its real (possibly suffixed) name. Without this,
+                    // ToggleFavoriteRow's strip-old step targets a
+                    // non-existent folder, fails silently, and the old
+                    // favorite's folder keeps "-favorite" on disk -
+                    // confusing DaVinci (it still sees the file as
+                    // "favorited" by name).
+                    newFav = ResolveFavoriteFolderName(folderName, scene.FavoriteTakeId);
+                }
                 scene.FavoriteTakeId = newFav;
+            }
             SaveScene(scene);
         }
     }
@@ -545,6 +565,41 @@ public sealed class ProjectStore
             int.TryParse(name["Take ".Length..], out var n))
             return n;
         return null;
+    }
+
+    /// <summary>
+    /// Looks up the actual on-disk folder name for a take the scene has
+    /// marked as favorite, even when the FavoriteTakeId stored in
+    /// scene.json is in an older form (un-suffixed) that doesn't match
+    /// the folder name (which uses the convention "Take NN-favorite").
+    ///
+    /// Walks every folder under takes/, tries to load its take.json,
+    /// matches by stable take number (TakeNumberFromFolder strips the
+    /// suffix on both sides), and returns the folder's real name. If no
+    /// match is found, returns the input unchanged so a downstream caller
+    /// can no-op.
+    ///
+    /// Used by the migration's FavoriteTakeId repair path to fix projects
+    /// left over from before the -favorite naming convention was
+    /// enforced. Without this repair, ToggleFavoriteRow's strip-old step
+    /// targets a non-existent folder on disk and fails silently,
+    /// leaving the OLD favorite's folder with the stale "-favorite"
+    /// suffix and confusing downstream tools (DaVinci Resolve's
+    /// favorites filter) that key off the folder name.
+    /// </summary>
+    public string? ResolveFavoriteFolderName(string folderName, string favoriteTakeId)
+    {
+        var targetNumber = TakeNumberFromFolder(favoriteTakeId);
+        if (targetNumber is null) return favoriteTakeId;
+        var takesDir = TakesDir(folderName);
+        if (!Directory.Exists(takesDir)) return favoriteTakeId;
+        foreach (var dir in Directory.GetDirectories(takesDir))
+        {
+            var dirName = Path.GetFileName(dir);
+            if (TakeNumberFromFolder(dirName) == targetNumber)
+                return dirName;
+        }
+        return favoriteTakeId;
     }
 
     public void SaveTake(string takeDir, Take take) =>
