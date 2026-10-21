@@ -118,6 +118,20 @@ internal static class AppSettings
         public string? RightNotesHeight { get; set; }
         [JsonPropertyName("isNotesExpanded")]
         public bool IsNotesExpanded { get; set; }
+        /// <summary>
+        /// When true, the main window is left visible during recording
+        /// (and at full focus afterwards) instead of being minimized
+        /// for the countdown. Useful when the user is recording on a
+        /// different monitor (dual-monitor setups) and wants
+        /// CaptureSpike to stay visible for quick access.
+        ///
+        /// When false (default), the window minimizes so it doesn't
+        /// end up in its own screen recording. Pre-existing behavior;
+        /// keeping the default protects single-monitor users who
+        /// wouldn't see anything useful on their screen otherwise.
+        /// </summary>
+        [JsonPropertyName("keepWindowVisibleOnRecord")]
+        public bool KeepWindowVisibleOnRecord { get; set; }
     }
 
     private static SettingsData Load()
@@ -170,6 +184,19 @@ internal static class AppSettings
     {
         get => Load().ProjectsDir ?? DefaultProjectsDir();
         set { var d = Load(); d.ProjectsDir = value; Save(d); }
+    }
+
+    /// <summary>
+    /// When true, the main window stays visible during recording
+    /// instead of being minimized for the countdown. Dual-monitor
+    /// users who want quick access to CaptureSpike on the second
+    /// monitor turn this on; single-monitor users should leave it
+    /// off so the window doesn't end up in its own screen capture.
+    /// </summary>
+    public static bool KeepWindowVisibleOnRecord
+    {
+        get => Load().KeepWindowVisibleOnRecord;
+        set { var d = Load(); d.KeepWindowVisibleOnRecord = value; Save(d); }
     }
 
     /// <summary>Persisted left column width (sources palette).</summary>
@@ -2486,8 +2513,11 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
         {
             // The window minimizes during the countdown so it never ends up in
             // its own screen recording. Remember the state to restore after.
+            // Skip the minimize entirely if the user opted into keeping the
+            // window visible (dual-monitor setups where CaptureSpike sits on
+            // a monitor that isn't being recorded).
             var window = MainWindow;
-            if (window is not null)
+            if (window is not null && !AppSettings.KeepWindowVisibleOnRecord)
             {
                 _preRecordWindowState = window.WindowState == Avalonia.Controls.WindowState.Minimized
                     ? Avalonia.Controls.WindowState.Normal
@@ -2643,6 +2673,12 @@ public sealed class MainViewModel : ObservableObject, ITransportHost
     {
         var window = MainWindow;
         if (window is null) return;
+        // If the user opted into keeping the window visible, we never
+        // minimized it - there's nothing to restore. Just leave it where
+        // it is (and don't steal focus with Activate, which would be
+        // surprising on a dual-monitor setup where the user is reading
+        // something on the other monitor).
+        if (AppSettings.KeepWindowVisibleOnRecord) return;
         window.WindowState = _preRecordWindowState;
         window.Activate();
     }

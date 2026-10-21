@@ -30,6 +30,12 @@
     <TextBlock Text="System default follows whatever your OS UI is set to (Light or Dark)."
                FontSize="14" Opacity="0.5" TextWrapping="Wrap" />
 
+    <TextBlock Text="Recording" FontSize="15" Opacity="0.7" Margin="0,8,0,0" />
+    <CheckBox IsChecked="{Binding KeepWindowVisibleOnRecord, Mode=TwoWay}"
+              Content="Keep window visible while recording" />
+    <TextBlock Text="Leave the main window visible during recording so it's easy to switch back to (good for dual-monitor setups). Off keeps it minimized so the window doesn't end up in its own screen capture."
+               FontSize="14" Opacity="0.5" TextWrapping="Wrap" />
+
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                 Spacing="8" Margin="0,8,0,0">
       <Button Content="Cancel" Click="OnCancel" />

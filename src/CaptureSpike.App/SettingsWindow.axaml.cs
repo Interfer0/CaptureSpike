@@ -89,12 +89,31 @@ public sealed class SettingsViewModel : ObservableObject
         }
     }
 
+    private bool _keepWindowVisibleOnRecord = AppSettings.KeepWindowVisibleOnRecord;
+    /// <summary>
+    /// When true, the main window stays visible during recording
+    /// instead of being minimized for the countdown. Useful on
+    /// dual-monitor setups where CaptureSpike sits on a monitor
+    /// that isn't being recorded; the user can keep an eye on
+    /// elapsed time and access transport controls without
+    /// breaking focus from whatever is on the recording screen.
+    ///
+    /// Single-monitor users should leave this off so the window
+    /// doesn't end up in its own screen capture.
+    /// </summary>
+    public bool KeepWindowVisibleOnRecord
+    {
+        get => _keepWindowVisibleOnRecord;
+        set => SetField(ref _keepWindowVisibleOnRecord, value);
+    }
+
     /// <summary>Persists the projects folder and theme on Save.</summary>
     public void Save()
     {
         if (!string.IsNullOrWhiteSpace(_projectsFolder))
             AppSettings.ProjectsDir = _projectsFolder;
         AppSettings.Theme = _theme;
+        AppSettings.KeepWindowVisibleOnRecord = _keepWindowVisibleOnRecord;
     }
 
     /// <summary>Apply the current theme to Avalonia. Called on construction
