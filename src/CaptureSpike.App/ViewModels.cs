@@ -544,9 +544,6 @@ public sealed class PaletteSourceViewModel : ObservableObject
             catch { ffmpeg = "ffmpeg"; } // let the OS resolve it; failures -> empty list
             var kind = Source.Kind;
             var found = await Task.Run(() => DeviceEnumeration.GetDevices(kind, ffmpeg));
-            AppLog.Current?.WriteLine(
-                $"[devices] {Source.Id} kind={kind} -> {found.Count} device(s): " +
-                string.Join(", ", found.Select(d => d.Id)));
             // Repopulating Devices makes the two-way SelectedItem binding
             // write the control's state back into SelectedDevice, and
             // raising SelectedDevice below pushes ours back out. Both
@@ -591,7 +588,7 @@ public sealed class PaletteSourceViewModel : ObservableObject
             Raise(nameof(DeviceDisplay));
             DetectionCompleted = true;
         }
-        catch (Exception ex)
+        catch
         {
             // Detection is best-effort. We DO mark DetectionCompleted =
             // true here so the dropdown doesn't get stuck on
@@ -601,9 +598,6 @@ public sealed class PaletteSourceViewModel : ObservableObject
             // driven by IsDeviceMissing, which is independently
             // false here (we don't know whether the device is
             // missing — we just couldn't enumerate at all).
-            AppLog.Current?.WriteLine(
-                $"[devices] detection threw for {Source.Id} kind={Source.Kind}: " +
-                $"{ex.GetType().Name}: {ex.Message}");
             DetectionCompleted = true;
             Raise(nameof(DeviceDisplay));
         }

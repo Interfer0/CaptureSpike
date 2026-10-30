@@ -191,14 +191,8 @@ public static class DeviceEnumeration
         {
             if (OperatingSystem.IsWindows()) return WindowsDevices.Get(kind, ffmpeg);
             if (OperatingSystem.IsLinux()) return LinuxDevices.Get(kind);
-            AppLog.Current?.WriteLine($"[devices] unsupported OS for kind={kind}; returning empty list");
         }
-        catch (Exception ex)
-        {
-            // Swallowing this silently is what made "the dropdown only
-            // has Default" impossible to diagnose. Log the reason.
-            AppLog.Current?.WriteLine($"[devices] enumeration failed for kind={kind}: {ex.GetType().Name}: {ex.Message}");
-        }
+        catch { }
         return Array.Empty<DeviceOption>();
     }
 
